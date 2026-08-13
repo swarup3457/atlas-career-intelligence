@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260813T171747Z_job_status_blue-yonder-151503895",
+  "event_type": "job_status_change",
+  "created_at": "2026-08-13T17:17:47Z",
+  "run_id": "20260813T171734Z_step3_high_coverage_discovery",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "job",
+  "entity_key": "151503895",
+  "data": {
+    "company": "Blue Yonder",
+    "title": "Software Engineer II - Java, Springboot, Microservices",
+    "job_id": "151503895",
+    "canonical_key": "151503895",
+    "previous_status": "LIVE_DATE_UNKNOWN",
+    "new_status": "CLOSED",
+    "official_url": "https://www.foundit.in/job/software-engineer-ii-java-spring-boot-rest-apis-microservices-sql-blue-yonder-bengaluru-bangalore-60499780",
+    "verification_source": "Official Blue Yonder careers pages indicated that the role had been filled.",
+    "verified_at": "2026-08-13T17:17:47Z",
+    "apply_path_active": false,
+    "reason": "The Blue Yonder role could not be treated as live because the official pages indicated it was filled."
+  }
+}
