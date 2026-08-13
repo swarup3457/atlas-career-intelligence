@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260813T171746Z_company_check_blue-yonder",
+  "event_type": "company_check",
+  "created_at": "2026-08-13T17:17:46Z",
+  "run_id": "20260813T171734Z_step3_high_coverage_discovery",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "company",
+  "entity_key": "Blue Yonder",
+  "data": {
+    "company": "Blue Yonder",
+    "company_tier": "Tier B",
+    "check_type": "STEP3 company delta",
+    "official_career_domain": "https://careers.blueyonder.com/",
+    "ats_family": "Blue Yonder Careers",
+    "checked_at": "2026-08-13T17:17:46Z",
+    "previous_delta_check": null,
+    "next_delta_check": "2026-08-14",
+    "previous_deep_check": null,
+    "next_deep_check": "2026-08-15",
+    "sources_checked": [
+      "https://www.foundit.in/job/software-engineer-ii-java-spring-boot-rest-apis-microservices-sql-blue-yonder-bengaluru-bangalore-60499780",
+      "https://careers.blueyonder.com/"
+    ],
+    "active_relevant_jobs": 0,
+    "new_job_ids": [],
+    "known_unchanged_job_ids": [],
+    "closed_job_ids": ["151503895"],
+    "manual_verification_job_ids": [],
+    "access_status": "Filled",
+    "access_limitation": "Official Blue Yonder pages indicated that the role had been filled.",
+    "result": "Closed",
+    "next_action": "Recheck on 2026-08-14 only if the company reopens the posting; otherwise keep closed."
+  }
+}
