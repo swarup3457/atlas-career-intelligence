@@ -1,0 +1,4 @@
+run_type,run_date,search_window,official_company_domains_checked,ats_domains_checked,duplicates_suppressed,actionable_rows_added,actionable_rows_updated,tracker_write_verified,remaining_company_queue,notes
+LEGACY_RUN_HISTORY,2026-08-08,Validation-only audit,5,,1,,,Verified,145,Audited V4 tracker; corrected IBM 126957 probable repost and Oracle generic search lead.
+LEGACY_RUN_HISTORY,2026-08-08,Enterprise company sweep merge,23,Enterprise official careers/ATS batch,1,9,,Verified,122,Merged valid enterprise-sweep jobs into audited master; preserved 150-row queue; Deloitte company completed but job kept as Manual Verification; generic outreach drafts retained without verified recruiter contacts.
+INITIAL_TRACKER_MIGRATION,2026-08-13,INITIAL_TRACKER_MIGRATION,0,0,0,0,0,Verified,150,Initial tracker migration from Atlas_MASTER_ACTIVE_V5_CADENCE.xlsx into persistent CSV layer.
