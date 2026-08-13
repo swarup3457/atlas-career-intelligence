@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260813T150537Z_company_check_google",
+  "event_type": "company_check",
+  "created_at": "2026-08-13T15:05:37Z",
+  "run_id": "20260813T150537Z_step2c_event_store_verification",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "company",
+  "entity_key": "Google",
+  "data": {
+    "company": "Google",
+    "company_tier": "Tier A",
+    "check_type": "STEP2C company delta",
+    "official_career_domain": "https://careers.google.com/",
+    "ats_family": "Google Careers",
+    "checked_at": "2026-08-13T15:05:37Z",
+    "previous_delta_check": "2026-08-08",
+    "next_delta_check": "2026-08-14",
+    "previous_deep_check": "2026-08-08",
+    "next_deep_check": "2026-08-15",
+    "sources_checked": [
+      "https://careers.google.com/jobs/results/110385859693290182-software-engineer-iii/",
+      "https://careers.google.com/jobs/results/143397485035823814-product-strategy-and-operations-lead/",
+      "https://careers.google.com/jobs/results/132249031010067142-software-engineer-iii/"
+    ],
+    "active_relevant_jobs": 3,
+    "new_job_ids": [],
+    "known_unchanged_job_ids": [
+      "110385859693290182"
+    ],
+    "closed_job_ids": [],
+    "manual_verification_job_ids": [],
+    "access_status": "Accessible",
+    "access_limitation": null,
+    "result": "Checked This Cycle",
+    "next_action": "Delta check on 2026-08-14; deep check on 2026-08-15."
+  }
+}
