@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260813T171743Z_job_discovery_airbus-JR10429291",
+  "event_type": "job_discovery",
+  "created_at": "2026-08-13T17:17:43Z",
+  "run_id": "20260813T171734Z_step3_high_coverage_discovery",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "job",
+  "entity_key": "JR10429291",
+  "data": {
+    "company": "Airbus",
+    "title": "Software Developer - Full stack (Java & React/Angular) - Digital for Mass Properties & Structure testing",
+    "job_id": "JR10429291",
+    "location": "Bangalore",
+    "work_mode": "Hybrid",
+    "experience_requirement": "3+ years",
+    "discovery_source": "Official company career page / Workday",
+    "source_url": "https://ag.wd3.myworkdayjobs.com/en-US/Airbus/job/Software-Developer---Full-stack--Java---React-Angular----Digital-for-Mass-Properties---Structure-testing_JR10429291",
+    "official_url": "https://ag.wd3.myworkdayjobs.com/en-US/Airbus/job/Software-Developer---Full-stack--Java---React-Angular----Digital-for-Mass-Properties---Structure-testing_JR10429291",
+    "posting_date": "2025-07-10",
+    "freshness": "Live",
+    "verification_status": "Verified Official",
+    "live_status": "Active",
+    "apply_path_active": true,
+    "match_score": 72,
+    "canonical_key": "JR10429291",
+    "canonical_decision": "New Vacancy",
+    "reason": "Exact official Airbus Workday page with an active apply path and India location.",
+    "first_seen": "2026-08-13T17:17:43Z",
+    "last_verified_at": "2026-08-13T17:17:43Z"
+  }
+}
