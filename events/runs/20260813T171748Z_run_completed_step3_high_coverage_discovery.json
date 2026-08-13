@@ -1,0 +1,102 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260813T171748Z_run_completed_step3_high_coverage_discovery",
+  "event_type": "run_completed",
+  "created_at": "2026-08-13T17:17:48Z",
+  "run_id": "20260813T171734Z_step3_high_coverage_discovery",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "run",
+  "entity_key": "20260813T171734Z_step3_high_coverage_discovery",
+  "data": {
+    "run_id": "20260813T171734Z_step3_high_coverage_discovery",
+    "run_type": "STEP3_HIGH_COVERAGE_DISCOVERY",
+    "run_status": "PARTIAL",
+    "started_at": "2026-08-13T17:17:34Z",
+    "completed_at": "2026-08-13T17:31:45Z",
+    "search_window": {
+      "user_local_timezone": "Asia/Kolkata",
+      "user_local_date": "2026-08-13",
+      "utc_window_start": "2026-08-13T17:17:34Z",
+      "utc_window_end": "2026-08-13T17:31:45Z"
+    },
+    "companies_attempted": 16,
+    "companies_checked": 16,
+    "completed_companies": [
+      "Finastra",
+      "Airbus",
+      "JPMorgan Chase",
+      "Availity",
+      "Carelon Global Solutions India",
+      "PTC",
+      "Light & Wonder",
+      "MillerKnoll",
+      "Gridbricks",
+      "Vested Finance",
+      "Wysa",
+      "VARITE",
+      "GlobalLogic",
+      "aptapace",
+      "RETISIO Commerce",
+      "Blue Yonder"
+    ],
+    "remaining_company_queue": [
+      "Continue the broader India market sweep across the due company queue and extend coverage to more employer ATS tenants and portal sources.",
+      "Revisit portal-only leads for possible official verification when time allows."
+    ],
+    "source_coverage": [
+      "Official company career sites and ATS pages",
+      "Workday",
+      "Oracle Recruiting",
+      "LinkedIn public job pages",
+      "Foundit",
+      "Indeed",
+      "Wellfound",
+      "Talent500",
+      "specialist platforms",
+      "Naukri"
+    ],
+    "remaining_sources": [
+      "Additional ATS tenants",
+      "more LinkedIn sweep",
+      "more Naukri sweep",
+      "more Foundit sweep",
+      "more Indeed sweep"
+    ],
+    "lane_coverage": [
+      "General Software Engineering",
+      "Java Backend / Spring Boot / REST / Microservices",
+      "Java Full Stack",
+      "React / Frontend-only",
+      ".NET / ASP.NET / C#",
+      "Enterprise Applications / Payroll / HR Technology / Integration"
+    ],
+    "new_companies_discovered": 9,
+    "new_verified_official_jobs": 8,
+    "portal_only_manual_jobs": 8,
+    "closed_jobs": 1,
+    "duplicates_suppressed": 2,
+    "reposts_flagged": 0,
+    "company_discovery_events_written": 4,
+    "company_check_events_written": 5,
+    "job_discovery_events_written": 4,
+    "job_status_events_written": 1,
+    "event_counts": {
+      "company_discovery": 4,
+      "company_check": 5,
+      "job_discovery": 4,
+      "job_status_change": 1,
+      "run_completed": 1
+    },
+    "persistence_verified": true,
+    "completed_stages": [
+      "Resolved baseline tracker state from live main",
+      "Resolved relevant immutable prior events",
+      "Searched broad India market lanes and ATS families",
+      "Built and validated the workbook output",
+      "Wrote and read back the key immutable events"
+    ],
+    "remaining_work": "PARTIAL: continue the broader company/ATS sweep, verify more portal leads against official pages when available, and expand the persisted event set beyond this controlled pass.",
+    "next_recommended_stage": "Resume the due-company sweep and add more verified official and portal-only discoveries in the next run.",
+    "notes": "This controlled pass produced 8 verified official jobs, 8 portal/manual leads, and one closed Blue Yonder role."
+  }
+}
