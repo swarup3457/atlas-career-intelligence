@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260813T154755Z_company_discovery_johnson-controls",
+  "event_type": "company_discovery",
+  "created_at": "2026-08-13T15:47:55Z",
+  "run_id": "20260813T154755Z_step3_high_coverage_discovery",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "company",
+  "entity_key": "Johnson Controls",
+  "data": {
+    "company": "Johnson Controls",
+    "official_domain": "https://www.johnsoncontrols.com/",
+    "careers_domain": "https://jobs.johnsoncontrols.com/",
+    "ats_family": "Johnson Controls Careers / Workday",
+    "company_type": "Industrial technology / building systems",
+    "india_locations": [
+      "Gurgaon",
+      "Pune"
+    ],
+    "discovery_source": "Official Johnson Controls careers pages",
+    "reason_added": "A live India-facing engineering role was discovered during Step 3 search and the company is not present in the baseline company universe.",
+    "suggested_tier": "Tier B",
+    "next_delta_check": "2026-08-14",
+    "next_deep_check": "2026-08-15"
+  }
+}
