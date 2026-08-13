@@ -1,0 +1,151 @@
+queue_order,company,company_tier,due_type,due_date,last_delta_check,next_delta_check,last_deep_check,next_deep_check,status,retry_reason,next_action,overdue
+1,Accenture,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+2,Infosys,Tier A,Retry Delta,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Retry,Retry official careers/ATS using alternate route.,Retry official careers/ATS on 2026-08-09; search all six lanes.,No
+3,TCS,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+4,Wipro,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+5,Cognizant,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+6,Capgemini,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+7,HCLTech,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+8,LTIMindtree,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+9,Mphasis,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+10,Persistent Systems,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+11,Tech Mahindra,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+12,Deloitte,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+13,EY,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+14,KPMG,Tier A,Retry Delta,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Retry,Retry official careers/ATS using alternate route.,Retry official careers/ATS on 2026-08-09; search all six lanes.,No
+15,PwC,Tier A,Retry Delta,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Retry,Retry official careers/ATS using alternate route.,Retry official careers/ATS on 2026-08-09; search all six lanes.,No
+16,IBM,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+17,Oracle,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+18,SAP,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+19,NTT DATA,Tier A,Retry Delta,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Retry,Retry official careers/ATS using alternate route.,Retry official careers/ATS on 2026-08-09; search all six lanes.,No
+20,DXC Technology,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+21,Publicis Sapient,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+22,Thoughtworks,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+23,EPAM,Tier A,Retry Delta,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Retry,Retry official careers/ATS using alternate route.,Retry official careers/ATS on 2026-08-09; search all six lanes.,No
+24,UST,Tier A,Blocked Retry,2026-08-11,2026-08-08,2026-08-11,2026-08-08,2026-08-11,Blocked,Blocked previously; retry using alternate official/ATS route.,Retry with alternate official/ATS route by 2026-08-11.,No
+25,Virtusa,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+26,Genpact,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+27,Microsoft,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+28,Google,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+29,Amazon,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+30,Apple,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+31,Adobe,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+32,Salesforce,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+33,ServiceNow,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+34,Atlassian,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+35,Intuit,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+36,Cisco,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+37,Red Hat,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+38,Dell Technologies,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+39,HPE,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+40,NVIDIA,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+41,Intel,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+42,Qualcomm,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+43,Akamai,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+44,Cloudflare,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+45,Palo Alto Networks,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+46,NetApp,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+47,Nutanix,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+48,Rubrik,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+49,Cohesity,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+50,Confluent,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+51,MongoDB,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+52,Elastic,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+53,Snowflake,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+54,Databricks,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+55,Twilio,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+56,Okta,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+57,Autodesk,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+58,OpenText,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+59,JPMorgan Chase,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+60,Goldman Sachs,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+61,Morgan Stanley,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+62,Wells Fargo,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+63,Citi,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+64,HSBC,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+65,Barclays,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+66,Deutsche Bank,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+67,UBS,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+68,BNY,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+69,State Street,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+70,American Express,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+71,Visa,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+72,Mastercard,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+73,PayPal,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+74,Fiserv,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+75,FIS,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+76,Fidelity,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+77,BlackRock,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+78,S&P Global,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+79,PhonePe,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+80,Razorpay,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+81,Groww,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+82,CRED,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+83,Paytm,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+84,Pine Labs,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+85,Juspay,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+86,Zeta,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+87,Cashfree Payments,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+88,Flipkart,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+89,Myntra,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+90,Swiggy,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+91,Zomato,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+92,Meesho,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+93,Zepto,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+94,Urban Company,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+95,Dream11,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+96,MakeMyTrip,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+97,Ola,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+98,Rapido,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+99,Practo,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+100,NoBroker,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+101,InMobi,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+102,BrowserStack,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+103,Postman,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+104,Freshworks,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+105,Zoho,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+106,Chargebee,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+107,Whatfix,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+108,Darwinbox,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+109,HighRadius,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+110,Icertis,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+111,Hasura,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+112,Cleartrip,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+113,Games24x7,Tier B,Rolling Delta / Deep,2026-08-10,,2026-08-10,,2026-08-11,Queued,,Delta check by 2026-08-10; rolling deep check by 2026-08-11.,No
+114,Walmart Global Tech,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+115,Target,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+116,Lowe's,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+117,Tesco,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+118,Best Buy,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+119,FedEx,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+120,UPS,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+121,DHL,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+122,Maersk,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+123,Booking.com,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+124,Expedia Group,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+125,Uber,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+126,Siemens,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+127,Bosch,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+128,Mercedes-Benz Research and Development India,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+129,Volvo Group,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+130,Honeywell,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+131,GE Aerospace,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+132,GE HealthCare,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+133,Schneider Electric,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+134,ABB,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+135,Philips,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+136,Medtronic,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+137,Optum,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+138,Shell,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+139,bp,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+140,ExxonMobil,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+141,McKesson,Tier A,Daily Delta + Scheduled Deep,2026-08-09,2026-08-08,2026-08-09,2026-08-08,2026-08-10,Checked This Cycle,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+142,Carelon,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+143,Dayforce,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+144,Workday,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+145,ADP,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+146,UKG,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+147,Rippling,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+148,Deel,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+149,Remote,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-09; deep check by 2026-08-10.,No
+150,Personio,Tier A,Daily Delta + Scheduled Deep,2026-08-09,,2026-08-09,,2026-08-10,Queued,,Daily delta on 2026-08-10; deep check by 2026-08-11.,No
