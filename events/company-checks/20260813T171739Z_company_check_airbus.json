@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260813T171739Z_company_check_airbus",
+  "event_type": "company_check",
+  "created_at": "2026-08-13T17:17:39Z",
+  "run_id": "20260813T171734Z_step3_high_coverage_discovery",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "company",
+  "entity_key": "Airbus",
+  "data": {
+    "company": "Airbus",
+    "company_tier": "Tier A",
+    "check_type": "STEP3 company delta",
+    "official_career_domain": "https://www.airbus.com/",
+    "ats_family": "Workday",
+    "checked_at": "2026-08-13T17:17:39Z",
+    "previous_delta_check": null,
+    "next_delta_check": "2026-08-14",
+    "previous_deep_check": null,
+    "next_deep_check": "2026-08-15",
+    "sources_checked": [
+      "https://ag.wd3.myworkdayjobs.com/en-US/Airbus/job/Software-Developer---Full-stack--Java---React-Angular----Digital-for-Mass-Properties---Structure-testing_JR10429291"
+    ],
+    "active_relevant_jobs": 1,
+    "new_job_ids": ["JR10429291"],
+    "known_unchanged_job_ids": [],
+    "closed_job_ids": [],
+    "manual_verification_job_ids": [],
+    "access_status": "Open",
+    "access_limitation": null,
+    "result": "Verified Official",
+    "next_action": "Recheck on 2026-08-14; deep review on 2026-08-15."
+  }
+}
