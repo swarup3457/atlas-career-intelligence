@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260813T155917Z_run_completed_step3_high_coverage_discovery",
+  "event_type": "run_completed",
+  "created_at": "2026-08-13T15:59:17Z",
+  "run_id": "20260813T154755Z_step3_high_coverage_discovery",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "run",
+  "entity_key": "20260813T154755Z_step3_high_coverage_discovery",
+  "data": {
+    "run_id": "20260813T154755Z_step3_high_coverage_discovery",
+    "run_type": "STEP3_HIGH_COVERAGE_DISCOVERY",
+    "run_status": "PARTIAL",
+    "started_at": "2026-08-13T15:47:55Z",
+    "completed_at": "2026-08-13T15:59:17Z",
+    "search_window": {
+      "user_local_timezone": "Asia/Kolkata",
+      "user_local_date": "2026-08-13",
+      "utc_window_start": "2026-08-13T15:47:55Z",
+      "utc_window_end": "2026-08-13T15:59:17Z"
+    },
+    "companies_attempted": 5,
+    "companies_checked": 5,
+    "completed_companies": [
+      "Johnson Controls",
+      "Oracle",
+      "Amazon",
+      "ServiceNow",
+      "Microsoft"
+    ],
+    "remaining_company_queue": [
+      "Continue the due Tier A and Tier B company sweep beyond the five companies checked in this run, starting from the unresolved cadence queue in the tracker state."
+    ],
+    "source_coverage": [
+      "Official company career sites and ATS pages",
+      "Workday",
+      "LinkedIn public job pages",
+      "Foundit",
+      "Indeed"
+    ],
+    "remaining_sources": [
+      "Wellfound",
+      "Talent500",
+      "specialist platforms",
+      "remaining LinkedIn sweep",
+      "Naukri",
+      "remaining Foundit sweep",
+      "remaining Indeed sweep"
+    ],
+    "lane_coverage": [
+      "General Software Engineering",
+      "Java Backend / Spring Boot / REST / Microservices",
+      "Java Full Stack",
+      "React / Frontend-only",
+      ".NET / ASP.NET / C#",
+      "Enterprise Applications / Payroll / HR Technology / Integration"
+    ],
+    "new_companies_discovered": 1,
+    "new_verified_official_jobs": 1,
+    "portal_only_manual_jobs": 8,
+    "closed_jobs": 0,
+    "duplicates_suppressed": 0,
+    "reposts_flagged": 0,
+    "company_discovery_events_written": 1,
+    "company_check_events_written": 5,
+    "job_discovery_events_written": 9,
+    "job_status_events_written": 0,
+    "event_counts": {
+      "company_discovery": 1,
+      "company_check": 5,
+      "job_discovery": 9,
+      "job_status_change": 0,
+      "run_completed": 1
+    },
+    "persistence_verified": true,
+    "completed_stages": [
+      "Resolved baseline tracker state from live main",
+      "Resolved relevant immutable prior events",
+      "Wrote and read back company discovery and company checks",
+      "Wrote and read back verified official and portal-only job discoveries",
+      "Validated canonical identities and run linkage"
+    ],
+    "remaining_work": "PARTIAL: complete the broader Step 3 sweep across the still-unchecked due Tier A/B company queue, extend Workday and employer ATS coverage, add Wellfound and Talent500, continue specialist-platform discovery, finish any remaining LinkedIn/Naukri/Foundit/Indeed passes, and then rerun canonical dedupe/repost analysis before the next checkpoint.",
+    "next_recommended_stage": "Resume Step 3 from the remaining due company queue, then continue the source-pass expansion and final dedupe pass.",
+    "notes": "Johnson Controls produced one live verified official .NET role. Oracle, Amazon, ServiceNow, and Microsoft were checked live with no additional relevant openings recorded in this partial run."
+  }
+}
