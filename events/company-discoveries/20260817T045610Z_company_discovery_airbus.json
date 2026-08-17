@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260817T045610Z_company_discovery_airbus",
+  "event_type": "company_discovery",
+  "created_at": "2026-08-17T04:56:10Z",
+  "run_id": "20260817T045610Z_production_india_search",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "company",
+  "entity_key": "Airbus",
+  "data": {
+    "company": "Airbus",
+    "official_domain": "https://www.airbus.com/",
+    "careers_domain": "https://ag.wd3.myworkdayjobs.com/",
+    "ats_family": "Workday",
+    "company_type": "Aerospace / GCC",
+    "india_locations": ["Bangalore"],
+    "discovery_source": "Official Airbus careers / Workday search",
+    "reason_added": "Live Bangalore full-stack and technical lead roles surfaced on the official Workday career page.",
+    "suggested_tier": "Tier A",
+    "next_delta_check": "2026-08-18",
+    "next_deep_check": "2026-08-19"
+  }
+}
