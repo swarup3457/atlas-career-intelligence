@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260817T045610Z_company_check_airbus",
+  "event_type": "company_check",
+  "created_at": "2026-08-17T04:56:10Z",
+  "run_id": "20260817T045610Z_production_india_search",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "company",
+  "entity_key": "Airbus",
+  "data": {
+    "company": "Airbus",
+    "company_tier": "Tier A",
+    "check_type": "Production company check",
+    "official_career_domain": "https://www.airbus.com/",
+    "ats_family": "Workday",
+    "checked_at": "2026-08-17T04:56:10Z",
+    "previous_delta_check": "2026-08-13",
+    "next_delta_check": "2026-08-18",
+    "previous_deep_check": "2026-08-13",
+    "next_deep_check": "2026-08-19",
+    "sources_checked": [
+      "https://ag.wd3.myworkdayjobs.com/en-US/Airbus/job/Software-Developer---Full-stack--Java---React-Angular----Digital-for-Mass-Properties---Structure-testing_JR10429291",
+      "https://ag.wd3.myworkdayjobs.com/en-US/Airbus/job/Software-Technical-Lead--FullStack--Java---Cloud----Digital-for-Mass-Properties---Structure-testing_JR10429284"
+    ],
+    "active_relevant_jobs": 2,
+    "new_job_ids": ["JR10429291", "JR10429284"],
+    "known_unchanged_job_ids": [],
+    "closed_job_ids": [],
+    "manual_verification_job_ids": [],
+    "access_status": "Open",
+    "access_limitation": null,
+    "result": "Verified Official",
+    "next_action": "Recheck on 2026-08-18; deep review on 2026-08-19."
+  }
+}
