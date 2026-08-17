@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260817T101916Z_run_completed_production_india_search",
+  "event_type": "run_completed",
+  "created_at": "2026-08-17T10:19:16Z",
+  "run_id": "20260817T101916Z_production_india_search",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "run",
+  "entity_key": "20260817T101916Z_production_india_search",
+  "data": {
+    "run_id": "20260817T101916Z_production_india_search",
+    "run_type": "PRODUCTION_INDIA_SEARCH",
+    "run_status": "PARTIAL",
+    "started_at": "2026-08-17T10:19:16Z",
+    "completed_at": "2026-08-17T10:19:16Z",
+    "search_window": {
+      "user_local_timezone": "Asia/Kolkata",
+      "user_local_date": "2026-08-17",
+      "utc_window_start": "2026-08-17T10:19:16Z",
+      "utc_window_end": "2026-08-17T10:19:16Z"
+    },
+    "companies_attempted": 7,
+    "companies_checked": 4,
+    "completed_companies": ["Amazon", "Google", "Accenture", "Deloitte"],
+    "remaining_company_queue": ["Continue broader company/ATS and portal sweeps; expand persistence with additional current jobs and official follow-through."],
+    "source_coverage": ["Official company careers", "Workday", "Lever", "SmartRecruiters", "LinkedIn", "Indeed", "Foundit", "Wellfound", "Talent500", "specialist platforms", "Naukri"],
+    "remaining_sources": ["More LinkedIn sweep", "more Naukri sweep", "more Foundit sweep", "more Indeed sweep", "additional ATS tenants"],
+    "lane_coverage": ["General Software Engineering", "Java Backend / Spring Boot / REST / Microservices", "Java Full Stack", "React / Frontend-only", ".NET / ASP.NET / C#", "Enterprise Applications / Payroll / HR Technology / Integration"],
+    "new_companies_discovered": 4,
+    "new_verified_official_jobs": 12,
+    "portal_only_manual_jobs": 0,
+    "closed_jobs": 1,
+    "duplicates_suppressed": 0,
+    "reposts_flagged": 0,
+    "company_discovery_events_written": 4,
+    "company_check_events_written": 4,
+    "job_discovery_events_written": 3,
+    "job_status_events_written": 1,
+    "event_counts": {
+      "company_discovery": 4,
+      "company_check": 4,
+      "job_discovery": 3,
+      "job_status_change": 1,
+      "run_completed": 1
+    },
+    "persistence_verified": false,
+    "completed_stages": ["Loaded baseline tracker state", "Searched broad India market lanes and ATS families", "Built the workbook output"],
+    "remaining_work": "PARTIAL: continue broader company/ATS and portal sweeps, add more verified official and manual leads, and persist the next continuation slice.",
+    "next_recommended_stage": "Resume due company checks and portal follow-through on the next pass.",
+    "notes": "This pass produced 12 verified official jobs and one official closure."
+  }
+}
