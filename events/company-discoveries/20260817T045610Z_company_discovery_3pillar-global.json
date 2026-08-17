@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260817T045610Z_company_discovery_3pillar-global",
+  "event_type": "company_discovery",
+  "created_at": "2026-08-17T04:56:10Z",
+  "run_id": "20260817T045610Z_production_india_search",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "company",
+  "entity_key": "3Pillar Global",
+  "data": {
+    "company": "3Pillar Global",
+    "official_domain": "https://www.3pillarglobal.com/",
+    "careers_domain": "https://jobs.lever.co/3pillarglobal",
+    "ats_family": "Lever",
+    "company_type": "Product Engineering / SaaS",
+    "india_locations": ["Remote India"],
+    "discovery_source": "Official 3Pillar Lever search",
+    "reason_added": "Live India remote Java and full-stack openings surfaced on the official Lever page.",
+    "suggested_tier": "Tier A",
+    "next_delta_check": "2026-08-18",
+    "next_deep_check": "2026-08-19"
+  }
+}
