@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "event_id": "20260817T045611Z_job_discovery_worldpay-JR0610262",
+  "event_type": "job_discovery",
+  "created_at": "2026-08-17T04:56:11Z",
+  "run_id": "20260817T045610Z_production_india_search",
+  "source": "Atlas Career Intelligence",
+  "entity_type": "job",
+  "entity_key": "Worldpay|JR0610262",
+  "data": {
+    "company": "Worldpay",
+    "title": "Java Developer - Spring boot, Rest API, 2-4 Yrs",
+    "job_id": "JR0610262",
+    "location": "Indore, Pune, Bangalore",
+    "work_mode": "Hybrid",
+    "experience_requirement": "2-4 years",
+    "discovery_source": "Official company career page / Workday",
+    "source_url": "https://worldpay.wd5.myworkdayjobs.com/Worldpay_External_Careers_Site/job/Java-Developer--Spring-boot--Rest-API--2-4-Yrs-Indore-Pune-Bangalore_JR0610262",
+    "official_url": "https://worldpay.wd5.myworkdayjobs.com/Worldpay_External_Careers_Site/job/Java-Developer--Spring-boot--Rest-API--2-4-Yrs-Indore-Pune-Bangalore_JR0610262",
+    "posting_date": null,
+    "freshness": "Live",
+    "verification_status": "Verified Official",
+    "live_status": "Active",
+    "apply_path_active": true,
+    "match_score": 82,
+    "canonical_key": "Worldpay|Java Developer - Spring boot, Rest API, 2-4 Yrs|Indore Pune Bangalore",
+    "canonical_decision": "New Vacancy",
+    "reason": "Current Workday role with the target Java backend stack and India locations.",
+    "first_seen": "2026-08-17T04:56:11Z",
+    "last_verified_at": "2026-08-17T04:56:11Z",
+    "search_lane": "Java Backend / Spring Boot / REST / Microservices"
+  }
+}
