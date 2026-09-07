@@ -1,0 +1,344 @@
+"""Atlas CLI scaffold (Phase 0.5).
+
+Operates on GENERIC platform state only - does not implement any job
+search business logic (`atlas search` is intentionally NOT implemented).
+
+Commands:
+    atlas doctor         - offline health check (PASS/WARN/FAIL), see atlas.health
+    atlas status         - report current run/lock/checkpoint state
+    atlas resume         - report what a resume would continue (does not start
+                           any business-logic run, since none exists yet)
+    atlas test           - run the offline pytest suite (equivalent to
+                           `python -m pytest -m "not real_web"`)
+    atlas version        - print Atlas + key dependency versions
+    atlas backup         - create a verified, consistent local backup
+    atlas backup verify  - verify an existing backup directory
+    atlas restore        - restore a verified backup into a target directory
+    atlas support-bundle - write a sanitized diagnostic support bundle (zip)
+
+See docs/OPERATIONS.md for how this entry point is intended to be used by
+a future Windows Task Scheduler job.
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+import atlas
+from atlas.config import load_settings
+from atlas.health import FAIL, WARN, run_doctor
+
+
+def _cmd_version(args: argparse.Namespace) -> int:
+    print(f"atlas {atlas.__version__}")
+    verbose = getattr(args, "verbose", False)
+    if not verbose:
+        try:
+            import playwright
+
+            print(f"playwright {getattr(playwright, '__version__', 'unknown')}")
+        except ImportError:
+            pass
+        try:
+            import langgraph
+
+            print(f"langgraph {getattr(langgraph, '__version__', 'unknown')}")
+        except ImportError:
+            pass
+        return 0
+
+    from atlas.runtime.manifest import software_versions
+
+    versions = software_versions()
+    for key in ("atlas", "python", "langgraph", "playwright", "schema_version"):
+        if key in versions:
+            print(f"{key}: {versions[key]}")
+    return 0
+
+
+def _cmd_doctor(_args: argparse.Namespace) -> int:
+    report = run_doctor()
+    print(report.render())
+    return 0 if report.overall != FAIL else 1
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from atlas.orchestration.run_lock import RunLock
+    from atlas.persistence.sqlite import StateStore
+
+    settings = load_settings()
+    settings.ensure_directories()
+
+    run_id = getattr(args, "run_id", None) or "atlas-demo-run"
+    snapshot = None
+    try:
+        from atlas.runtime.demo_workload import DemoWorker, build_demo_failure_injector
+        from atlas.runtime.engine import AtlasRuntime
+
+        runtime = AtlasRuntime(settings, run_id, tasks=[], worker=DemoWorker(build_demo_failure_injector()))
+        snapshot = runtime.snapshot()
+    except Exception:  # noqa: BLE001
+        snapshot = None
+
+    if getattr(args, "json", False):
+        payload = snapshot.to_dict() if snapshot is not None else {"run_id": run_id, "status": "UNKNOWN"}
+        print(_json.dumps(payload))
+        return 0
+
+    run_lock = RunLock(settings.state_db.parent)
+    holder = run_lock.current_holder()
+    if holder is None:
+        print("Run lock: no active run.")
+    else:
+        print(
+            f"Run lock: ACTIVE (or stale) - PID={holder.pid}, run_id={holder.run_id}, "
+            f"started_at={holder.started_at}. Run `atlas doctor` for a liveness check."
+        )
+
+    try:
+        with StateStore(settings.state_db) as store:
+            print(f"State DB: {settings.state_db} (schema_version={store.schema_version()})")
+    except Exception as exc:  # noqa: BLE001
+        print(f"State DB: ERROR opening {settings.state_db}: {exc}")
+
+    print(f"Checkpoint DB: {settings.checkpoint_db}")
+    print(f"Browser profile: {settings.browser_profile}")
+    print(f"Controller: {settings.controller}")
+
+    if snapshot is not None:
+        print(f"\nProgress snapshot (run_id={run_id}):")
+        print(_json.dumps(snapshot.to_dict(), indent=2))
+    else:
+        print(f"\nNo runtime progress found for run_id={run_id!r} (nothing has run yet, or a different --run-id was used).")
+    return 0
+
+
+def _build_demo_runtime(args: argparse.Namespace):
+    from atlas.runtime.demo_workload import DemoWorker, build_demo_failure_injector, build_demo_tasks
+    from atlas.runtime.engine import AtlasRuntime
+
+    settings = load_settings()
+    settings.ensure_directories()
+
+    run_id = getattr(args, "run_id", None) or "atlas-demo-run"
+    tasks = build_demo_tasks()
+    injector = build_demo_failure_injector()
+    worker = DemoWorker(injector)
+
+    runtime = AtlasRuntime(
+        settings,
+        run_id,
+        tasks,
+        worker,
+        max_runtime_minutes=getattr(args, "max_runtime_minutes", None),
+        stop_after_completed=getattr(args, "stop_after", None),
+        batch_size=getattr(args, "batch_size", None),
+        simulate_intervention=True,
+        auto_resolve_interventions=not getattr(args, "no_auto_resolve", False),
+    )
+    return runtime
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    if not args.demo:
+        print("ERROR: `atlas run` only supports --demo in this build (Phase 0.75). "
+              "No real job-search source exists yet.")
+        return 2
+
+    from atlas.runtime.engine import RunAlreadyActiveError
+
+    runtime = _build_demo_runtime(args)
+    try:
+        result = runtime.run()
+    except RunAlreadyActiveError as exc:
+        print(f"ERROR: {exc}")
+        return 1
+
+    print(f"RUN_ID={result.run_id}")
+    print(f"STATUS={result.status}")
+    print(f"PROGRESS={result.progress.to_dict()}")
+    if result.report_paths:
+        for kind, path in result.report_paths.items():
+            print(f"REPORT[{kind}]={path}")
+    return 0 if result.status in ("COMPLETE", "PARTIAL", "WAITING_FOR_HUMAN") else 1
+
+
+def _cmd_resume(args: argparse.Namespace) -> int:
+    from atlas.runtime.engine import RunAlreadyActiveError
+
+    runtime = _build_demo_runtime(args)
+    try:
+        result = runtime.resume()
+    except RunAlreadyActiveError as exc:
+        print(f"ERROR: {exc}")
+        return 1
+
+    print(f"RUN_ID={result.run_id}")
+    print(f"STATUS={result.status}")
+    print(f"PROGRESS={result.progress.to_dict()}")
+    if result.report_paths:
+        for kind, path in result.report_paths.items():
+            print(f"REPORT[{kind}]={path}")
+    return 0 if result.status in ("COMPLETE", "PARTIAL", "WAITING_FOR_HUMAN") else 1
+
+
+def _cmd_test(args: argparse.Namespace) -> int:
+    project_root = Path(atlas.__file__).resolve().parent.parent
+    cmd = [sys.executable, "-m", "pytest"]
+    if args.real_web:
+        cmd += ["-m", "real_web"]
+    completed = subprocess.run(cmd, cwd=str(project_root))
+    return completed.returncode
+
+
+def _cmd_backup(args: argparse.Namespace) -> int:
+    from atlas.backup.backup import BackupError, backup_dir_for, create_backup
+    from atlas.backup.retention import apply_retention
+
+    settings = load_settings()
+    settings.ensure_directories()
+
+    backups_dir = Path(args.output) if getattr(args, "output", None) else settings.output_dir / "backups"
+    try:
+        manifest = create_backup(settings, backups_dir)
+    except BackupError as exc:
+        print(f"ERROR: backup failed: {exc}")
+        return 1
+
+    backup_path = backup_dir_for(backups_dir, manifest)
+    print(f"BACKUP_ID={manifest.backup_id}")
+    print(f"CREATED_AT={manifest.created_at}")
+    print(f"PATH={backup_path}")
+    print(f"STATE_SCHEMA_VERSION={manifest.state_schema_version}")
+    print(f"ATLAS_VERSION={manifest.atlas_version}")
+    print(f"TOTAL_SIZE_BYTES={manifest.total_size()}")
+    print(f"INCLUDED ({len(manifest.included_components)}):")
+    for comp in manifest.included_components:
+        print(f"  [{comp.kind}] {comp.relative_path}  sha256={comp.sha256[:16]}...  {comp.size}B")
+    print(f"EXCLUDED ({len(manifest.excluded_components)}):")
+    for exc in manifest.excluded_components:
+        print(f"  {exc.name}: {exc.reason}")
+
+    if getattr(args, "keep_latest", None) is not None:
+        deleted = apply_retention(backups_dir, args.keep_latest)
+        print(f"RETENTION: kept latest {args.keep_latest}, deleted {len(deleted)} old backup(s).")
+        for bid in deleted:
+            print(f"  deleted: {bid}")
+    return 0
+
+
+def _cmd_backup_verify(args: argparse.Namespace) -> int:
+    from atlas.backup.verify import verify_backup
+
+    result = verify_backup(Path(args.backup))
+    print(result.render())
+    return 0 if result.ok else 1
+
+
+def _cmd_restore(args: argparse.Namespace) -> int:
+    from atlas.backup.restore import RestoreSafetyError, restore_backup
+
+    try:
+        result = restore_backup(Path(args.backup), Path(args.target))
+    except RestoreSafetyError as exc:
+        print(f"ERROR: refusing to restore: {exc}")
+        return 2
+    print(result.render())
+    return 0 if result.ok else 1
+
+
+def _cmd_support_bundle(args: argparse.Namespace) -> int:
+    from atlas.backup.support_bundle import create_support_bundle
+
+    settings = load_settings()
+    settings.ensure_directories()
+    output_dir = Path(args.output) if getattr(args, "output", None) else settings.output_dir / "support_bundles"
+    path = create_support_bundle(settings, output_dir)
+    print(f"SUPPORT_BUNDLE={path}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="atlas", description="Atlas Career Intelligence platform CLI (foundation build).")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    p_doctor = subparsers.add_parser("doctor", help="Run the offline health check.")
+    p_doctor.set_defaults(func=_cmd_doctor)
+
+    p_status = subparsers.add_parser("status", help="Report current run/lock/checkpoint state.")
+    p_status.add_argument("--run-id", default=None, help="Runtime run_id to report progress for (default: atlas-demo-run).")
+    p_status.add_argument("--json", action="store_true", help="Print only the machine-readable JSON progress snapshot.")
+    p_status.set_defaults(func=_cmd_status)
+
+    p_run = subparsers.add_parser("run", help="Run the Atlas production runtime shell (demo mode only in this build).")
+    p_run.add_argument("--demo", action="store_true", help="Run the deterministic demo workload (required in this build).")
+    p_run.add_argument("--run-id", default=None, help="Run id (default: atlas-demo-run).")
+    p_run.add_argument("--batch-size", type=int, default=None, help="Override configured batch_size.")
+    p_run.add_argument("--stop-after", type=int, default=None, help="Stop after N completed tasks (produces a PARTIAL run, for testing resume).")
+    p_run.add_argument("--max-runtime-minutes", type=float, default=None, help="Runtime budget in minutes before stopping and marking PARTIAL.")
+    p_run.add_argument("--no-auto-resolve", action="store_true", help="Do not auto-resolve simulated human interventions (demo/testing only).")
+    p_run.set_defaults(func=_cmd_run)
+
+    p_resume = subparsers.add_parser("resume", help="Resume a previously PARTIAL Atlas runtime run.")
+    p_resume.add_argument("--run-id", default=None, help="Run id to resume (default: atlas-demo-run).")
+    p_resume.add_argument("--batch-size", type=int, default=None, help="Override configured batch_size.")
+    p_resume.add_argument("--stop-after", type=int, default=None, help="Stop again after N completed tasks.")
+    p_resume.add_argument("--max-runtime-minutes", type=float, default=None, help="Runtime budget in minutes.")
+    p_resume.add_argument("--no-auto-resolve", action="store_true", help="Do not auto-resolve simulated human interventions (demo/testing only).")
+    p_resume.set_defaults(func=_cmd_resume)
+
+    p_test = subparsers.add_parser("test", help="Run the offline pytest suite.")
+    p_test.add_argument(
+        "--real-web",
+        action="store_true",
+        help="Run the real_web-marked tests instead of the offline suite (opens real browsers/network).",
+    )
+    p_test.set_defaults(func=_cmd_test)
+
+    p_version = subparsers.add_parser("version", help="Print Atlas and dependency versions.")
+    p_version.add_argument("--verbose", action="store_true", help="Print Atlas/Python/LangGraph/Playwright/schema versions.")
+    p_version.set_defaults(func=_cmd_version)
+
+    # --- Phase 0.95: backup / restore / support-bundle --------------------
+    p_backup = subparsers.add_parser(
+        "backup",
+        help="Create a verified, consistent local backup (or `backup verify <dir>`).",
+    )
+    p_backup.add_argument("--output", default=None, help="Backups root directory (default: <output_dir>/backups).")
+    p_backup.add_argument(
+        "--keep-latest",
+        type=int,
+        default=None,
+        help="After the backup, prune old backups keeping only the newest N.",
+    )
+    p_backup.set_defaults(func=_cmd_backup)
+    backup_sub = p_backup.add_subparsers(dest="backup_command")
+    p_backup_verify = backup_sub.add_parser("verify", help="Verify an existing backup directory.")
+    p_backup_verify.add_argument("backup", help="Path to a backup directory (containing manifest.json).")
+    p_backup_verify.set_defaults(func=_cmd_backup_verify)
+
+    p_restore = subparsers.add_parser("restore", help="Restore a verified backup into a target directory.")
+    p_restore.add_argument("backup", help="Path to a backup directory (containing manifest.json).")
+    p_restore.add_argument("--target", required=True, help="Disposable target directory to restore into.")
+    p_restore.set_defaults(func=_cmd_restore)
+
+    p_support = subparsers.add_parser("support-bundle", help="Write a sanitized diagnostic support bundle (zip).")
+    p_support.add_argument("--output", default=None, help="Directory to write the bundle into (default: <output_dir>/support_bundles).")
+    p_support.set_defaults(func=_cmd_support_bundle)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

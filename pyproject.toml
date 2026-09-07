@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atlas-career-intelligence"
+version = "0.1.0"
+description = "Atlas Career Intelligence — local deterministic orchestration platform (Phase 0/0.5 foundation, no business logic yet)."
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = [
+    "playwright>=1.62.0",
+    "langgraph>=1.2.11",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "pydantic>=2.13.5",
+    "PyYAML>=6.0.3",
+    "openpyxl>=3.1.5",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+atlas = "atlas.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["atlas*"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+markers = [
+    "unit: fast, fully offline unit tests (default)",
+    "integration: multi-component tests, still offline unless noted",
+    "real_web: exercises a real browser against real external websites - never runs by default",
+    "browser: launches a real (or disposable-profile) Playwright/Chrome browser, offline (example.com/local) unless combined with real_web",
+    "slow: slower tests (subprocess spawns, crash-recovery simulations, etc.)",
+]
+addopts = "-m \"not real_web\" --strict-markers"

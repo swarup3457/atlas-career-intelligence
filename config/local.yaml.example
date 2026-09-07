@@ -1,0 +1,6 @@
+# Atlas local configuration overrides (git-ignored).
+#
+# Use this file for machine-specific or sensitive-adjacent settings that
+# should NOT be committed. Copy from local.yaml.example if starting fresh.
+# Do not put actual secrets/credentials here either — Atlas never stores
+# credentials in configuration or source code.

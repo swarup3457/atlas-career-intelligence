@@ -1,0 +1,12 @@
+# Atlas default configuration.
+#
+# Safe, checked-in defaults for this machine. Do NOT put secrets here.
+# Machine-specific or sensitive overrides belong in config/local.yaml
+# (git-ignored) or ATLAS_* environment variables.
+
+browser_channel: chrome
+default_headless: true
+navigation_timeout_ms: 30000
+retry_budget: 2
+batch_size: 10
+controller: none
