@@ -1,28 +1,25 @@
-"""Atlas source adapter base (SCAFFOLD — abstract contract only).
+"""Atlas source adapter base (Phase 0.5 legacy scaffold).
 
 A "source" is anywhere Atlas can discover job postings from: an ATS
 platform (Workday, Greenhouse, Lever, ...) or a portal (LinkedIn, Naukri,
-Indeed, ...). Phase 0.5 only formalizes the abstract capability contract;
-NO concrete ATS/portal adapters are implemented — see
-docs/AGENT_SKILL_MIGRATION.md.
+Indeed, ...).
+
+NOTE: This Phase 0.5 ``BaseSource`` is the original minimal, untyped
+scaffold. The production contract is the *typed* Phase 1A
+:class:`atlas.sources.adapter.SourceAdapter`, which uses typed
+request/result objects and an explicit capability model. ``BaseSource``
+is retained for backward compatibility; new adapters implement
+``SourceAdapter``. ``SourceHealth`` is now the richer typed model from
+:mod:`atlas.sources.health` (still constructible as
+``SourceHealth(healthy=True)`` for compatibility).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class SourceHealth:
-    """Result of a lightweight, read-only reachability check for a source
-    (e.g. "is workday.com reachable and not showing an access-limitation
-    signal right now"). Never performs a search or extraction."""
-
-    healthy: bool
-    detail: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
+from atlas.sources.health import SourceHealth, SourceHealthState  # noqa: F401  (re-export)
 
 
 class BaseSource(ABC):

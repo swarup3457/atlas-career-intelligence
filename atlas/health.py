@@ -258,6 +258,73 @@ def _check_runtime_shell(report: HealthReport, settings: Settings) -> None:
 ALLOWED_CONTROLLERS_FOR_RUNTIME = frozenset({"none", "copilot", "codex"})
 
 
+def _check_source_framework(report: HealthReport, settings: Settings) -> None:
+    """Phase 1A source-engine readiness checks (all offline): registry,
+    descriptors, source config validation, rate-limiter config, coverage
+    schema, evidence store, and the adapter-contract harness."""
+    try:
+        from atlas.sources.registry import default_registry
+
+        registry = default_registry()
+        types = registry.registered_types()
+        descriptors = registry.describe()
+        # Duplicate registration is impossible by construction; assert the
+        # descriptor list is 1:1 with the registered types (deterministic).
+        if len(descriptors) == len(types):
+            report.add(
+                "Sources: registry + descriptors",
+                PASS,
+                f"{len(types)} registered adapter(s) (0 real adapters expected in Phase 1A)",
+            )
+        else:
+            report.add("Sources: registry + descriptors", FAIL, "descriptor/type count mismatch")
+    except Exception as exc:  # noqa: BLE001
+        report.add("Sources: registry + descriptors", FAIL, str(exc))
+
+    try:
+        from atlas.sources.config import demo_source_config
+
+        cfg = demo_source_config()
+        report.add("Sources: config validation", PASS, f"demo config: {len(cfg.instances)} instance(s)")
+    except Exception as exc:  # noqa: BLE001
+        report.add("Sources: config validation", FAIL, str(exc))
+
+    try:
+        from atlas.sources.rate_limit import RatePolicy
+
+        RatePolicy().validate()
+        report.add("Sources: rate limiter config", PASS)
+    except Exception as exc:  # noqa: BLE001
+        report.add("Sources: rate limiter config", FAIL, str(exc))
+
+    try:
+        from atlas.persistence.sqlite import StateStore
+
+        with StateStore(settings.state_db) as store:
+            version = store.schema_version()
+        if version >= 4:
+            report.add("Sources: coverage/health schema", PASS, f"schema_version={version}")
+        else:
+            report.add("Sources: coverage/health schema", FAIL, f"schema_version={version} (<4)")
+    except Exception as exc:  # noqa: BLE001
+        report.add("Sources: coverage/health schema", FAIL, str(exc))
+
+    try:
+        from atlas.sources.evidence import EvidenceStore
+
+        EvidenceStore()
+        report.add("Sources: evidence store", PASS)
+    except Exception as exc:  # noqa: BLE001
+        report.add("Sources: evidence store", FAIL, str(exc))
+
+    try:
+        from atlas.sources.testing.contract import run_contract_checks  # noqa: F401
+
+        report.add("Sources: adapter contract harness", PASS)
+    except Exception as exc:  # noqa: BLE001
+        report.add("Sources: adapter contract harness", FAIL, str(exc))
+
+
 def run_doctor(check_network: bool = False) -> HealthReport:
     """Run the full offline health check. `check_network` is accepted for
     forward-compatibility but is NOT used to browse external websites in
@@ -277,4 +344,5 @@ def run_doctor(check_network: bool = False) -> HealthReport:
         _check_browser_profile(report, settings)
         _check_locks(report, settings)
         _check_runtime_shell(report, settings)
+        _check_source_framework(report, settings)
     return report

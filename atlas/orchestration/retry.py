@@ -20,6 +20,8 @@ RETRYABLE_CATEGORIES: frozenset[ErrorCategory] = frozenset(
         ErrorCategory.TRANSIENT_NAVIGATION,
         ErrorCategory.TIMEOUT,
         ErrorCategory.INTENTIONAL_TEST_FAILURE,
+        ErrorCategory.HTTP_429,
+        ErrorCategory.HTTP_5XX,
     }
 )
 
@@ -35,6 +37,17 @@ NEVER_RETRY_CATEGORIES: frozenset[ErrorCategory] = frozenset(
     }
 )
 
+# Extraction-uncertainty categories: reported truthfully, never retried
+# blindly (see docs/STATE_MODEL.md and docs/SOURCE_HEALTH.md). A malformed
+# parse is never silently downgraded to "no results".
+REPORT_NOT_RETRY_CATEGORIES: frozenset[ErrorCategory] = frozenset(
+    {
+        ErrorCategory.SELECTOR_UNCERTAINTY,
+        ErrorCategory.PARSE_FAILURE,
+        ErrorCategory.INVALID_RESPONSE,
+    }
+)
+
 # Maps a non-retryable error category to the terminal/escalation status it
 # should produce.
 CATEGORY_TERMINAL_STATUS: dict[ErrorCategory, TaskStatus] = {
@@ -43,7 +56,18 @@ CATEGORY_TERMINAL_STATUS: dict[ErrorCategory, TaskStatus] = {
     ErrorCategory.LOGIN_WALL: TaskStatus.LOGIN_REQUIRED,
     ErrorCategory.ANTI_BOT: TaskStatus.ACCESS_LIMITED,
     ErrorCategory.SELECTOR_UNCERTAINTY: TaskStatus.EXTRACTION_UNRESOLVED,
+    ErrorCategory.PARSE_FAILURE: TaskStatus.EXTRACTION_UNRESOLVED,
+    ErrorCategory.INVALID_RESPONSE: TaskStatus.EXTRACTION_UNRESOLVED,
+    ErrorCategory.CONFIG_ERROR: TaskStatus.PERMANENT_FAILURE,
+    ErrorCategory.SOURCE_UNAVAILABLE: TaskStatus.SOURCE_UNAVAILABLE,
     ErrorCategory.UNKNOWN: TaskStatus.PERMANENT_FAILURE,
+}
+
+# When a *retryable* category exhausts its budget, the truthful terminal
+# status it produces (default PERMANENT_FAILURE).
+EXHAUSTION_TERMINAL_STATUS: dict[ErrorCategory, TaskStatus] = {
+    ErrorCategory.HTTP_429: TaskStatus.RATE_LIMITED,
+    ErrorCategory.HTTP_5XX: TaskStatus.SOURCE_UNAVAILABLE,
 }
 
 
@@ -88,32 +112,43 @@ def evaluate(
             ),
         )
 
-    if category == ErrorCategory.SELECTOR_UNCERTAINTY:
-        # Extraction uncertainty is not automatically retried by default -
-        # it is reported truthfully so an alternate strategy can be chosen
-        # later (see docs/STATE_MODEL.md). Callers MAY choose to requeue
-        # with a different strategy, but that is a deliberate decision,
-        # not an automatic retry of the same approach.
+    if category in REPORT_NOT_RETRY_CATEGORIES:
+        # Extraction/parse uncertainty is not automatically retried - it is
+        # reported truthfully so an alternate strategy can be chosen later
+        # (see docs/STATE_MODEL.md). Callers MAY requeue with a different
+        # strategy, but that is a deliberate decision, not an automatic
+        # retry of the same approach.
         return RetryDecision(
             should_retry=False,
             terminal_status=TaskStatus.EXTRACTION_UNRESOLVED,
-            reason="Selector/extraction uncertainty is reported truthfully, not retried blindly.",
+            reason="Selector/parse uncertainty is reported truthfully, not retried blindly.",
         )
 
     if category in RETRYABLE_CATEGORIES:
         if attempt_number > retry_budget:
+            terminal = EXHAUSTION_TERMINAL_STATUS.get(category, TaskStatus.PERMANENT_FAILURE)
             return RetryDecision(
                 should_retry=False,
-                terminal_status=TaskStatus.PERMANENT_FAILURE,
+                terminal_status=terminal,
                 reason=(
                     f"Retry budget exhausted after {attempt_number} attempts "
-                    f"(budget={retry_budget})."
+                    f"(budget={retry_budget}); terminal {terminal.value}."
                 ),
             )
         return RetryDecision(
             should_retry=True,
             terminal_status=None,
             reason=f"Transient failure ({category.value}), retrying (attempt {attempt_number} of {retry_budget + 1}).",
+        )
+
+    # Non-retryable, explicitly-mapped terminal categories (CONFIG_ERROR,
+    # SOURCE_UNAVAILABLE, UNKNOWN, ...).
+    if category in CATEGORY_TERMINAL_STATUS:
+        status = CATEGORY_TERMINAL_STATUS[category]
+        return RetryDecision(
+            should_retry=False,
+            terminal_status=status,
+            reason=f"Error category {category.value} is terminal ({status.value}); not retried.",
         )
 
     # Unknown/unclassified error - fail safe: do not retry indefinitely.

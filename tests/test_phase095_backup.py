@@ -153,7 +153,7 @@ def test_create_backup_produces_verified_manifest(tmp_path):
     bpath = backup_dir_for(backups, manifest)
 
     assert bpath.exists()
-    assert manifest.state_schema_version == 3
+    assert manifest.state_schema_version == 4
     assert manifest.backup_id.startswith("20260906T180000Z-")
 
     rels = {c.relative_path for c in manifest.included_components}

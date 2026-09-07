@@ -291,6 +291,56 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_canonical_jobs_company ON canonical_jobs(company)",
         ],
     ),
+    (
+        4,
+        "Phase 1A: source-engine coverage accounting (coverage_records), "
+        "source health/yield history (source_health_history), and "
+        "adapter_version/parser_version columns on job_observations",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS coverage_records (
+                coverage_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                company TEXT,
+                source_instance TEXT NOT NULL,
+                source_type TEXT,
+                lane TEXT,
+                query_key TEXT,
+                attempted INTEGER NOT NULL DEFAULT 0,
+                completed INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'NOT_ATTEMPTED',
+                jobs_found INTEGER NOT NULL DEFAULT 0,
+                new_jobs INTEGER NOT NULL DEFAULT 0,
+                changed_jobs INTEGER NOT NULL DEFAULT 0,
+                closed_jobs INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,
+                completed_at TEXT,
+                next_action TEXT NOT NULL DEFAULT 'NONE',
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS source_health_history (
+                history_id TEXT PRIMARY KEY,
+                source_instance TEXT NOT NULL,
+                source_type TEXT,
+                state TEXT NOT NULL,
+                result_count INTEGER,
+                expected_structure_present INTEGER,
+                reason TEXT,
+                observed_at TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            "ALTER TABLE job_observations ADD COLUMN adapter_version TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE job_observations ADD COLUMN parser_version TEXT NOT NULL DEFAULT ''",
+            "CREATE INDEX IF NOT EXISTS idx_coverage_run ON coverage_records(run_id)",
+            "CREATE INDEX IF NOT EXISTS idx_coverage_instance ON coverage_records(source_instance)",
+            "CREATE INDEX IF NOT EXISTS idx_health_hist_instance ON source_health_history(source_instance, observed_at)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)
@@ -704,19 +754,27 @@ class StateStore:
         observed_at: Optional[str] = None,
         content_hash: str = "",
         provenance: Optional[dict] = None,
+        adapter_version: str = "",
+        parser_version: str = "",
     ) -> bool:
         """Append an observation. Idempotent: a duplicate ``observation_id``
         is ignored (returns False). Increments the canonical observation
-        count only for genuinely new observations."""
+        count only for genuinely new observations.
+
+        ``adapter_version``/``parser_version`` are persisted alongside the
+        observation so a later parser change never has to mutate historical
+        rows to know which parser produced them (Phase 1A)."""
         with self._auto() as conn:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO job_observations (observation_id, canonical_id, record_id, "
                 "source_file, sheet_name, discovery_source, observed_status, observed_at, "
-                "content_hash, provenance_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "content_hash, provenance_json, adapter_version, parser_version, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     observation_id, canonical_id, record_id, source_file, sheet_name,
                     discovery_source, observed_status, observed_at, content_hash,
-                    json.dumps(provenance or {}, sort_keys=True), _utcnow(),
+                    json.dumps(provenance or {}, sort_keys=True), adapter_version,
+                    parser_version, _utcnow(),
                 ),
             )
             if cur.rowcount:
@@ -844,6 +902,135 @@ class StateStore:
         return self._conn.execute(
             "SELECT * FROM data_integrity_runs WHERE di_run_id = ?", (di_run_id,)
         ).fetchone()
+
+    # ------------------------------------------------------------------
+    # Phase 1A — coverage accounting
+    # ------------------------------------------------------------------
+    def upsert_coverage(
+        self,
+        coverage_id: str,
+        run_id: str,
+        source_instance: str,
+        *,
+        company: Optional[str] = None,
+        source_type: Optional[str] = None,
+        lane: Optional[str] = None,
+        query_key: Optional[str] = None,
+        attempted: bool = False,
+        completed: bool = False,
+        status: str = "NOT_ATTEMPTED",
+        jobs_found: int = 0,
+        new_jobs: int = 0,
+        changed_jobs: int = 0,
+        closed_jobs: int = 0,
+        started_at: Optional[str] = None,
+        completed_at: Optional[str] = None,
+        next_action: str = "NONE",
+        detail: Optional[dict] = None,
+    ) -> None:
+        """Insert or update one coverage record (idempotent on
+        ``coverage_id``). This is how Atlas proves it attempted every
+        planned source/company/lane rather than stopping after N jobs."""
+        now = _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO coverage_records (coverage_id, run_id, company, source_instance, "
+                "source_type, lane, query_key, attempted, completed, status, jobs_found, new_jobs, "
+                "changed_jobs, closed_jobs, started_at, completed_at, next_action, detail_json, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(coverage_id) DO UPDATE SET company=excluded.company, "
+                "source_type=excluded.source_type, lane=excluded.lane, query_key=excluded.query_key, "
+                "attempted=excluded.attempted, completed=excluded.completed, status=excluded.status, "
+                "jobs_found=excluded.jobs_found, new_jobs=excluded.new_jobs, changed_jobs=excluded.changed_jobs, "
+                "closed_jobs=excluded.closed_jobs, started_at=excluded.started_at, "
+                "completed_at=excluded.completed_at, next_action=excluded.next_action, "
+                "detail_json=excluded.detail_json, updated_at=excluded.updated_at",
+                (
+                    coverage_id, run_id, company, source_instance, source_type, lane, query_key,
+                    1 if attempted else 0, 1 if completed else 0, status, int(jobs_found),
+                    int(new_jobs), int(changed_jobs), int(closed_jobs), started_at, completed_at,
+                    next_action, json.dumps(detail or {}, sort_keys=True), now, now,
+                ),
+            )
+
+    def get_coverage(self, coverage_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM coverage_records WHERE coverage_id = ?", (coverage_id,)
+        ).fetchone()
+
+    def list_coverage(self, run_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM coverage_records WHERE run_id = ? ORDER BY coverage_id", (run_id,)
+        ).fetchall()
+
+    def coverage_summary(self, run_id: str) -> dict[str, int]:
+        """Return {status: count} plus planned/terminal totals for a run."""
+        rows = self._conn.execute(
+            "SELECT status, COUNT(*) AS n FROM coverage_records WHERE run_id = ? GROUP BY status",
+            (run_id,),
+        ).fetchall()
+        summary = {row["status"]: int(row["n"]) for row in rows}
+        summary["_planned"] = int(
+            self._conn.execute(
+                "SELECT COUNT(*) AS n FROM coverage_records WHERE run_id = ?", (run_id,)
+            ).fetchone()["n"]
+        )
+        summary["_completed"] = int(
+            self._conn.execute(
+                "SELECT COUNT(*) AS n FROM coverage_records WHERE run_id = ? AND completed = 1",
+                (run_id,),
+            ).fetchone()["n"]
+        )
+        return summary
+
+    # ------------------------------------------------------------------
+    # Phase 1A — source health / yield history
+    # ------------------------------------------------------------------
+    def record_source_health(
+        self,
+        history_id: str,
+        source_instance: str,
+        state: str,
+        *,
+        source_type: Optional[str] = None,
+        result_count: Optional[int] = None,
+        expected_structure_present: Optional[bool] = None,
+        reason: str = "",
+        observed_at: Optional[str] = None,
+        evidence: Optional[dict] = None,
+    ) -> bool:
+        """Append a source health/yield observation (idempotent on
+        ``history_id``). Enough deterministic history to detect a future
+        false zero (recent yields 42,38,47 then 0)."""
+        esp = None if expected_structure_present is None else (1 if expected_structure_present else 0)
+        with self._auto() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO source_health_history (history_id, source_instance, source_type, "
+                "state, result_count, expected_structure_present, reason, observed_at, evidence_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    history_id, source_instance, source_type, state, result_count, esp, reason,
+                    observed_at or _utcnow(), json.dumps(evidence or {}, sort_keys=True),
+                ),
+            )
+        return bool(cur.rowcount)
+
+    def list_source_health(self, source_instance: str, limit: int = 20) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM source_health_history WHERE source_instance = ? "
+            "ORDER BY observed_at DESC, history_id DESC LIMIT ?",
+            (source_instance, int(limit)),
+        ).fetchall()
+
+    def recent_yields(self, source_instance: str, limit: int = 5) -> list[int]:
+        """Most-recent non-null result counts (newest first) for false-zero
+        detection."""
+        rows = self._conn.execute(
+            "SELECT result_count FROM source_health_history WHERE source_instance = ? "
+            "AND result_count IS NOT NULL ORDER BY observed_at DESC, history_id DESC LIMIT ?",
+            (source_instance, int(limit)),
+        ).fetchall()
+        return [int(r["result_count"]) for r in rows]
 
 
 @contextlib.contextmanager

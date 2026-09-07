@@ -263,6 +263,57 @@ def _cmd_support_bundle(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sources(args: argparse.Namespace) -> int:
+    """List the registered source adapters and the demo source config
+    (Phase 1A ships zero real adapters — the framework only)."""
+    import json as _json
+
+    from atlas.sources.config import SourceConfigError, demo_source_config
+    from atlas.sources.registry import default_registry
+
+    registry = default_registry()
+    descriptors = registry.describe()
+    print(f"Registered source adapters: {len(descriptors)}")
+    for desc in descriptors:
+        print(f"  [{desc['source_type']}] {desc['adapter_class']} "
+              f"v{desc['adapter_version']}/parser {desc['parser_version']} caps={desc['capabilities']}")
+    if not descriptors:
+        print("  (none — Phase 1A foundation ships the framework, not real adapters)")
+
+    try:
+        cfg = demo_source_config()
+        print(f"\nDemo source config: {len(cfg.instances)} instance(s)")
+        for inst in cfg.instances:
+            print(f"  {inst.instance_id} ({inst.source_type.value}) enabled={inst.enabled}")
+    except SourceConfigError as exc:
+        print(f"Demo source config INVALID: {exc}")
+        return 1
+
+    if getattr(args, "json", False):
+        print("\n" + _json.dumps({"registered": descriptors}))
+    return 0
+
+
+def _cmd_add_source(args: argparse.Namespace) -> int:
+    """Developer scaffold for a new source adapter. Dry-run by default —
+    prints a plan and writes nothing. Never generates a real adapter."""
+    from atlas.sources.scaffold import render_plan, write_scaffold
+
+    try:
+        if getattr(args, "out", None) and not args.dry_run:
+            written = write_scaffold(args.name, args.type, Path(args.out), base_url=args.base_url)
+            print(f"Wrote {len(written)} template file(s) under {args.out}:")
+            for path in written:
+                print(f"  {path}")
+        else:
+            print(render_plan(args.name, args.type, base_url=args.base_url))
+            print("(dry-run — nothing written; pass --out DIR --write to emit templates)")
+    except (ValueError, FileExistsError) as exc:
+        print(f"ERROR: {exc}")
+        return 2
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="atlas", description="Atlas Career Intelligence platform CLI (foundation build).")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -330,6 +381,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_support = subparsers.add_parser("support-bundle", help="Write a sanitized diagnostic support bundle (zip).")
     p_support.add_argument("--output", default=None, help="Directory to write the bundle into (default: <output_dir>/support_bundles).")
     p_support.set_defaults(func=_cmd_support_bundle)
+
+    # --- Phase 1A: source framework introspection + scaffold --------------
+    p_sources = subparsers.add_parser("sources", help="List registered source adapters and demo config.")
+    p_sources.add_argument("--json", action="store_true", help="Also print machine-readable JSON.")
+    p_sources.set_defaults(func=_cmd_sources)
+
+    p_add_source = subparsers.add_parser(
+        "add-source",
+        help="Scaffold a new source adapter (dry-run by default; writes nothing).",
+    )
+    p_add_source.add_argument("name", help="Human name of the new source, e.g. 'Acme Board'.")
+    p_add_source.add_argument("--type", required=True, help="SourceType value, e.g. ATS_GREENHOUSE, PORTAL_LARGE.")
+    p_add_source.add_argument("--base-url", default=None, help="Optional base URL for the descriptor template.")
+    p_add_source.add_argument("--out", default=None, help="Disposable output directory to write templates into.")
+    p_add_source.add_argument("--dry-run", action="store_true", default=True, help="Print the plan only (default).")
+    p_add_source.add_argument("--write", dest="dry_run", action="store_false", help="Actually write templates to --out.")
+    p_add_source.set_defaults(func=_cmd_add_source)
 
     return parser
 

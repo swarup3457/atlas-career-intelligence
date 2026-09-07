@@ -29,6 +29,8 @@ class TaskStatus(str, enum.Enum):
     # --- Terminal, unresolved/limited outcomes ---
     EXTRACTION_UNRESOLVED = "EXTRACTION_UNRESOLVED"
     ACCESS_LIMITED = "ACCESS_LIMITED"
+    RATE_LIMITED = "RATE_LIMITED"
+    SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
     PERMANENT_FAILURE = "PERMANENT_FAILURE"
 
     # --- Non-terminal / in-flight outcomes ---
@@ -46,6 +48,8 @@ TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset(
         TaskStatus.NO_RELEVANT_RESULTS,
         TaskStatus.EXTRACTION_UNRESOLVED,
         TaskStatus.ACCESS_LIMITED,
+        TaskStatus.RATE_LIMITED,
+        TaskStatus.SOURCE_UNAVAILABLE,
         TaskStatus.PERMANENT_FAILURE,
         TaskStatus.CLOSED,
         TaskStatus.SKIPPED,
@@ -72,6 +76,15 @@ class ErrorCategory(str, enum.Enum):
     ANTI_BOT = "ANTI_BOT"
     LOGIN_WALL = "LOGIN_WALL"
     SELECTOR_UNCERTAINTY = "SELECTOR_UNCERTAINTY"
+    # Phase 1A source-engine failure taxonomy (deterministic HTTP/parse/config
+    # concepts). CAPTCHA/MFA/ANTI_BOT/LOGIN_WALL above remain non-bypass
+    # conditions and must never be retried.
+    HTTP_429 = "HTTP_429"
+    HTTP_5XX = "HTTP_5XX"
+    PARSE_FAILURE = "PARSE_FAILURE"
+    INVALID_RESPONSE = "INVALID_RESPONSE"
+    CONFIG_ERROR = "CONFIG_ERROR"
+    SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
     UNKNOWN = "UNKNOWN"
 
 
