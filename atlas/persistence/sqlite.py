@@ -341,6 +341,84 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_health_hist_instance ON source_health_history(source_instance, observed_at)",
         ],
     ),
+    (
+        5,
+        "Phase 1A.5: persistent company identity registry (company_registry/"
+        "company_aliases), many-to-many company↔source relationships "
+        "(company_source_relationships), and append-only source discovery "
+        "provenance (source_discovery_observations)",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS company_registry (
+                company_id TEXT PRIMARY KEY,
+                canonical_name TEXT NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                identity_key TEXT NOT NULL,
+                official_domain TEXT,
+                careers_url TEXT,
+                country TEXT,
+                status TEXT NOT NULL DEFAULT 'ACTIVE',
+                discovered_at TEXT,
+                last_verified_at TEXT,
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS company_aliases (
+                alias_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                alias TEXT NOT NULL,
+                alias_key TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'explicit',
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id, alias_key)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS company_source_relationships (
+                relationship_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                instance_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                base_url TEXT,
+                tenant TEXT,
+                state TEXT NOT NULL DEFAULT 'DISCOVERED',
+                confidence TEXT NOT NULL DEFAULT 'UNKNOWN',
+                is_current INTEGER NOT NULL DEFAULT 1,
+                discovered_at TEXT,
+                updated_at TEXT NOT NULL,
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                UNIQUE(company_id, instance_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS source_discovery_observations (
+                observation_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                instance_id TEXT,
+                method TEXT NOT NULL,
+                input_url TEXT,
+                resolved_url TEXT,
+                detected_ats TEXT,
+                tenant TEXT,
+                confidence TEXT NOT NULL DEFAULT 'UNKNOWN',
+                evidence_ref TEXT,
+                verification_state TEXT NOT NULL DEFAULT 'UNVERIFIED',
+                observed_at TEXT NOT NULL,
+                detail_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_company_identity_key ON company_registry(identity_key)",
+            "CREATE INDEX IF NOT EXISTS idx_company_domain ON company_registry(official_domain)",
+            "CREATE INDEX IF NOT EXISTS idx_company_aliases_key ON company_aliases(alias_key)",
+            "CREATE INDEX IF NOT EXISTS idx_company_aliases_company ON company_aliases(company_id)",
+            "CREATE INDEX IF NOT EXISTS idx_csr_company ON company_source_relationships(company_id)",
+            "CREATE INDEX IF NOT EXISTS idx_csr_instance ON company_source_relationships(instance_id)",
+            "CREATE INDEX IF NOT EXISTS idx_sdo_company ON source_discovery_observations(company_id)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)
@@ -1031,6 +1109,257 @@ class StateStore:
             (source_instance, int(limit)),
         ).fetchall()
         return [int(r["result_count"]) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Phase 1A.5 — persistent company identity registry
+    # ------------------------------------------------------------------
+    def upsert_company(
+        self,
+        company_id: str,
+        canonical_name: str,
+        identity_key: str,
+        *,
+        display_name: str = "",
+        official_domain: Optional[str] = None,
+        careers_url: Optional[str] = None,
+        country: Optional[str] = None,
+        status: str = "ACTIVE",
+        discovered_at: Optional[str] = None,
+        last_verified_at: Optional[str] = None,
+        provenance: Optional[dict] = None,
+    ) -> str:
+        """Insert or update a company identity record. Returns 'created' or
+        'updated'. company_id is stable; display-name/domain updates never
+        create a new record."""
+        now = _utcnow()
+        existing = self._conn.execute(
+            "SELECT company_id FROM company_registry WHERE company_id = ?", (company_id,)
+        ).fetchone()
+        if existing is None:
+            with self._auto() as conn:
+                conn.execute(
+                    "INSERT INTO company_registry (company_id, canonical_name, display_name, identity_key, "
+                    "official_domain, careers_url, country, status, discovered_at, last_verified_at, "
+                    "provenance_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        company_id, canonical_name, display_name, identity_key, official_domain,
+                        careers_url, country, status, discovered_at or now, last_verified_at,
+                        json.dumps(provenance or {}, sort_keys=True), now, now,
+                    ),
+                )
+            return "created"
+        with self._auto() as conn:
+            # COALESCE so a later observation never nulls out a known value.
+            conn.execute(
+                "UPDATE company_registry SET canonical_name=?, display_name=?, identity_key=?, "
+                "official_domain=COALESCE(?, official_domain), careers_url=COALESCE(?, careers_url), "
+                "country=COALESCE(?, country), status=?, last_verified_at=COALESCE(?, last_verified_at), "
+                "updated_at=? WHERE company_id=?",
+                (
+                    canonical_name, display_name, identity_key, official_domain, careers_url,
+                    country, status, last_verified_at, now, company_id,
+                ),
+            )
+        return "updated"
+
+    def get_company(self, company_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM company_registry WHERE company_id = ?", (company_id,)
+        ).fetchone()
+
+    def find_company_by_domain(self, official_domain: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM company_registry WHERE official_domain = ? ORDER BY company_id LIMIT 1",
+            (official_domain,),
+        ).fetchone()
+
+    def find_companies_by_identity_key(self, identity_key: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM company_registry WHERE identity_key = ? ORDER BY company_id",
+            (identity_key,),
+        ).fetchall()
+
+    def find_company_id_by_alias_key(self, alias_key: str) -> Optional[str]:
+        row = self._conn.execute(
+            "SELECT company_id FROM company_aliases WHERE alias_key = ? ORDER BY company_id LIMIT 1",
+            (alias_key,),
+        ).fetchone()
+        return row["company_id"] if row is not None else None
+
+    def list_companies(self, limit: int = 1000) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM company_registry ORDER BY canonical_name, company_id LIMIT ?", (int(limit),)
+        ).fetchall()
+
+    def count_companies(self) -> int:
+        return int(self._conn.execute("SELECT COUNT(*) AS n FROM company_registry").fetchone()["n"])
+
+    def set_company_domain(self, company_id: str, official_domain: str) -> None:
+        with self._auto() as conn:
+            conn.execute(
+                "UPDATE company_registry SET official_domain=?, updated_at=? WHERE company_id=?",
+                (official_domain, _utcnow(), company_id),
+            )
+
+    def update_company_verification(
+        self, company_id: str, *, last_verified_at: Optional[str] = None, status: Optional[str] = None
+    ) -> None:
+        now = _utcnow()
+        with self._auto() as conn:
+            if status is not None:
+                conn.execute(
+                    "UPDATE company_registry SET last_verified_at=?, status=?, updated_at=? WHERE company_id=?",
+                    (last_verified_at or now, status, now, company_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE company_registry SET last_verified_at=?, updated_at=? WHERE company_id=?",
+                    (last_verified_at or now, now, company_id),
+                )
+
+    def add_company_alias(
+        self, alias_id: str, company_id: str, alias: str, alias_key: str, *, source: str = "explicit"
+    ) -> bool:
+        """Add an alias (idempotent on (company_id, alias_key)). Returns True
+        if a new alias row was created."""
+        with self._auto() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO company_aliases (alias_id, company_id, alias, alias_key, source, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (alias_id, company_id, alias, alias_key, source, _utcnow()),
+            )
+        return bool(cur.rowcount)
+
+    def list_company_aliases(self, company_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM company_aliases WHERE company_id = ? ORDER BY alias_key", (company_id,)
+        ).fetchall()
+
+    # ------------------------------------------------------------------
+    # Phase 1A.5 — company↔source relationships
+    # ------------------------------------------------------------------
+    def upsert_source_relationship(
+        self,
+        relationship_id: str,
+        company_id: str,
+        instance_id: str,
+        source_type: str,
+        *,
+        base_url: Optional[str] = None,
+        tenant: Optional[str] = None,
+        state: str = "DISCOVERED",
+        confidence: str = "UNKNOWN",
+        is_current: bool = True,
+        discovered_at: Optional[str] = None,
+        provenance: Optional[dict] = None,
+    ) -> str:
+        """Insert or update a company↔source relationship (idempotent on
+        relationship_id). Returns 'created' or 'updated'."""
+        now = _utcnow()
+        existing = self._conn.execute(
+            "SELECT relationship_id FROM company_source_relationships WHERE relationship_id = ?",
+            (relationship_id,),
+        ).fetchone()
+        if existing is None:
+            with self._auto() as conn:
+                conn.execute(
+                    "INSERT INTO company_source_relationships (relationship_id, company_id, instance_id, "
+                    "source_type, base_url, tenant, state, confidence, is_current, discovered_at, updated_at, "
+                    "provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        relationship_id, company_id, instance_id, source_type, base_url, tenant, state,
+                        confidence, 1 if is_current else 0, discovered_at or now, now,
+                        json.dumps(provenance or {}, sort_keys=True),
+                    ),
+                )
+            return "created"
+        with self._auto() as conn:
+            conn.execute(
+                "UPDATE company_source_relationships SET source_type=?, base_url=COALESCE(?, base_url), "
+                "tenant=COALESCE(?, tenant), state=?, confidence=?, is_current=?, updated_at=? "
+                "WHERE relationship_id=?",
+                (source_type, base_url, tenant, state, confidence, 1 if is_current else 0, now, relationship_id),
+            )
+        return "updated"
+
+    def get_source_relationship(self, relationship_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM company_source_relationships WHERE relationship_id = ?", (relationship_id,)
+        ).fetchone()
+
+    def list_relationships_for_company(self, company_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM company_source_relationships WHERE company_id = ? ORDER BY relationship_id",
+            (company_id,),
+        ).fetchall()
+
+    def list_relationships_for_instance(self, instance_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM company_source_relationships WHERE instance_id = ? ORDER BY relationship_id",
+            (instance_id,),
+        ).fetchall()
+
+    def set_relationship_state(
+        self, relationship_id: str, state: str, *, is_current: Optional[bool] = None
+    ) -> None:
+        now = _utcnow()
+        with self._auto() as conn:
+            if is_current is None:
+                conn.execute(
+                    "UPDATE company_source_relationships SET state=?, updated_at=? WHERE relationship_id=?",
+                    (state, now, relationship_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE company_source_relationships SET state=?, is_current=?, updated_at=? WHERE relationship_id=?",
+                    (state, 1 if is_current else 0, now, relationship_id),
+                )
+
+    def count_source_relationships(self) -> int:
+        return int(
+            self._conn.execute("SELECT COUNT(*) AS n FROM company_source_relationships").fetchone()["n"]
+        )
+
+    # ------------------------------------------------------------------
+    # Phase 1A.5 — source discovery observations (append-only provenance)
+    # ------------------------------------------------------------------
+    def add_source_discovery_observation(
+        self,
+        observation_id: str,
+        company_id: str,
+        method: str,
+        *,
+        instance_id: Optional[str] = None,
+        input_url: Optional[str] = None,
+        resolved_url: Optional[str] = None,
+        detected_ats: Optional[str] = None,
+        tenant: Optional[str] = None,
+        confidence: str = "UNKNOWN",
+        evidence_ref: Optional[str] = None,
+        verification_state: str = "UNVERIFIED",
+        observed_at: Optional[str] = None,
+        detail: Optional[dict] = None,
+    ) -> bool:
+        """Append a discovery observation (idempotent on observation_id;
+        historical evidence is never overwritten). Returns True if new."""
+        with self._auto() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO source_discovery_observations (observation_id, company_id, instance_id, "
+                "method, input_url, resolved_url, detected_ats, tenant, confidence, evidence_ref, "
+                "verification_state, observed_at, detail_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    observation_id, company_id, instance_id, method, input_url, resolved_url, detected_ats,
+                    tenant, confidence, evidence_ref, verification_state, observed_at or _utcnow(),
+                    json.dumps(detail or {}, sort_keys=True),
+                ),
+            )
+        return bool(cur.rowcount)
+
+    def list_source_discovery_observations(self, company_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM source_discovery_observations WHERE company_id = ? ORDER BY observed_at, observation_id",
+            (company_id,),
+        ).fetchall()
 
 
 @contextlib.contextmanager

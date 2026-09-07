@@ -294,6 +294,59 @@ def _cmd_sources(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_companies(args: argparse.Namespace) -> int:
+    """List registered companies (read-only diagnostic)."""
+    from atlas.company.registry import CompanyRegistry
+    from atlas.persistence.sqlite import StateStore
+
+    settings = load_settings()
+    settings.ensure_directories()
+    with StateStore(settings.state_db) as store:
+        registry = CompanyRegistry(store)
+        companies = registry.list_companies(limit=getattr(args, "limit", 200))
+        print(f"Companies: {store.count_companies()} (source relationships: {store.count_source_relationships()})")
+        for c in companies:
+            rels = store.list_relationships_for_company(c.company_id)
+            current = sum(1 for r in rels if r["is_current"])
+            print(f"  {c.company_id}  {c.canonical_name!r}  domain={c.official_domain or '-'}  "
+                  f"sources={len(rels)} (current={current})  aliases={len(c.aliases)}")
+        if not companies:
+            print("  (none registered yet)")
+    return 0
+
+
+def _cmd_company_show(args: argparse.Namespace) -> int:
+    """Show one company's identity, aliases, sources, and discovery history."""
+    from atlas.company.registry import CompanyRegistry
+    from atlas.persistence.sqlite import StateStore
+
+    settings = load_settings()
+    settings.ensure_directories()
+    with StateStore(settings.state_db) as store:
+        registry = CompanyRegistry(store)
+        company = registry.get_company(args.company_id)
+        if company is None:
+            print(f"No company with id {args.company_id!r}.")
+            return 1
+        print(f"company_id:     {company.company_id}")
+        print(f"canonical_name: {company.canonical_name}")
+        print(f"display_name:   {company.display_name}")
+        print(f"identity_key:   {company.identity_key}")
+        print(f"official_domain:{company.official_domain}")
+        print(f"country:        {company.country}")
+        print(f"status:         {company.status.value}")
+        print(f"aliases:        {list(company.aliases)}")
+        print("sources:")
+        for rel in registry.list_relationships(company.company_id):
+            print(f"  [{rel.state.value}] {rel.source_type} instance={rel.instance_id} "
+                  f"tenant={rel.tenant or '-'} confidence={rel.confidence.value} current={rel.is_current}")
+        print("discovery observations:")
+        for row in store.list_source_discovery_observations(company.company_id):
+            print(f"  {row['method']} ats={row['detected_ats'] or '-'} conf={row['confidence']} "
+                  f"state={row['verification_state']}")
+    return 0
+
+
 def _cmd_add_source(args: argparse.Namespace) -> int:
     """Developer scaffold for a new source adapter. Dry-run by default —
     prints a plan and writes nothing. Never generates a real adapter."""
@@ -386,6 +439,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_sources = subparsers.add_parser("sources", help="List registered source adapters and demo config.")
     p_sources.add_argument("--json", action="store_true", help="Also print machine-readable JSON.")
     p_sources.set_defaults(func=_cmd_sources)
+
+    p_companies = subparsers.add_parser("companies", help="List registered companies (read-only).")
+    p_companies.add_argument("--limit", type=int, default=200, help="Max companies to list.")
+    p_companies.set_defaults(func=_cmd_companies)
+
+    p_company_show = subparsers.add_parser("company", help="Show one company (`company show <id>`).")
+    company_sub = p_company_show.add_subparsers(dest="company_command", required=True)
+    p_company_show_show = company_sub.add_parser("show", help="Show a company's identity, sources, and history.")
+    p_company_show_show.add_argument("company_id", help="The company_id to show.")
+    p_company_show_show.set_defaults(func=_cmd_company_show)
 
     p_add_source = subparsers.add_parser(
         "add-source",

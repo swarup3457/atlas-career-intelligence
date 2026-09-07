@@ -325,6 +325,69 @@ def _check_source_framework(report: HealthReport, settings: Settings) -> None:
         report.add("Sources: adapter contract harness", FAIL, str(exc))
 
 
+def _check_company_registry(report: HealthReport, settings: Settings) -> None:
+    """Phase 1A.5 company/source registry integrity checks (all offline):
+    schema, orphan relationships/aliases, duplicate alias/source identities,
+    invalid domains, and the fingerprint framework."""
+    try:
+        from atlas.persistence.sqlite import StateStore
+
+        with StateStore(settings.state_db) as store:
+            version = store.schema_version()
+            if version >= 5:
+                report.add("Company: registry schema", PASS, f"schema_version={version}")
+            else:
+                report.add("Company: registry schema", FAIL, f"schema_version={version} (<5)")
+
+            conn = store._conn  # read-only integrity queries
+            orphan_rels = conn.execute(
+                "SELECT COUNT(*) AS n FROM company_source_relationships r "
+                "WHERE NOT EXISTS (SELECT 1 FROM company_registry c WHERE c.company_id = r.company_id)"
+            ).fetchone()["n"]
+            orphan_aliases = conn.execute(
+                "SELECT COUNT(*) AS n FROM company_aliases a "
+                "WHERE NOT EXISTS (SELECT 1 FROM company_registry c WHERE c.company_id = a.company_id)"
+            ).fetchone()["n"]
+            if orphan_rels == 0 and orphan_aliases == 0:
+                report.add("Company: relationship integrity", PASS, "no orphan relationships/aliases")
+            else:
+                report.add("Company: relationship integrity", FAIL,
+                           f"orphan relationships={orphan_rels}, orphan aliases={orphan_aliases}")
+
+            dup_alias = conn.execute(
+                "SELECT COUNT(*) AS n FROM (SELECT alias_key FROM company_aliases "
+                "GROUP BY alias_key HAVING COUNT(DISTINCT company_id) > 1)"
+            ).fetchone()["n"]
+            dup_source = conn.execute(
+                "SELECT COUNT(*) AS n FROM (SELECT instance_id FROM company_source_relationships "
+                "GROUP BY instance_id HAVING COUNT(DISTINCT company_id) > 1)"
+            ).fetchone()["n"]
+            if dup_alias == 0 and dup_source == 0:
+                report.add("Company: no duplicate alias/source identities", PASS)
+            else:
+                report.add("Company: no duplicate alias/source identities", WARN,
+                           f"ambiguous alias_keys={dup_alias}, shared instance_ids={dup_source}")
+
+            bad_domains = conn.execute(
+                "SELECT COUNT(*) AS n FROM company_registry "
+                "WHERE official_domain IS NOT NULL AND official_domain NOT LIKE '%.%'"
+            ).fetchone()["n"]
+            if bad_domains == 0:
+                report.add("Company: domains valid", PASS)
+            else:
+                report.add("Company: domains valid", WARN, f"{bad_domains} company domain(s) look invalid")
+    except Exception as exc:  # noqa: BLE001
+        report.add("Company: registry schema", FAIL, str(exc))
+
+    try:
+        from atlas.sources.fingerprint import fingerprint_ats  # noqa: F401
+        from atlas.company.tenant import extract_tenant  # noqa: F401
+
+        report.add("Company: ATS fingerprint framework", PASS)
+    except Exception as exc:  # noqa: BLE001
+        report.add("Company: ATS fingerprint framework", FAIL, str(exc))
+
+
 def run_doctor(check_network: bool = False) -> HealthReport:
     """Run the full offline health check. `check_network` is accepted for
     forward-compatibility but is NOT used to browse external websites in
@@ -345,4 +408,5 @@ def run_doctor(check_network: bool = False) -> HealthReport:
         _check_locks(report, settings)
         _check_runtime_shell(report, settings)
         _check_source_framework(report, settings)
+        _check_company_registry(report, settings)
     return report
