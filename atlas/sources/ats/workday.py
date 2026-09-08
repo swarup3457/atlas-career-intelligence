@@ -125,7 +125,6 @@ class WorkdayAdapter(HttpAtsAdapter):
         title = info.get("title")
         if not isinstance(title, str) or not title.strip():
             raise ValueError("posting missing/invalid 'title'")
-        external_path = info.get("externalPath") or raw.get("externalPath") or ""
         req_id = info.get("jobReqId") or raw.get("jobReqId")
         if not req_id and isinstance(raw.get("bulletFields"), list) and raw["bulletFields"]:
             # Tenant schema variation: bulletFields is ["R-123"] or [{label,value}].
@@ -136,7 +135,21 @@ class WorkdayAdapter(HttpAtsAdapter):
                 req_id = first.get("value") or first.get("label")
         location = info.get("locationsText") or info.get("location")
 
-        posted_raw = info.get("postedOn") or info.get("startDate")
+        # postedOn is RELATIVE text ("Posted Today", "Posted 30+ Days Ago"); it is
+        # NEVER an absolute date. startDate is a SEPARATE employer field and is NOT
+        # the posting date unless official semantics prove it (build spec 15).
+        posted_raw = info.get("postedOn")
+        start_date_raw = info.get("startDate")
+        external_path = info.get("externalPath") or raw.get("externalPath") or ""
+        cxs_detail = None
+        public_url = None
+        if external_path:
+            try:
+                cxs_detail = self.identity.cxs_detail_url(external_path)
+                public_url = self.identity.public_job_url(external_path)
+            except ValueError:
+                cxs_detail = None
+                public_url = None
         provenance = {
             "source_family": "workday",
             "tenant": self.identity.tenant,
@@ -145,10 +158,14 @@ class WorkdayAdapter(HttpAtsAdapter):
             # postedOn is a RELATIVE string; never fabricate an absolute date.
             "date_provenance": (DateProvenance.RELATIVE_POSTED_TEXT if posted_raw else DateProvenance.UNKNOWN).value,
             "posted_raw": posted_raw,
-            "requisition_id": req_id,
+            "start_date_raw": start_date_raw,   # preserved separately, NOT posted_at
+            "requisition_id": req_id,           # jobReqId, preserved separately
+            "external_path": external_path,     # the detail anchor (NOT the req id)
+            "cxs_detail_url": cxs_detail,       # exact CXS detail URL from externalPath
+            "public_url": public_url,
         }
         source_id = str(req_id) if req_id else (external_path or title)
-        canonical = self.identity.public_job_url(external_path) if external_path else info.get("externalUrl")
+        canonical = public_url or info.get("externalUrl")
         description = None
         if detail:
             description = sanitize_description(info.get("jobDescription"))
@@ -240,7 +257,11 @@ class WorkdayAdapter(HttpAtsAdapter):
             if marker in request.url:
                 external_path = request.url.split(marker, 1)[1]
         if not external_path and request.source_job_id:
-            external_path = request.source_job_id
+            # The detail anchor is the externalPath. A caller (the detail
+            # hydration phase, build spec 14/15) MUST pass the externalPath here,
+            # never the jobReqId; whatever is passed is treated as an external
+            # path and validated (traversal/scheme rejected) before use.
+            external_path = str(request.source_job_id)
         if not external_path:
             raise AdapterError(ErrorCategory.CONFIG_ERROR, "workday.fetch_detail requires an externalPath url/id")
         data = self._get_json(

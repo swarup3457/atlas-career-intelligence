@@ -399,33 +399,55 @@ class ProductionSearchRuntime:
         return state
 
     def _h_detail_hydration(self, state: ProductionState, _rt) -> ProductionState:
-        # Hydrate one representative posting via an adapter that supports DETAIL.
-        from atlas.sources.models import Capability, DetailRequest, SearchRequest
+        """Hydrate the CURRENT run's observations through the shared executor +
+        central retry, using each adapter's detail anchor and merging into a NEW
+        immutable observation version (build spec 14) — NOT a single
+        representative-posting probe."""
+        from atlas.sources.detail_hydration import DetailHydrator
 
-        hydrated = 0
-        for inst in self.instances.values():
-            try:
-                adapter = self.registry.create(inst)
-                if adapter.supports(Capability.DETAIL):
-                    probe = adapter.search(SearchRequest(query="x", limit=1))
-                    if probe.results and probe.results[0].source_job_id:
-                        adapter.fetch_detail(DetailRequest(source_job_id=probe.results[0].source_job_id))
-                        hydrated += 1
-                        break
-            except Exception:  # noqa: BLE001 - hydration is best-effort telemetry
-                continue
-        bump(state, "hydrated", hydrated)
+        with StateStore(self.settings.state_db) as store:
+            hydrator = DetailHydrator(
+                store, self.registry, self.instances, run_id=self.run_id,
+                executor=self.executor, retry_budget=self.retry_budget,
+                max_details=getattr(self, "detail_batch", 25),
+            )
+            res = hydrator.hydrate()
+        counters = state.setdefault("counters", {})
+        counters["hydrated"] = res.hydrated
+        counters["hydration_selected"] = res.selected
+        counters["hydration_skipped"] = res.skipped_existing
         return state
 
     def _h_verification(self, state: ProductionState, _rt) -> ProductionState:
-        level = classify_verification(
-            VerificationInput(page_kind="specific_role_page", identity_aligned=True, current_content=True)
-        )
-        self.ops.review_verification(
-            VerificationReviewRequest(page_kind="specific_role_page", identity_aligned=True, current_content=True),
-            deterministic_ceiling=level.value,
-        )
-        bump(state, "verified", 1)
+        """Classify EVERY selected current-run job from its ACTUAL official
+        source evidence (build spec 19). A search-list row alone is
+        OFFICIAL_SEARCH_LIVE, distinct from a fully detail-hydrated
+        VERIFIED_OFFICIAL — never a blanket label. Access limitation is not
+        closure."""
+        jobs = self._current_run_jobs()
+        verified = 0
+        search_only = 0
+        for j in jobs:
+            classify_verification(
+                VerificationInput(
+                    page_kind="specific_role_page" if j["evidence"].startswith("OFFICIAL") else "portal_listing",
+                    identity_aligned=bool(j["source_job_id"]),
+                    current_content=(j["lifecycle"] != "CLOSED"),
+                )
+            )
+            if j["verification_level"] == "VERIFIED_OFFICIAL":
+                verified += 1
+            elif j["verification_level"] == "OFFICIAL_SEARCH_LIVE":
+                search_only += 1
+        # Exercise the (optional) reasoning transport once for auditability.
+        if jobs:
+            self.ops.review_verification(
+                VerificationReviewRequest(page_kind="specific_role_page", identity_aligned=True, current_content=True),
+                deterministic_ceiling="VERIFIED_OFFICIAL",
+            )
+        state.setdefault("counters", {})["verified"] = verified
+        state["counters"]["official_search_live"] = search_only
+        state["counters"]["verification_candidates"] = len(jobs)
         return state
 
     def _h_dedupe(self, state: ProductionState, _rt) -> ProductionState:
@@ -437,11 +459,30 @@ class ProductionSearchRuntime:
         return state
 
     def _h_match(self, state: ProductionState, _rt) -> ProductionState:
-        self.ops.classify_role(RoleClassificationRequest(title="Software Engineer", lane_hint="JAVA_BACKEND"))
-        self.ops.match_candidate(
-            CandidateMatchRequest(job_requirements=("Java", "Spring Boot"), supported_evidence=("Java",))
-        )
-        bump(state, "matched", 1)
+        """Evaluate the CURRENT-run jobs against the private candidate snapshot
+        (build spec 19). In fixture/synthetic-candidate mode the match is
+        explicitly NOT_EVALUATED — a synthetic candidate never yields an invented
+        match — and no hard-coded counter is incremented for a fake job."""
+        jobs = self._current_run_jobs()
+        counters = state.setdefault("counters", {})
+        counters["match_candidates"] = len(jobs)
+        if self.used_synthetic_candidate:
+            counters["matched"] = 0
+            counters["not_evaluated"] = len(jobs)
+            state.setdefault("notes", []).append("CANDIDATE_MATCH_NOT_EVALUATED_SYNTHETIC")
+            return state
+        supported_all = self._candidate_evidence_set()
+        matched = 0
+        for j in jobs:
+            reqs = tuple(j.get("skills") or ())
+            supported = tuple(sorted(supported_all & {r.lower() for r in reqs}))
+            self.ops.classify_role(RoleClassificationRequest(title=j["title"] or "", lane_hint=None))
+            self.ops.match_candidate(
+                CandidateMatchRequest(job_requirements=reqs, supported_evidence=supported)
+            )
+            if supported:
+                matched += 1
+        counters["matched"] = matched
         return state
 
     def _h_persist_local(self, state: ProductionState, _rt) -> ProductionState:
@@ -548,30 +589,131 @@ class ProductionSearchRuntime:
             return ProductionTerminalState.WAITING_FOR_HUMAN
         if any(t.status not in TERMINAL_COVERAGE_STATUSES for t in manifest.tasks()):
             return ProductionTerminalState.PARTIAL
+        # A budget-bounded child truncated the board on purpose — it is terminal
+        # so a bounded canary can finish, but the RUN is honestly PARTIAL, never
+        # a full-board COMPLETE (build spec 20). Also fail closed if any terminal
+        # child still has an outstanding page/cursor continuation.
+        if any(t.status == CoverageStatus.PARTIAL_BUDGET for t in manifest.tasks()):
+            return ProductionTerminalState.PARTIAL
+        with StateStore(self.settings.state_db) as store:
+            if any(store.coverage_pages_outstanding(self.run_id, t.coverage_id) for t in manifest.tasks()):
+                return ProductionTerminalState.PARTIAL
         if self.write_report and state.get("report_valid") is False:
             return ProductionTerminalState.FAILED
         return ProductionTerminalState.COMPLETE
 
-    def _report_data_from_state(self, state: ProductionState) -> dict:
-        rows = []
+    # -- current-run truthful projection (build spec 19) --------------------
+    _EVIDENCE_TO_VERIFICATION = {
+        "OFFICIAL_DETAIL_LIVE": "VERIFIED_OFFICIAL",
+        "OFFICIAL_SEARCH_LIVE": "OFFICIAL_SEARCH_LIVE",
+        "PORTAL_LIVE": "PORTAL_CURRENT_LEAD",
+    }
+    _EVIDENCE_RANK = {"OFFICIAL_DETAIL_LIVE": 3, "OFFICIAL_SEARCH_LIVE": 2, "PORTAL_LIVE": 1}
+
+    @staticmethod
+    def _freshness_band(posted_at, date_provenance, *, now=None) -> str:
+        """Map a KNOWN employer posted/updated date to a freshness band; only a
+        genuinely unknown/relative date is LIVE_DATE_UNKNOWN (build spec 19). A
+        crawl/discovery date is never used as the posting date (the adapter's
+        DateProvenance already guarantees that)."""
+        if not posted_at or date_provenance not in ("EMPLOYER_POSTED_AT", "EMPLOYER_UPDATED_AT"):
+            return "LIVE_DATE_UNKNOWN"
+        try:
+            raw = str(posted_at).replace("Z", "+00:00")
+            dt = datetime.datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+        except (ValueError, TypeError):
+            return "LIVE_DATE_UNKNOWN"
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        age = (now - dt).days
+        if age < 0:
+            age = 0
+        if age <= 7:
+            return "0-7 days"
+        if age <= 14:
+            return "8-14 days"
+        if age <= 30:
+            return "15-30 days"
+        if age <= 45:
+            return "31-45 days exceptional"
+        return "STALE"
+
+    def _current_run_jobs(self, *, now=None) -> list[dict]:
+        """Project ONLY the current run's observations (grouped to canonical
+        identity) into truthful report/verification rows — never every canonical
+        job globally (build spec 19). Each row carries the ACTUAL evidence-derived
+        verification level and freshness band, not a blanket label."""
+        best: dict[str, dict] = {}
         with StateStore(self.settings.state_db) as store:
-            for job in store.list_canonical_jobs()[:500]:
-                rows.append({
-                    "company": job["company"], "role_title": job["role"],
-                    "source_job_id": job["job_id"], "location": job["location"],
-                    "official_apply_url": job["official_apply_url"] or "",
-                    "verification_level": "VERIFIED_OFFICIAL",
-                    "job_lifecycle_status": job["current_status"] or "UNKNOWN",
-                    "recommendation": "MANUAL_REVIEW", "freshness_band": "LIVE_DATE_UNKNOWN",
-                })
+            for row in store.list_raw_observations(self.run_id):
+                key = row["canonical_id"] or row["source_identity"] or row["observation_id"]
+                try:
+                    detail = json.loads(row["detail_json"] or "{}")
+                except (ValueError, TypeError):
+                    detail = {}
+                evidence = detail.get("verification_level") or ""
+                rank = self._EVIDENCE_RANK.get(evidence, 0)
+                prev = best.get(key)
+                if prev is not None and prev["_rank"] >= rank:
+                    continue
+                verification = self._EVIDENCE_TO_VERIFICATION.get(evidence, "MANUAL_VERIFICATION")
+                freshness = self._freshness_band(row["posted_at"], detail.get("date_provenance"), now=now)
+                is_active = (row["is_active"] or "").upper()
+                lifecycle = "ACTIVE" if is_active == "ACTIVE" else ("CLOSED" if is_active == "INACTIVE" else "UNKNOWN")
+                best[key] = {
+                    "_rank": rank,
+                    "company": row["company"], "title": row["title"], "location": row["location"],
+                    "source_job_id": row["source_job_id"],
+                    "url": row["canonical_url"] or row["source_url"],
+                    "verification_level": verification, "freshness_band": freshness,
+                    "lifecycle": lifecycle,
+                    "skills": tuple(str(s) for s in (detail.get("skills") or [])),
+                    "recommendation": "REVIEW" if verification == "VERIFIED_OFFICIAL" else "MANUAL_REVIEW",
+                    "evidence": evidence,
+                }
+        return sorted(best.values(), key=lambda r: (r["company"] or "", r["title"] or ""))
+
+    def _candidate_evidence_set(self) -> set:
+        """Best-effort lowercase evidence-token set from the private candidate
+        ledger (used only in production matching)."""
+        tokens: set[str] = set()
+        if self.ledger is None:
+            return tokens
+        try:
+            for claim in self.ledger.to_list():
+                if isinstance(claim, dict):
+                    for k in ("value", "topic", "skill", "claim", "text"):
+                        v = claim.get(k)
+                        if isinstance(v, str) and v.strip():
+                            tokens.add(v.strip().lower())
+        except Exception:  # noqa: BLE001 - matching must never crash the run
+            return tokens
+        return tokens
+
+    def _report_data_from_state(self, state: ProductionState) -> dict:
+        jobs = self._current_run_jobs()
+        rows = []
+        verified_count = 0
+        for j in jobs[:500]:
+            if j["verification_level"] == "VERIFIED_OFFICIAL":
+                verified_count += 1
+            rows.append({
+                "company": j["company"], "role_title": j["title"],
+                "source_job_id": j["source_job_id"], "location": j["location"],
+                "official_apply_url": j["url"] or "",
+                "verification_level": j["verification_level"],
+                "job_lifecycle_status": j["lifecycle"],
+                "recommendation": j["recommendation"], "freshness_band": j["freshness_band"],
+            })
         counters = state.get("counters", {})
         return {
             "All_Jobs": rows,
             "Run_Summary": [{
                 "Run_ID": self.run_id, "Run_Status": state.get("terminal_state", "RUNNING"),
                 "Raw_Discoveries": counters.get("discovered", 0),
-                "Relevant_Discoveries": counters.get("unique_after_dedupe", 0),
-                "Verified_Official": len(rows),
+                "Relevant_Discoveries": counters.get("unique_after_dedupe", len(rows)),
+                "Verified_Official": verified_count,
             }],
         }
 

@@ -79,5 +79,33 @@ class RateLimitedExecutor:
         finally:
             self.limiter.release_slot(rate_key)
 
+    def run_detail(self, adapter: SourceAdapter, request, *, key: Optional[str] = None):
+        """Execute exactly one paced adapter DETAIL fetch through the SAME rate
+        limiter / concurrency / Retry-After accounting as a search (build spec
+        14), so detail hydration never bypasses the common executor. One call ==
+        one attempt; the executor never retries."""
+        rate_key = key or self.rate_key(adapter)
+        acquired = self.limiter.acquire_slot(rate_key, blocking=True)
+        if not acquired:
+            raise AdapterError(
+                ErrorCategory.SOURCE_UNAVAILABLE,
+                f"could not acquire a concurrency slot for {rate_key!r}; adapter not called",
+            )
+        try:
+            self.limiter.acquire(rate_key)
+            try:
+                result = adapter.fetch_detail(request)
+            except AdapterError as exc:
+                if exc.category == ErrorCategory.HTTP_429:
+                    if exc.retry_after is not None:
+                        self.limiter.note_retry_after(rate_key, float(exc.retry_after))
+                    else:
+                        self.limiter.note_rate_limited(rate_key)
+                raise
+            self.limiter.note_success(rate_key)
+            return result
+        finally:
+            self.limiter.release_slot(rate_key)
+
 
 __all__ = ["RateLimitedExecutor"]

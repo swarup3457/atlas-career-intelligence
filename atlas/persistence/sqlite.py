@@ -1613,6 +1613,11 @@ class StateStore:
             ).fetchone()["n"]
         )
 
+    def get_raw_observation(self, observation_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM raw_discovery_observations WHERE observation_id = ?", (observation_id,)
+        ).fetchone()
+
     def mark_raw_observation_processed(
         self, observation_id: str, canonical_id: str, *, processing_status: str = "CANONICALIZED"
     ) -> None:
@@ -2044,17 +2049,19 @@ class StateStore:
         ).fetchone()
 
     def coverage_pages_outstanding(self, run_id: str, coverage_id: str) -> bool:
-        """True when a required next page/cursor remains for this child: either a
-        page row is not DONE, or the last DONE page still reports has_more (its
-        continuation was never created). Used to forbid a false terminal COMPLETE."""
+        """True when a required next page/cursor remains for this child: a page
+        row is still PENDING (a durably-created continuation not yet fetched), or
+        the last DONE page still reports has_more (its continuation was never
+        created). A FAILED page is a terminal outcome, NOT an outstanding
+        continuation. Used to forbid a false terminal COMPLETE."""
         rows = self.list_coverage_pages(run_id, coverage_id)
         if not rows:
             return False
         for r in rows:
-            if r["status"] != "DONE":
+            if r["status"] == "PENDING":
                 return True
         last = rows[-1]
-        return bool(last["has_more"])
+        return last["status"] == "DONE" and bool(last["has_more"])
 
     # ------------------------------------------------------------------
     # Phase 1B — coverage plan lifecycle (build spec 7.8)
