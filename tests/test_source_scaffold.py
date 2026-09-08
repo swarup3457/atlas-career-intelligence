@@ -22,6 +22,35 @@ def test_generate_scaffold_produces_expected_files():
     assert "NotImplementedError" in adapter_src  # a template, not a working adapter
 
 
+def test_ats_family_routes_to_ats_dir_with_family_and_category():
+    # build spec 23: derive family/category, route ATS to atlas/sources/ats/.
+    files = generate_scaffold("Acme Board", "ATS_GREENHOUSE")
+    adapter_path = next(k for k in files if k.endswith("acme_board.py"))
+    assert adapter_path.startswith("atlas/sources/ats/")
+    src = files[adapter_path]
+    assert "source_family = SourceFamily.GREENHOUSE" in src
+    assert "Capability.DISCOVER" in src  # ATS enumerates entry points
+    yaml = next(v for k, v in files.items() if k.endswith(".yaml"))
+    assert "adapter_key (family): greenhouse" in yaml
+    assert "url_reference" in yaml  # access notes documented
+
+
+def test_portal_family_routes_to_portals_dir_without_discover():
+    files = generate_scaffold("Big Portal", "PORTAL_LARGE")
+    adapter_path = next(k for k in files if k.endswith("big_portal.py"))
+    assert adapter_path.startswith("atlas/sources/portals/")
+    src = files[adapter_path]
+    # A generic portal does not guess a DISCOVER capability.
+    assert "Capability.DISCOVER" not in src
+
+
+def test_scaffold_includes_contract_and_health_tests():
+    files = generate_scaffold("Acme Board", "ATS_LEVER")
+    test_src = next(v for k, v in files.items() if k.startswith("tests/test_source_"))
+    assert "run_contract_checks" in test_src
+    assert "health_check" in test_src
+
+
 def test_validate_rejects_unknown_type():
     with pytest.raises(ValueError):
         validate_scaffold_request("X", "ATS_NOPE")
