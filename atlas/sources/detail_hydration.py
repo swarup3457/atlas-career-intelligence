@@ -75,11 +75,12 @@ class DetailHydrator:
 
     def _select(self) -> list:
         """Deterministic selection of current-run observations to hydrate:
-        original (non-hydrated) observations whose family exposes DETAIL and
-        that carry a usable detail anchor, in stable observation order."""
+        original SEARCH observations whose family exposes DETAIL and that carry a
+        usable detail anchor, in stable observation order. A DETAIL revision is
+        never itself re-hydrated."""
         out = []
         for row in self.store.list_raw_observations(self.run_id):
-            if row["processing_status"] == "HYDRATED":
+            if row["revision_kind"] == "DETAIL":
                 continue
             fam = (row["source_family"] or "").lower()
             if fam not in _DETAIL_FAMILIES:
@@ -158,7 +159,14 @@ class DetailHydrator:
 
     def _store_hydrated(self, hydrated_id: str, row, detail) -> None:
         d = detail.to_dict()
-        # A new IMMUTABLE observation version — never overwrite the original.
+        # A new IMMUTABLE observation REVISION (build spec 6): it references its
+        # source SEARCH observation via parent_observation_id and revision_kind
+        # 'DETAIL' — canonical_id is NEVER misused to hold an observation id. It
+        # is left STAGED so canonicalization SEES and links it to the SAME
+        # canonical job as its parent (they share the official requisition), and
+        # the report then selects this higher-evidence revision. The original
+        # SEARCH observation is untouched, preserving its provenance; a failed
+        # detail hydration therefore never destroys the original search evidence.
         self.store.stage_raw_observation(
             hydrated_id, self.run_id, row["source_instance"], row["content_hash"],
             coverage_id=row["coverage_id"], attempt_id=row["attempt_id"],
@@ -170,14 +178,12 @@ class DetailHydrator:
             source_identity=row["source_identity"], adapter_version=d.get("adapter_version", ""),
             parser_version=d.get("parser_version", ""),
             observed_at=_utcnow(),
+            parent_observation_id=row["observation_id"], revision_kind="DETAIL",
             detail={"hydrated_from": row["observation_id"], "detail_provenance": dict(d.get("provenance") or {}),
                     "description_len": len(d.get("description") or "") if d.get("description") else 0,
                     "date_provenance": (d.get("provenance") or {}).get("date_provenance"),
                     "verification_level": d.get("verification_level")},
         )
-        # Mark the NEW row as HYDRATED so a resume skips it (the original is
-        # untouched, preserving its provenance).
-        self.store.mark_raw_observation_processed(hydrated_id, row["observation_id"], processing_status="HYDRATED")
 
 
 __all__ = ["DetailHydrator", "HydrationResult"]

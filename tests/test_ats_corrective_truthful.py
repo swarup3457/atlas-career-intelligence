@@ -119,11 +119,16 @@ def test_detail_hydration_creates_new_immutable_version_via_executor_and_resumes
     res = hyd.hydrate()
     assert res.selected == 1 and res.hydrated == 1
     assert _GhDetailAdapter.calls["detail"] == 1
-    # A NEW immutable hydrated version exists; the ORIGINAL is untouched.
+    # A NEW immutable hydrated DETAIL revision exists linked to its parent; the
+    # ORIGINAL SEARCH observation is untouched (build spec 6). canonical_id is
+    # NEVER misused — the revision is linked via parent_observation_id and left
+    # STAGED so canonicalization sees and links it.
     original = store.get_raw_observation("obs-1")
     hydrated = store.get_raw_observation("obs-1::detail")
-    assert original is not None and original["processing_status"] == "STAGED"
-    assert hydrated is not None and hydrated["processing_status"] == "HYDRATED"
+    assert original is not None and original["revision_kind"] == "SEARCH"
+    assert hydrated is not None and hydrated["revision_kind"] == "DETAIL"
+    assert hydrated["parent_observation_id"] == "obs-1" and hydrated["canonical_id"] is None
+    assert hydrated["processing_status"] == "STAGED"
     # Resume: a second hydration does NOT repeat the completed detail call.
     res2 = hyd.hydrate()
     assert res2.skipped_existing == 1 and res2.hydrated == 0
