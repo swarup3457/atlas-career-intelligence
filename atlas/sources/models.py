@@ -106,6 +106,7 @@ class SourceFamily(str, enum.Enum):
 
     # Official / company-owned
     COMPANY_CAREER = "company_career"
+    COMPANY_CAREER_BROWSER = "company_career_browser"
     # ATS families
     WORKDAY = "workday"
     GREENHOUSE = "greenhouse"
@@ -177,6 +178,7 @@ SOURCE_TYPE_TO_FAMILY: dict[SourceType, SourceFamily] = {
 
 SOURCE_FAMILY_TO_CATEGORY: dict[SourceFamily, SourceCategory] = {
     SourceFamily.COMPANY_CAREER: SourceCategory.OFFICIAL,
+    SourceFamily.COMPANY_CAREER_BROWSER: SourceCategory.OFFICIAL,
     SourceFamily.WORKDAY: SourceCategory.ATS,
     SourceFamily.GREENHOUSE: SourceCategory.ATS,
     SourceFamily.LEVER: SourceCategory.ATS,

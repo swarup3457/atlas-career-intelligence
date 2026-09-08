@@ -44,14 +44,14 @@ def _write_scenario(code, tmp_path, mapping, base=None):
 def test_migration_v3_present_and_v1_v2_intact(tmp_path):
     store = StateStore(tmp_path / "s.sqlite")
     try:
-        assert store.schema_version() == 10
+        assert store.schema_version() == 11
         versions = [
             r[0]
             for r in store._conn.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
         ]
-        assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         # v1/v2 tables still work
         store.create_run("run-1", controller="none")
         assert store.get_run("run-1")["status"] == "RUNNING"
@@ -74,7 +74,7 @@ def test_reopen_does_not_rerun_migrations(tmp_path):
     store.close()
     store2 = StateStore(db)
     try:
-        assert store2.schema_version() == 10
+        assert store2.schema_version() == 11
         assert store2.get_canonical_job("job::x|1") is not None
     finally:
         store2.close()

@@ -58,7 +58,7 @@ def test_restore_happy_path_writes_marker_and_validates(tmp_path):
     assert result.status == RESTORED, result.render()
     assert result.ok
     assert result.backup_id == manifest.backup_id
-    assert result.state_schema_version == 10
+    assert result.state_schema_version == 11
     assert result.checkpoint_ok is True
     assert result.config_ok is True
     assert (target / RESTORE_MARKER_NAME).exists()

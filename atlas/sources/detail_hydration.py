@@ -32,7 +32,7 @@ from atlas.sources.models import Capability, DetailRequest, SourceInstance
 from atlas.sources.registry import SourceRegistry
 
 # Families that expose a per-job detail endpoint (Ashby correctly has none).
-_DETAIL_FAMILIES = frozenset({"greenhouse", "lever", "workday"})
+_DETAIL_FAMILIES = frozenset({"greenhouse", "lever", "workday", "company_career"})
 
 
 def _utcnow() -> str:
@@ -143,9 +143,9 @@ class DetailHydrator:
         anchor_url = row["canonical_url"] or row["source_url"]
         anchor_id = row["source_job_id"]
         try:
-            if family == "workday":
-                # The externalPath is embedded in the public URL; pass the URL so
-                # the adapter extracts the externalPath (NOT the requisition id).
+            if family in ("workday", "company_career"):
+                # The detail page IS the public job URL; pass the URL so the
+                # adapter fetches/extracts it (never an opaque requisition id).
                 if anchor_url:
                     return DetailRequest(url=anchor_url)
                 return None

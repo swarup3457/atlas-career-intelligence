@@ -756,6 +756,81 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_verif_dec_canonical ON verification_decisions(run_id, canonical_id)",
         ],
     ),
+    (
+        11,
+        "Phase 1C-B official career-site coverage (build spec 12): additive, "
+        "data-preserving tables for (a) discovered career ENTRY POINTS "
+        "(append-only, provenance + trust); (b) a reusable, revalidate-before-"
+        "trust generic career-site PROFILE/recipe per source instance (route "
+        "kind, selectors, link patterns, evidence, confidence, recipe/parser "
+        "version, health); (c) append-only ROUTE CLASSIFICATIONS; and (d) sealed "
+        "career PILOT runs (config hash + results). No existing table/column is "
+        "modified; the four ATS routes and every prior run are untouched.",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS career_entry_points (
+                entry_id TEXT PRIMARY KEY,
+                company_id TEXT,
+                entry_url TEXT NOT NULL,
+                label TEXT,
+                discovery_method TEXT NOT NULL DEFAULT 'UNKNOWN',
+                trusted INTEGER NOT NULL DEFAULT 0,
+                trust_kind TEXT,
+                confidence REAL NOT NULL DEFAULT 0.0,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                observed_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_career_entry_company ON career_entry_points(company_id)",
+            "CREATE INDEX IF NOT EXISTS idx_career_entry_url ON career_entry_points(entry_url)",
+            """
+            CREATE TABLE IF NOT EXISTS career_site_profiles (
+                source_instance_id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                company_id TEXT,
+                entry_url TEXT NOT NULL,
+                route_kind TEXT NOT NULL,
+                recipe_json TEXT NOT NULL DEFAULT '{}',
+                confidence REAL NOT NULL DEFAULT 0.0,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                recipe_version TEXT NOT NULL DEFAULT '1.0.0',
+                parser_version TEXT NOT NULL DEFAULT '',
+                health TEXT NOT NULL DEFAULT 'UNVALIDATED',
+                last_success_at TEXT,
+                last_validated_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_career_profile_company ON career_site_profiles(company_id)",
+            "CREATE INDEX IF NOT EXISTS idx_career_profile_health ON career_site_profiles(health)",
+            """
+            CREATE TABLE IF NOT EXISTS career_route_classifications (
+                classification_id TEXT PRIMARY KEY,
+                company_id TEXT,
+                source_instance_id TEXT,
+                entry_url TEXT NOT NULL,
+                route_kind TEXT NOT NULL,
+                fingerprint_family TEXT,
+                confidence REAL NOT NULL DEFAULT 0.0,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                classified_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_career_route_instance ON career_route_classifications(source_instance_id)",
+            """
+            CREATE TABLE IF NOT EXISTS career_pilot_runs (
+                run_id TEXT PRIMARY KEY,
+                config_hash TEXT NOT NULL,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'SEALED',
+                results_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)
@@ -1584,8 +1659,182 @@ class StateStore:
         ).fetchall()
 
     # ------------------------------------------------------------------
-    # Phase 1B — append-only immutable coverage attempts (build spec 7.9)
+    # Phase 1C-B — official career-site coverage (build spec 12)
     # ------------------------------------------------------------------
+    def record_career_entry_point(
+        self,
+        entry_id: str,
+        entry_url: str,
+        *,
+        company_id: Optional[str] = None,
+        label: Optional[str] = None,
+        discovery_method: str = "UNKNOWN",
+        trusted: bool = False,
+        trust_kind: Optional[str] = None,
+        confidence: float = 0.0,
+        evidence: Optional[dict] = None,
+        observed_at: Optional[str] = None,
+    ) -> None:
+        """Append-only record of a discovered career entry point (idempotent on
+        ``entry_id``). A company may have MANY current entry points (global /
+        India / graduate); recording one never overwrites another."""
+        now = observed_at or _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO career_entry_points (entry_id, company_id, entry_url, label, "
+                "discovery_method, trusted, trust_kind, confidence, evidence_json, observed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(entry_id) DO UPDATE SET company_id=excluded.company_id, "
+                "entry_url=excluded.entry_url, label=excluded.label, "
+                "discovery_method=excluded.discovery_method, trusted=excluded.trusted, "
+                "trust_kind=excluded.trust_kind, confidence=excluded.confidence, "
+                "evidence_json=excluded.evidence_json",
+                (
+                    entry_id, company_id, entry_url, label, discovery_method,
+                    1 if trusted else 0, trust_kind, float(confidence),
+                    json.dumps(evidence or {}, sort_keys=True), now,
+                ),
+            )
+
+    def list_career_entry_points(self, *, company_id: Optional[str] = None) -> list[sqlite3.Row]:
+        if company_id is not None:
+            return self._conn.execute(
+                "SELECT * FROM career_entry_points WHERE company_id = ? ORDER BY entry_id",
+                (company_id,),
+            ).fetchall()
+        return self._conn.execute(
+            "SELECT * FROM career_entry_points ORDER BY entry_id"
+        ).fetchall()
+
+    def upsert_career_profile(
+        self,
+        profile_id: str,
+        *,
+        source_instance_id: str,
+        entry_url: str,
+        route_kind: str,
+        company_id: Optional[str] = None,
+        recipe: Optional[dict] = None,
+        confidence: float = 0.0,
+        evidence: Optional[dict] = None,
+        recipe_version: str = "1.0.0",
+        parser_version: str = "",
+        health: str = "UNVALIDATED",
+        last_success_at: Optional[str] = None,
+        last_validated_at: Optional[str] = None,
+    ) -> None:
+        """Persist a generic career-site profile/recipe (idempotent on
+        ``source_instance_id`` — one current profile per company-source
+        instance). The recipe is DATA (route kind, selectors, link patterns),
+        never executable code."""
+        now = _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO career_site_profiles (source_instance_id, profile_id, company_id, "
+                "entry_url, route_kind, recipe_json, confidence, evidence_json, recipe_version, "
+                "parser_version, health, last_success_at, last_validated_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(source_instance_id) DO UPDATE SET profile_id=excluded.profile_id, "
+                "company_id=excluded.company_id, entry_url=excluded.entry_url, "
+                "route_kind=excluded.route_kind, recipe_json=excluded.recipe_json, "
+                "confidence=excluded.confidence, evidence_json=excluded.evidence_json, "
+                "recipe_version=excluded.recipe_version, parser_version=excluded.parser_version, "
+                "health=excluded.health, last_success_at=excluded.last_success_at, "
+                "last_validated_at=excluded.last_validated_at, updated_at=excluded.updated_at",
+                (
+                    source_instance_id, profile_id, company_id, entry_url, route_kind,
+                    json.dumps(recipe or {}, sort_keys=True), float(confidence),
+                    json.dumps(evidence or {}, sort_keys=True), recipe_version, parser_version,
+                    health, last_success_at, last_validated_at, now, now,
+                ),
+            )
+
+    def get_career_profile(self, source_instance_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM career_site_profiles WHERE source_instance_id = ?",
+            (source_instance_id,),
+        ).fetchone()
+
+    def list_career_profiles(self, *, company_id: Optional[str] = None) -> list[sqlite3.Row]:
+        if company_id is not None:
+            return self._conn.execute(
+                "SELECT * FROM career_site_profiles WHERE company_id = ? ORDER BY source_instance_id",
+                (company_id,),
+            ).fetchall()
+        return self._conn.execute(
+            "SELECT * FROM career_site_profiles ORDER BY source_instance_id"
+        ).fetchall()
+
+    def record_route_classification(
+        self,
+        classification_id: str,
+        entry_url: str,
+        route_kind: str,
+        *,
+        company_id: Optional[str] = None,
+        source_instance_id: Optional[str] = None,
+        fingerprint_family: Optional[str] = None,
+        confidence: float = 0.0,
+        evidence: Optional[dict] = None,
+        classified_at: Optional[str] = None,
+    ) -> None:
+        """Append-only route classification for one entry point (idempotent on
+        ``classification_id``)."""
+        now = classified_at or _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO career_route_classifications (classification_id, company_id, "
+                "source_instance_id, entry_url, route_kind, fingerprint_family, confidence, "
+                "evidence_json, classified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(classification_id) DO UPDATE SET route_kind=excluded.route_kind, "
+                "fingerprint_family=excluded.fingerprint_family, confidence=excluded.confidence, "
+                "evidence_json=excluded.evidence_json",
+                (
+                    classification_id, company_id, source_instance_id, entry_url, route_kind,
+                    fingerprint_family, float(confidence), json.dumps(evidence or {}, sort_keys=True), now,
+                ),
+            )
+
+    def list_route_classifications(self, *, source_instance_id: Optional[str] = None) -> list[sqlite3.Row]:
+        if source_instance_id is not None:
+            return self._conn.execute(
+                "SELECT * FROM career_route_classifications WHERE source_instance_id = ? ORDER BY classified_at",
+                (source_instance_id,),
+            ).fetchall()
+        return self._conn.execute(
+            "SELECT * FROM career_route_classifications ORDER BY classified_at"
+        ).fetchall()
+
+    def upsert_career_pilot_run(
+        self,
+        run_id: str,
+        config_hash: str,
+        *,
+        config: Optional[dict] = None,
+        status: str = "SEALED",
+        results: Optional[dict] = None,
+    ) -> None:
+        """Persist the sealed pilot config (hash + JSON) and its results summary.
+        The config is sealed BEFORE execution; a re-save updates only status/
+        results, never the sealed config hash."""
+        now = _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO career_pilot_runs (run_id, config_hash, config_json, status, "
+                "results_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET status=excluded.status, "
+                "results_json=excluded.results_json, updated_at=excluded.updated_at",
+                (
+                    run_id, config_hash, json.dumps(config or {}, sort_keys=True), status,
+                    json.dumps(results or {}, sort_keys=True), now, now,
+                ),
+            )
+
+    def get_career_pilot_run(self, run_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM career_pilot_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+
     def append_coverage_attempt(
         self,
         attempt_id: str,
