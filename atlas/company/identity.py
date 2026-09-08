@@ -104,17 +104,22 @@ def derive_instance_id(
     source_type_value: str,
     *,
     tenant: Optional[str] = None,
+    site: Optional[str] = None,
     base_url: Optional[str] = None,
 ) -> str:
-    """Deterministic SourceInstance id for a company's source. Rediscovering
-    the same tenant/host yields the same id (idempotent)."""
-    anchor = None
+    """Deterministic SourceInstance id for a company's source. Stable identity
+    includes the source type (family) and, when present, BOTH tenant and site,
+    so two Workday sites under one tenant never collide (build spec 11 / P0-14).
+    Rediscovering the same tenant/site/host yields the same id (idempotent)."""
+    parts: list[str] = []
     if tenant:
-        anchor = tenant.strip().lower()
-    elif base_url:
-        anchor = normalize_domain(base_url) or base_url.strip().lower()
-    anchor = anchor or "default"
-    return f"{company_id}--{source_type_value.lower()}--{_slug(anchor) or 'default'}"
+        parts.append(tenant.strip().lower())
+    if site:
+        parts.append(site.strip().lower())
+    if not parts and base_url:
+        parts.append(normalize_domain(base_url) or base_url.strip().lower())
+    anchor = "--".join(_slug(p) for p in parts if p) or "default"
+    return f"{company_id}--{source_type_value.lower()}--{anchor}"
 
 
 def derive_relationship_id(company_id: str, instance_id: str) -> str:

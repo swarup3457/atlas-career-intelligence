@@ -160,6 +160,26 @@ class CompanyRegistry:
         self.store.update_company_verification(company_id, status=status)
 
     # -- relationships -----------------------------------------------------
+    def save_instance(self, instance) -> None:
+        """Persist a normalized :class:`SourceInstance` (build spec 11 / P0-14).
+        Idempotent on the instance id, so rediscovery of the same tenant/site
+        updates in place instead of creating a duplicate."""
+        self.store.upsert_source_instance(
+            instance.instance_id,
+            instance.adapter_key.value,
+            instance.source_type.value,
+            instance.category.value,
+            display_name=instance.display_name,
+            base_url=instance.base_url,
+            tenant=instance.tenant,
+            site=instance.site,
+            company_id=instance.company_id,
+            enabled=instance.enabled,
+            lifecycle_state=instance.lifecycle_state,
+            capability_additions=sorted(c.value for c in instance.capability_overrides),
+            capability_removals=sorted(c.value for c in instance.capability_removals),
+        )
+
     def attach_source_instance(
         self,
         company_id: str,

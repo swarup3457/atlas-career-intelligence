@@ -1,23 +1,25 @@
-"""Atlas CLI scaffold (Phase 0.5).
+"""Atlas CLI.
 
-Operates on GENERIC platform state only - does not implement any job
-search business logic (`atlas search` is intentionally NOT implemented).
+Generic platform commands PLUS the offline production-fixture runtime. Live
+production (`atlas run` against real sources) remains intentionally DISABLED —
+no real adapter exists yet — but `atlas production-fixture` executes the SAME
+sealed-plan production integration path with synthetic, zero-network fixtures.
 
 Commands:
-    atlas doctor         - offline health check (PASS/WARN/FAIL), see atlas.health
-    atlas status         - report current run/lock/checkpoint state
-    atlas resume         - report what a resume would continue (does not start
-                           any business-logic run, since none exists yet)
-    atlas test           - run the offline pytest suite (equivalent to
-                           `python -m pytest -m "not real_web"`)
-    atlas version        - print Atlas + key dependency versions
-    atlas backup         - create a verified, consistent local backup
-    atlas backup verify  - verify an existing backup directory
-    atlas restore        - restore a verified backup into a target directory
-    atlas support-bundle - write a sanitized diagnostic support bundle (zip)
+    atlas doctor              - offline health check (PASS/WARN/FAIL)
+    atlas status              - report current run/lock/checkpoint state
+    atlas resume              - resume a PARTIAL demo runtime run
+    atlas production-fixture  - offline (synthetic, zero-network) production
+                                runtime: run / resume / status
+    atlas test                - run the offline pytest suite
+    atlas version             - print Atlas + key dependency versions
+    atlas backup              - create a verified, consistent local backup
+    atlas backup verify       - verify an existing backup directory
+    atlas restore             - restore a verified backup into a target directory
+    atlas support-bundle      - write a sanitized diagnostic support bundle (zip)
+    atlas add-source          - scaffold a new source adapter (dry-run default)
 
-See docs/OPERATIONS.md for how this entry point is intended to be used by
-a future Windows Task Scheduler job.
+See docs/PRODUCTION_RUNTIME.md and docs/OPERATIONS.md.
 """
 
 from __future__ import annotations
@@ -194,6 +196,67 @@ def _cmd_test(args: argparse.Namespace) -> int:
         cmd += ["-m", "real_web"]
     completed = subprocess.run(cmd, cwd=str(project_root))
     return completed.returncode
+
+
+_FIXTURE_BANNER = (
+    "================ ATLAS OFFLINE PRODUCTION-FIXTURE RUN ================\n"
+    " SYNTHETIC DATA ONLY. Zero network. No real adapter, no live search,\n"
+    " no browser navigation, no application submission. This exercises the\n"
+    " SAME production integration path (SourceRegistry -> adapter -> rate-\n"
+    " limited executor -> worker -> attempts -> raw staging -> coverage ->\n"
+    " canonicalize -> report) that real adapters will use in Phase 1C.\n"
+    "====================================================================="
+)
+
+
+def _cmd_production_fixture(args: argparse.Namespace) -> int:
+    from atlas.orchestration.production_state import ProductionPhase
+    from atlas.persistence.sqlite import StateStore
+    from atlas.runtime.production import ProductionSearchRuntime, default_fixture_topology
+
+    print(_FIXTURE_BANNER)
+    settings = load_settings()
+    settings.ensure_directories()
+    run_id = args.run_id or "production-fixture-demo"
+    sub = args.fixture_command
+
+    if sub == "status":
+        with StateStore(settings.state_db) as store:
+            run = store.get_run(run_id)
+            plan = store.get_coverage_plan(run_id)
+            summary = store.coverage_summary(run_id)
+            raw = store.count_raw_observations(run_id)
+        print(f"RUN_ID={run_id}")
+        print(f"RUN_STATUS={run['status'] if run else 'NOT_FOUND'}")
+        if plan is not None:
+            print(f"PLAN_STATE={plan['state']} SEALED_FP={(plan['fingerprint'] or '')[:12]}")
+        print(f"COVERAGE_PLANNED={summary.get('_planned', 0)} COVERAGE_TERMINAL={summary.get('_completed', 0)}")
+        print(f"RAW_OBSERVATIONS={raw}")
+        return 0
+
+    n = int(args.companies)
+    instances, companies = default_fixture_topology(n)
+    stop_after = ProductionPhase.DISCOVER if getattr(args, "stop_after_discover", False) else None
+    rt = ProductionSearchRuntime(
+        settings, run_id, instances=instances, companies=companies,
+        stop_after_phase=stop_after,
+    )
+    result = rt.resume() if sub == "resume" else rt.run()
+
+    print(f"RUN_ID={result.run_id}")
+    print(f"STATUS={result.terminal_state}")
+    print(f"PLANNED_CHILD_TASKS={result.planned_tasks}")
+    print(f"TERMINAL_CHILD_TASKS={result.terminal_tasks}")
+    print(f"LANES={sorted(result.lane_summary)}")
+    print(f"POLICY_FP={result.policy_fingerprint[:12]} PLAN_FP={result.plan_fingerprint[:12]}")
+    print(f"CANDIDATE_SNAPSHOT={result.candidate_snapshot} SYNTHETIC={result.manifest.get('synthetic_candidate_evidence')}")
+    print(f"CHECKPOINT_BYTES={result.checkpoint_bytes}")
+    if result.report_path:
+        print(f"REPORT={result.report_path} VALID={result.report_valid}")
+    print(f"STATE_DB={settings.state_db}")
+    print(f"CHECKPOINT_DB={settings.checkpoint_db}")
+    print("NOTE: `atlas run` live production remains DISABLED (no real adapters).")
+    return 0 if result.terminal_state in ("COMPLETE", "PARTIAL", "WAITING_FOR_HUMAN") else 1
 
 
 def _cmd_backup(args: argparse.Namespace) -> int:
@@ -461,6 +524,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_add_source.add_argument("--dry-run", action="store_true", default=True, help="Print the plan only (default).")
     p_add_source.add_argument("--write", dest="dry_run", action="store_false", help="Actually write templates to --out.")
     p_add_source.set_defaults(func=_cmd_add_source)
+
+    # Offline production-fixture runtime (build spec 24): fixture-only, zero
+    # network, exercises the real production integration path. `atlas run` live
+    # production stays disabled until real adapters pass Phase 1C gates.
+    p_prodfix = subparsers.add_parser(
+        "production-fixture",
+        help="Run the offline (synthetic, zero-network) production-fixture runtime.",
+    )
+    prodfix_sub = p_prodfix.add_subparsers(dest="fixture_command", required=True)
+    p_pf_run = prodfix_sub.add_parser("run", help="Execute a sealed fixture plan through the production path.")
+    p_pf_run.add_argument("--run-id", default=None)
+    p_pf_run.add_argument("--companies", default=2, help="Number of synthetic companies (per-lane children = N×6).")
+    p_pf_run.add_argument("--stop-after-discover", action="store_true", help="Deliberate partial stop after DISCOVER.")
+    p_pf_run.set_defaults(func=_cmd_production_fixture)
+    p_pf_resume = prodfix_sub.add_parser("resume", help="Resume a PARTIAL/WAITING production-fixture run.")
+    p_pf_resume.add_argument("--run-id", default=None)
+    p_pf_resume.add_argument("--companies", default=2)
+    p_pf_resume.set_defaults(func=_cmd_production_fixture)
+    p_pf_status = prodfix_sub.add_parser("status", help="Show sealed plan / coverage / report references.")
+    p_pf_status.add_argument("--run-id", default=None)
+    p_pf_status.add_argument("--companies", default=2)
+    p_pf_status.set_defaults(func=_cmd_production_fixture)
 
     return parser
 

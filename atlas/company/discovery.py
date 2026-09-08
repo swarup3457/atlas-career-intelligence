@@ -41,9 +41,9 @@ from atlas.company.models import (
     TRUSTED_DISCOVERY_METHODS,
     VerificationState,
 )
-from atlas.company.tenant import extract_tenant
+from atlas.company.tenant import extract_site, extract_tenant
 from atlas.sources.fingerprint import fingerprint_ats
-from atlas.sources.models import Capability, SourceInstance, SourceType
+from atlas.sources.models import Capability, SourceInstance, SourceType, family_for_source_type
 
 # Declarative default capabilities per source family (used by the factory so
 # a SourceInstance carries the family's expected capabilities even before a
@@ -65,6 +65,7 @@ FAMILY_DEFAULT_CAPABILITIES: dict[SourceType, frozenset[Capability]] = {
     SourceType.ATS_GREENHOUSE: _API_ATS,
     SourceType.ATS_LEVER: _API_ATS,
     SourceType.ATS_SMARTRECRUITERS: _API_ATS,
+    SourceType.ATS_ASHBY: _API_ATS,
     SourceType.ATS_WORKDAY: frozenset(_API_ATS | {Capability.PAGINATION}),
     SourceType.ATS_ORACLE: _BROWSER_ATS,
     SourceType.ATS_SUCCESSFACTORS: _BROWSER_ATS,
@@ -95,6 +96,7 @@ class _PipelineOutcome:
     source_type: Optional[SourceType]
     resolved_url: Optional[str]
     tenant: Optional[str]
+    site: Optional[str] = None
 
 
 def run_fingerprint_pipeline(
@@ -113,6 +115,7 @@ def run_fingerprint_pipeline(
     if source_type is None and (careers_url or redirect_url):
         source_type = SourceType.COMPANY_CAREER  # a careers page we could not fingerprint
     tenant = extract_tenant(fp.source_type, resolved_url)
+    site = extract_site(fp.source_type, resolved_url)
 
     confidence = confidence_for_method(method)
     if fp.matched:
@@ -132,9 +135,9 @@ def run_fingerprint_pipeline(
         confidence=confidence,
         verification_state=VerificationState.HEURISTIC if fp.matched else VerificationState.UNVERIFIED,
         observed_at=observed_at,
-        detail={"fingerprint": fp.to_dict()},
+        detail={"fingerprint": fp.to_dict(), "site": site},
     )
-    return _PipelineOutcome(observation, source_type, resolved_url, tenant)
+    return _PipelineOutcome(observation, source_type, resolved_url, tenant, site)
 
 
 # ---------------------------------------------------------------------------
@@ -145,18 +148,23 @@ def build_source_instance(
     source_type: SourceType,
     base_url: Optional[str],
     tenant: Optional[str],
+    site: Optional[str] = None,
 ) -> SourceInstance:
-    """SourceDiscoveryObservation → SourceInstance. Deterministic instance
-    id; capabilities seeded from family defaults; disabled by default since
-    no real adapter exists yet."""
-    instance_id = derive_instance_id(company_id, source_type.value, tenant=tenant, base_url=base_url)
+    """SourceDiscoveryObservation → SourceInstance. Deterministic instance id
+    that includes source family + tenant + site (so two Workday sites under one
+    tenant never collide, P0-14); the ``source_family`` and ``site`` are set
+    explicitly; capabilities seeded from family defaults; disabled by default
+    since no real adapter exists yet."""
+    instance_id = derive_instance_id(company_id, source_type.value, tenant=tenant, site=site, base_url=base_url)
     caps = FAMILY_DEFAULT_CAPABILITIES.get(source_type, frozenset({Capability.SEARCH}))
     return SourceInstance(
         instance_id=instance_id,
         source_type=source_type,
-        display_name=f"{source_type.value} ({tenant or 'careers'})",
+        source_family=family_for_source_type(source_type),
+        display_name=f"{source_type.value} ({tenant or 'careers'}{('/' + site) if site else ''})",
         base_url=base_url,
         tenant=tenant,
+        site=site,
         company_id=company_id,
         enabled=False,  # discovered, but no runnable adapter in Phase 1A.5
         capability_overrides=frozenset(caps),
@@ -293,13 +301,17 @@ def register_employer(registry, obs: CompanyObservation) -> EmployerRegistration
 
     if outcome.source_type is not None:
         instance = build_source_instance(
-            company.company_id, outcome.source_type, outcome.resolved_url, outcome.tenant
+            company.company_id, outcome.source_type, outcome.resolved_url, outcome.tenant, outcome.site
         )
+        # Persist the normalized SourceInstance FIRST (build spec 11 / P0-14),
+        # then attach the company↔source relationship to its stable id.
+        registry.save_instance(instance)
         relationship = registry.attach_source_instance(
             company.company_id, instance.instance_id, outcome.source_type.value,
             base_url=instance.base_url, tenant=outcome.tenant,
             state=RelationshipState.DISCOVERED, confidence=outcome.observation.confidence,
-            provenance={"method": obs.method.value, "observation_id": outcome.observation.observation_id},
+            provenance={"method": obs.method.value, "observation_id": outcome.observation.observation_id,
+                        "site": outcome.site},
         )
         result.relationship = relationship
         result.source_instance = instance

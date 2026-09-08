@@ -46,6 +46,59 @@ def test_workday_via_redirect(registry):
     assert r.relationship.tenant == "globex"
 
 
+def test_two_workday_sites_one_tenant_do_not_collide(registry):
+    # P0-14: same Workday tenant, two different sites -> DISTINCT instance ids,
+    # both persisted, both linked; neither overwrites the other.
+    r1 = register_employer(registry, CompanyObservation(
+        name="Acme", official_domain="acme.com",
+        careers_url="https://acme.wd5.myworkdayjobs.com/en-US/External",
+        method=_C))
+    r2 = register_employer(registry, CompanyObservation(
+        name="Acme", official_domain="acme.com",
+        careers_url="https://acme.wd5.myworkdayjobs.com/en-US/Campus",
+        method=_C))
+    assert r1.source_instance.instance_id != r2.source_instance.instance_id
+    assert r1.source_instance.tenant == r2.source_instance.tenant == "acme"
+    assert {r1.source_instance.site, r2.source_instance.site} == {"external", "campus"}
+    # Both instances are persisted (save_instance before attach).
+    assert registry.store.get_source_instance(r1.source_instance.instance_id) is not None
+    assert registry.store.get_source_instance(r2.source_instance.instance_id) is not None
+    # Stable identity includes the source family.
+    assert r1.source_instance.source_family is not None
+
+
+def test_ashby_registration(registry):
+    r = register_employer(registry, CompanyObservation(
+        name="Ashby Co", official_domain="ashbyco.com",
+        careers_url="https://jobs.ashbyhq.com/ashbyco", method=_C))
+    assert r.source_registered is True
+    assert r.relationship.source_type == SourceType.ATS_ASHBY.value
+    inst = registry.store.get_source_instance(r.source_instance.instance_id)
+    assert inst is not None and inst["adapter_key"] == "ashby"
+
+
+def test_rediscovery_is_idempotent(registry):
+    obs = CompanyObservation(
+        name="Acme", official_domain="acme.com",
+        careers_url="https://acme.wd5.myworkdayjobs.com/en-US/External", method=_C)
+    r1 = register_employer(registry, obs)
+    r2 = register_employer(registry, obs)
+    assert r1.source_instance.instance_id == r2.source_instance.instance_id
+    # Only one persisted instance / one relationship for the same tenant+site.
+    instances = registry.store.list_source_instances(company_id=r1.company.company_id)
+    assert len([i for i in instances if i["instance_id"] == r1.source_instance.instance_id]) == 1
+
+
+def test_replaced_endpoint_retains_history(registry):
+    r = register_employer(registry, CompanyObservation(
+        name="Migrator", official_domain="migrator.com",
+        careers_url="https://boards.greenhouse.io/migrator", method=_C))
+    assert mark_source_replaced(registry, r.company.company_id, r.source_instance.instance_id) is True
+    rels = registry.list_relationships(r.company.company_id)
+    replaced = [rel for rel in rels if rel.state == RelationshipState.REPLACED]
+    assert replaced and replaced[0].is_current is False  # retained as history, not deleted
+
+
 def test_custom_careers_page_is_company_career(registry):
     r = register_employer(registry, CompanyObservation(
         name="Umbrella", official_domain="umbrella.co",
