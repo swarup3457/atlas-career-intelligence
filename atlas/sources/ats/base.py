@@ -127,16 +127,49 @@ def detect_challenge(resp: HttpResponse) -> Optional[ErrorCategory]:
 # --- trusted URL → identity parsers -----------------------------------------
 def _host_path(url: str) -> tuple[str, list[str]]:
     parts = urlsplit(url)
-    host = (parts.netloc or "").lower().split("@")[-1].split(":")[0]
+    host = (parts.netloc or "").lower().split("@")[-1].split(":")[0].rstrip(".")
     segs = [s for s in (parts.path or "").split("/") if s]
     return host, segs
+
+
+def host_trusted_for(host: str, apex: str) -> bool:
+    """EXACT trusted-host rule: ``host`` is trusted for ``apex`` only when it
+    EQUALS ``apex`` or is a genuine subdomain (ends with ``.apex``). This
+    rejects look-alikes a substring test would wrongly accept — e.g.
+    ``evilgreenhouse.io``, ``greenhouse.io.evil.example``,
+    ``lever.co.evil.example``, ``notashbyhq.com``, ``ashbyhq.com.evil.example``."""
+    host = (host or "").lower().rstrip(".")
+    apex = apex.lower()
+    return host == apex or host.endswith("." + apex)
+
+
+# A conservative path-token charset (unreserved-ish). Board tokens / sites /
+# board names are single path segments with no separators, traversal, encoded
+# separators, or control characters.
+_SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
+
+
+def validate_path_token(token: Optional[str], *, kind: str) -> str:
+    """Validate a board/site/board-name/tenant token that will be placed into a
+    URL path. Rejects empty values, slashes, dot-dot traversal, encoded
+    separators (``%``), and control characters, so a hostile token can never
+    escape its path segment."""
+    if not token or not isinstance(token, str):
+        raise ValueError(f"missing {kind} token")
+    if ".." in token or "/" in token or "\\" in token or "%" in token:
+        raise ValueError(f"unsafe {kind} token (separator/traversal/encoding): {token!r}")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in token):
+        raise ValueError(f"unsafe {kind} token (control character): {token!r}")
+    if not _SAFE_TOKEN_RE.match(token):
+        raise ValueError(f"unsafe {kind} token (disallowed characters): {token!r}")
+    return token
 
 
 def extract_greenhouse_board_token(url: str) -> str:
     """``https://boards.greenhouse.io/{token}`` or
     ``https://job-boards.greenhouse.io/{token}`` (also boards-api hosts)."""
     host, segs = _host_path(url)
-    if "greenhouse.io" not in host:
+    if not host_trusted_for(host, "greenhouse.io"):
         raise ValueError(f"not a Greenhouse URL: {url!r}")
     if not segs:
         raise ValueError(f"no board token in Greenhouse URL: {url!r}")
@@ -144,44 +177,42 @@ def extract_greenhouse_board_token(url: str) -> str:
     if segs[0] in ("v1", "embed"):
         for i, s in enumerate(segs):
             if s == "boards" and i + 1 < len(segs):
-                return segs[i + 1]
+                return validate_path_token(segs[i + 1], kind="greenhouse board")
         raise ValueError(f"could not locate board token in API URL: {url!r}")
-    return segs[0]
+    return validate_path_token(segs[0], kind="greenhouse board")
 
 
 def extract_lever_site(url: str) -> tuple[str, str]:
     """Return ``(site, api_base)`` from a Lever URL, honoring the EU host.
     ``jobs.lever.co/{site}`` / ``api.lever.co/v0/postings/{site}`` (or ``.eu``)."""
     host, segs = _host_path(url)
-    if "lever.co" not in host:
+    if not host_trusted_for(host, "lever.co"):
         raise ValueError(f"not a Lever URL: {url!r}")
-    eu = ".eu." in f".{host}." or host.startswith("jobs.eu.") or host.startswith("api.eu.")
+    eu = host.endswith(".eu.lever.co") or host == "eu.lever.co"
     api_base = "https://api.eu.lever.co/v0/postings" if eu else "https://api.lever.co/v0/postings"
     if host.startswith("api.") and "postings" in segs:
         idx = segs.index("postings")
         if idx + 1 < len(segs):
-            return segs[idx + 1], api_base
+            return validate_path_token(segs[idx + 1], kind="lever site"), api_base
         raise ValueError(f"no site in Lever API URL: {url!r}")
     if not segs:
         raise ValueError(f"no site in Lever URL: {url!r}")
-    return segs[0], api_base
+    return validate_path_token(segs[0], kind="lever site"), api_base
 
 
 def extract_ashby_board_name(url: str) -> str:
     """``https://jobs.ashbyhq.com/{jobBoardName}`` (case-sensitive) or the
     posting-api URL ``.../posting-api/job-board/{name}``."""
-    parts = urlsplit(url)
-    host = (parts.netloc or "").lower().split("@")[-1].split(":")[0]
-    segs = [s for s in (parts.path or "").split("/") if s]
-    if "ashbyhq.com" not in host:
+    host, segs = _host_path(url)
+    if not host_trusted_for(host, "ashbyhq.com"):
         raise ValueError(f"not an Ashby URL: {url!r}")
     if "job-board" in segs:
         idx = segs.index("job-board")
         if idx + 1 < len(segs):
-            return segs[idx + 1]
+            return validate_path_token(segs[idx + 1], kind="ashby board")
     if not segs:
         raise ValueError(f"no board name in Ashby URL: {url!r}")
-    return segs[0]
+    return validate_path_token(segs[0], kind="ashby board")
 
 
 class WorkdayIdentity:
@@ -202,11 +233,11 @@ class WorkdayIdentity:
         return f"https://{self.host}/wday/cxs/{self.tenant}/{self.site}/jobs"
 
     def cxs_detail_url(self, external_path: str) -> str:
-        path = external_path if external_path.startswith("/") else "/" + external_path
+        path = _safe_external_path(external_path)
         return f"https://{self.host}/wday/cxs/{self.tenant}/{self.site}{path}"
 
     def public_job_url(self, external_path: str) -> str:
-        path = external_path if external_path.startswith("/") else "/" + external_path
+        path = _safe_external_path(external_path)
         return f"https://{self.host}/{self.locale}/{self.site}{path}"
 
     def to_dict(self) -> dict:
@@ -215,6 +246,25 @@ class WorkdayIdentity:
 
 
 _WD_HOST_RE = re.compile(r"^(?P<tenant>[a-z0-9-]+)\.(?P<dc>wd\d+)\.myworkdayjobs\.com$", re.IGNORECASE)
+
+
+def _safe_external_path(external_path: str) -> str:
+    """Normalize + validate a Workday ``externalPath`` before it is placed into
+    a CXS/public URL. It is a multi-segment path (e.g. ``/job/BLR/Java_R1``), so
+    slashes are legitimate, but traversal (``..``), protocol-relative prefixes
+    (``//``), scheme injection, backslashes, encoded separators and control
+    characters are rejected so the path can never escape the tenant site."""
+    if not isinstance(external_path, str) or not external_path.strip():
+        raise ValueError("missing Workday externalPath")
+    path = external_path.strip()
+    path = path if path.startswith("/") else "/" + path
+    if path.startswith("//"):
+        raise ValueError(f"unsafe Workday externalPath (protocol-relative): {external_path!r}")
+    if ".." in path or "\\" in path or "%" in path or ":" in path:
+        raise ValueError(f"unsafe Workday externalPath (traversal/scheme/encoding): {external_path!r}")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in path):
+        raise ValueError(f"unsafe Workday externalPath (control character): {external_path!r}")
+    return path
 
 
 def parse_workday_url(url: str) -> WorkdayIdentity:
@@ -245,6 +295,8 @@ def parse_workday_url(url: str) -> WorkdayIdentity:
             site = segs[0]
     if not site:
         raise ValueError(f"could not determine Workday site from URL: {url!r}")
+    validate_path_token(site, kind="workday site")
+    validate_path_token(tenant, kind="workday tenant")
     return WorkdayIdentity(tenant=tenant, datacenter=dc, site=site, locale=locale, host=host)
 
 
@@ -368,6 +420,8 @@ __all__ = [
     "sanitize_description",
     "work_mode_from_text",
     "detect_challenge",
+    "host_trusted_for",
+    "validate_path_token",
     "extract_greenhouse_board_token",
     "extract_lever_site",
     "extract_ashby_board_name",

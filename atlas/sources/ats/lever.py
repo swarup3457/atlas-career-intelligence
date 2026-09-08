@@ -94,10 +94,10 @@ class LeverAdapter(HttpAtsAdapter):
 
     # -- endpoints ----------------------------------------------------------
     def _list_url(self, skip: int, limit: int) -> str:
-        return f"{self.api_base}/{quote(self.site)}?mode=json&skip={skip}&limit={limit}"
+        return f"{self.api_base}/{quote(self.site, safe='')}?mode=json&skip={skip}&limit={limit}"
 
     def _detail_url(self, posting_id: str) -> str:
-        return f"{self.api_base}/{quote(self.site)}/{quote(posting_id)}?mode=json"
+        return f"{self.api_base}/{quote(self.site, safe='')}/{quote(str(posting_id), safe='')}?mode=json"
 
     # -- parsing ------------------------------------------------------------
     def _parse_posting(self, raw: Any, *, detail: bool = False) -> Optional[DiscoveryResult]:

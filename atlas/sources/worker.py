@@ -139,7 +139,9 @@ class SourceSearchWorker(BaseWorker):
             if task.sentinel_request is None:
                 base_payload["sentinel"] = {"ran": False, "reason": "no sentinel request configured"}
                 return WorkerOutcome(status=TaskStatus.EXTRACTION_UNRESOLVED, payload=base_payload)
-            outcome = run_sentinel_probe(adapter, task.sentinel_request, historical_yields=history)
+            outcome = run_sentinel_probe(
+                adapter, task.sentinel_request, historical_yields=history, executor=self.executor
+            )
             record = {"item": item, "instance_id": task.instance_id, **outcome.to_dict()}
             self.sentinel_log.append(record)
             base_payload["sentinel"] = outcome.to_dict()

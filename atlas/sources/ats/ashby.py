@@ -92,7 +92,7 @@ class AshbyAdapter(HttpAtsAdapter):
 
     def _board_url(self) -> str:
         flag = "true" if self.include_compensation else "false"
-        return f"{_API_BASE}/{quote(self.board_name)}?includeCompensation={flag}"
+        return f"{_API_BASE}/{quote(self.board_name, safe='')}?includeCompensation={flag}"
 
     # -- parsing ------------------------------------------------------------
     def _stable_id(self, raw: dict, title: str) -> str:

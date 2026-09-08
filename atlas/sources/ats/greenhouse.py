@@ -22,6 +22,7 @@ Contract facts encoded here (from developers.greenhouse.io/job-board.html):
 from __future__ import annotations
 
 from typing import Any, Optional
+from urllib.parse import quote
 
 from atlas.models import ErrorCategory
 from atlas.sources.adapter import AdapterError, SourceAdapter, new_result_base
@@ -89,11 +90,11 @@ class GreenhouseAdapter(HttpAtsAdapter):
 
     # -- endpoints ----------------------------------------------------------
     def _jobs_url(self, *, content: bool = False) -> str:
-        url = f"{_API_BASE}/boards/{self.board_token}/jobs"
+        url = f"{_API_BASE}/boards/{quote(self.board_token, safe='')}/jobs"
         return url + "?content=true" if content else url
 
     def _job_url(self, job_id: str) -> str:
-        return f"{_API_BASE}/boards/{self.board_token}/jobs/{job_id}"
+        return f"{_API_BASE}/boards/{quote(self.board_token, safe='')}/jobs/{quote(str(job_id), safe='')}"
 
     # -- parsing ------------------------------------------------------------
     def _parse_job(self, raw: Any, *, detail: bool = False) -> Optional[DiscoveryResult]:

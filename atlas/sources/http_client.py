@@ -1,16 +1,25 @@
-"""Atlas shared read-only HTTP transport (Phase 1C-A, build spec 9).
+"""Atlas shared read-only HTTP transport (Phase 1C-A, build spec 9; corrective
+gate build spec 17).
 
 A small, injected, dependency-free HTTP client used by every real ATS adapter.
 It is deliberately built on the Python standard library (``urllib``) — Atlas
 adds NO new runtime dependency for these four adapters — and encodes every
 safety rule the discovery engine requires:
 
-    * connect + read timeouts (bounded);
+    * ONE honest socket timeout (urllib applies a single timeout to connect and
+      each read; Atlas does NOT claim a separately-enforced connect timeout);
     * an explicit, honest Atlas *personal-research* user agent (no stealth);
-    * TLS verification ON by default (a TLS failure is surfaced, never bypassed);
-    * an explicit redirect limit with loop detection (ordinary redirects only);
-    * a hard response-size cap (decompression-bomb safe);
-    * gzip/deflate decoding through standard ``Content-Encoding`` handling;
+    * TLS verification is ALWAYS on — ``verify_tls=False`` is REJECTED, never
+      silently ignored (a TLS failure is surfaced, never bypassed);
+    * an explicit redirect limit with loop detection; a redirect MUST stay on an
+      approved host; an HTTPS→HTTP downgrade is rejected; on a cross-origin
+      redirect Origin/Referer/Authorization/Cookie are stripped and any request
+      body is dropped (a Workday POST body is never carried to another host);
+    * only GET is allowed in general, plus the single public Workday CXS search
+      POST an employer's own careers page issues (a facet/keyword query carrying
+      NO candidate data); any other method is rejected;
+    * STREAMING gzip/deflate decompression with a hard DECOMPRESSED-output cap
+      (decompression-bomb safe) on top of the compressed-input cap;
     * numeric AND HTTP-date ``Retry-After`` parsing (honored centrally later);
     * content-type tolerance WITH a check, and strict JSON validation on demand;
     * NO proxy by default, NO random jitter, NO hidden retry.
@@ -32,7 +41,6 @@ from __future__ import annotations
 
 import datetime
 import email.utils
-import gzip
 import ssl
 import threading
 import urllib.error
@@ -55,6 +63,31 @@ _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 # Absolute safety ceiling for a single socket read, independent of the logical
 # cap, so a hostile/broken server can never make us read unbounded bytes.
 _HARD_READ_CEILING = 64 * 1024 * 1024
+
+# Request headers that must NEVER survive a cross-origin redirect (they either
+# leak the origin/credentials or are meaningless off-origin).
+_CROSS_ORIGIN_STRIP = frozenset({"origin", "referer", "authorization", "cookie", "proxy-authorization"})
+
+
+def _host_of(url: str) -> str:
+    parts = urlsplit(url)
+    return (parts.netloc or "").split("@")[-1].split(":")[0].lower().rstrip(".")
+
+
+def _apex_of(host: str) -> str:
+    """Best-effort registrable suffix (last two labels). Used only to decide
+    whether a redirect is 'same-site' for the conservative default policy; the
+    adapter may also supply an explicit allowlist."""
+    labels = host.split(".")
+    return ".".join(labels[-2:]) if len(labels) >= 2 else host
+
+
+def is_workday_cxs_search(url: str) -> bool:
+    """True only for the public Workday CXS endpoint an employer's own careers
+    page posts to (``https://{tenant}.{dc}.myworkdayjobs.com/wday/cxs/...``)."""
+    parts = urlsplit(url)
+    host = _host_of(url)
+    return (host == "myworkdayjobs.com" or host.endswith(".myworkdayjobs.com")) and "/wday/cxs/" in (parts.path or "")
 
 
 class HttpError(Exception):
@@ -262,6 +295,7 @@ class ReadOnlyHttpClient:
         request_budget: Optional[int] = None,
         verify_tls: bool = True,
         accept: str = "application/json",
+        redirect_host_allowlist: Optional[frozenset[str]] = None,
     ):
         if connect_timeout <= 0 or read_timeout <= 0:
             raise ValueError("timeouts must be > 0")
@@ -269,14 +303,29 @@ class ReadOnlyHttpClient:
             raise ValueError("max_response_bytes must be >= 1")
         if max_redirects < 0:
             raise ValueError("max_redirects must be >= 0")
+        if not verify_tls:
+            # TLS verification is a non-negotiable invariant. A False option
+            # would be misleading (it was previously silently ignored), so it is
+            # rejected outright rather than pretended-to-honor.
+            raise ValueError("verify_tls cannot be disabled; TLS verification is always on")
         self.connect_timeout = connect_timeout
         self.read_timeout = read_timeout
+        # urllib enforces ONE socket timeout covering connect + each read; we use
+        # the (larger) read timeout as that single honest bound and do NOT claim a
+        # separately-enforced connect timeout.
+        self._socket_timeout = max(connect_timeout, read_timeout)
         self.max_response_bytes = min(max_response_bytes, _HARD_READ_CEILING)
         self.max_redirects = max_redirects
         self.user_agent = user_agent
         self.request_budget = request_budget
-        self.verify_tls = verify_tls
+        self.verify_tls = True
         self.accept = accept
+        # Apex hosts a redirect is allowed to target (in addition to the origin
+        # host's own registrable domain). None => same-registrable-domain only.
+        self.redirect_host_allowlist = (
+            frozenset(h.lower().rstrip(".") for h in redirect_host_allowlist)
+            if redirect_host_allowlist is not None else None
+        )
         self._requests_made = 0
         self._lock = threading.Lock()
         # A default-verifying TLS context (verification ON). We NEVER disable
@@ -306,13 +355,36 @@ class ReadOnlyHttpClient:
 
     def fetch(self, request: HttpRequest) -> HttpResponse:
         """Perform exactly one logical HTTP exchange (following at most
-        ``max_redirects`` ordinary redirects). Never retries."""
+        ``max_redirects`` ordinary redirects). Never retries. Only GET is
+        allowed in general; the single public Workday CXS search POST is the
+        only permitted non-GET. Redirects must stay on an approved host, may not
+        downgrade HTTPS→HTTP, and drop the body + strip origin/credential
+        headers when crossing origins."""
         method = request.method.upper()
         url = request.url
+        origin_url = request.url
+        origin_host = _host_of(origin_url)
+        origin_scheme = (urlsplit(origin_url).scheme or "").lower()
+
+        # Method policy: GET generally, plus ONLY the public Workday CXS POST.
+        if method == "GET":
+            pass
+        elif method == "POST" and is_workday_cxs_search(url):
+            pass
+        else:
+            raise HttpError(
+                ErrorCategory.CONFIG_ERROR,
+                f"method {method!r} to {url} is not allowed (only GET, plus the public Workday CXS search POST)",
+            )
+        if not self._host_allowed(origin_host, origin_host):
+            # Sanity: the origin host must itself be an approved host when an
+            # explicit allowlist is configured.
+            pass  # origin is always allowed against itself; allowlist gates redirects
+
         headers = self._base_headers()
         headers.update({k: v for k, v in dict(request.headers).items()})
         body = request.body
-        timeout = request.timeout or self.read_timeout
+        timeout = request.timeout or self._socket_timeout
 
         visited: list[str] = []
         redirects = 0
@@ -325,15 +397,44 @@ class ReadOnlyHttpClient:
                 if not location:
                     break
                 new_url = urljoin(url, location)
+                new_scheme = (urlsplit(new_url).scheme or "").lower()
+                new_host = _host_of(new_url)
+                # Reject an HTTPS→HTTP downgrade redirect.
+                if origin_scheme == "https" and new_scheme == "http":
+                    raise HttpError(
+                        ErrorCategory.INVALID_RESPONSE,
+                        f"refusing HTTPS→HTTP downgrade redirect to {new_url}",
+                        status=raw.status,
+                    )
+                if new_scheme not in ("http", "https"):
+                    raise HttpError(
+                        ErrorCategory.INVALID_RESPONSE,
+                        f"refusing redirect to non-HTTP(S) target {new_url}", status=raw.status,
+                    )
+                # Redirect target must be an adapter-approved host.
+                if not self._host_allowed(new_host, origin_host):
+                    raise HttpError(
+                        ErrorCategory.INVALID_RESPONSE,
+                        f"refusing redirect to non-approved host {new_host!r} (from {origin_host!r})",
+                        status=raw.status,
+                    )
                 if new_url in visited:
                     raise HttpError(
                         ErrorCategory.INVALID_RESPONSE,
                         f"redirect loop detected at {new_url}",
                         status=raw.status,
                     )
-                # 303 (and, per browser convention, 301/302 for POST) downgrade
-                # to GET and drop the body; 307/308 preserve method + body.
-                if raw.status == 303 or (raw.status in (301, 302) and method != "GET"):
+                cross_origin = new_host != _host_of(url)
+                if cross_origin:
+                    # Never carry a body (e.g. a Workday POST) to another host,
+                    # and strip origin/credential headers.
+                    method = "GET"
+                    body = None
+                    headers = {
+                        k: v for k, v in headers.items() if k.lower() not in _CROSS_ORIGIN_STRIP
+                    }
+                elif raw.status == 303 or (raw.status in (301, 302) and method != "GET"):
+                    # Same-origin 303 (and 301/302 for a POST) downgrade to GET.
                     method = "GET"
                     body = None
                 url = new_url
@@ -357,6 +458,22 @@ class ReadOnlyHttpClient:
             redirects=redirects,
         )
 
+    def _host_allowed(self, host: str, origin_host: str) -> bool:
+        """A redirect target host is allowed when it is the origin host, a
+        subdomain of the origin's registrable domain, or explicitly allowlisted."""
+        if not host:
+            return False
+        if host == origin_host:
+            return True
+        origin_apex = _apex_of(origin_host)
+        if host == origin_apex or host.endswith("." + origin_apex):
+            return True
+        if self.redirect_host_allowlist is not None:
+            for apex in self.redirect_host_allowlist:
+                if host == apex or host.endswith("." + apex):
+                    return True
+        return False
+
     # -- helpers ------------------------------------------------------------
     def _base_headers(self) -> dict[str, str]:
         return {
@@ -367,20 +484,17 @@ class ReadOnlyHttpClient:
 
     def _decode_body(self, raw: _RawResponse) -> bytes:
         encoding = (raw.headers.get("Content-Encoding", "") or "").strip().lower()
-        data = raw.body
-        try:
-            if encoding == "gzip":
-                data = gzip.decompress(data)
-            elif encoding == "deflate":
-                try:
-                    data = zlib.decompress(data)
-                except zlib.error:
-                    data = zlib.decompress(data, -zlib.MAX_WBITS)  # raw deflate
-        except (OSError, zlib.error) as exc:
+        if encoding in ("gzip", "deflate"):
+            data = self._decompress_capped(raw.body, encoding, raw.final_url, raw.status)
+        elif encoding in ("", "identity"):
+            data = raw.body
+        else:
+            # An unknown/unsupported encoding is not silently trusted.
             raise HttpError(
                 ErrorCategory.INVALID_RESPONSE,
-                f"failed to decode {encoding} response body from {raw.final_url}: {exc}",
-            ) from exc
+                f"unsupported Content-Encoding {encoding!r} from {raw.final_url}",
+                status=raw.status,
+            )
         if len(data) > self.max_response_bytes:
             raise HttpError(
                 ErrorCategory.INVALID_RESPONSE,
@@ -389,6 +503,65 @@ class ReadOnlyHttpClient:
                 status=raw.status,
             )
         return data
+
+    def _decompress_capped(self, data: bytes, encoding: str, final_url: str, status: int) -> bytes:
+        """STREAMING gzip/deflate decompression with a hard DECOMPRESSED-output
+        cap. Feeds the compressed input incrementally and aborts the instant the
+        decompressed output would exceed ``max_response_bytes`` — so a small
+        compressed 'bomb' that expands to gigabytes can never be materialized."""
+        limit = self.max_response_bytes
+
+        def _run(wbits: int) -> bytes:
+            d = zlib.decompressobj(wbits)
+            out = bytearray()
+            remaining = data
+            while remaining:
+                budget = limit + 1 - len(out)
+                if budget <= 0:
+                    break
+                chunk = d.decompress(remaining, budget)
+                out += chunk
+                remaining = d.unconsumed_tail
+                if len(out) > limit:
+                    raise HttpError(
+                        ErrorCategory.INVALID_RESPONSE,
+                        f"decompressed body from {final_url} exceeds max_response_bytes "
+                        f"({self.max_response_bytes}) — refusing decompression bomb",
+                        status=status,
+                    )
+                if not chunk and not remaining:
+                    break
+            out += d.flush()
+            if len(out) > limit:
+                raise HttpError(
+                    ErrorCategory.INVALID_RESPONSE,
+                    f"decompressed body from {final_url} exceeds max_response_bytes "
+                    f"({self.max_response_bytes}) — refusing decompression bomb",
+                    status=status,
+                )
+            return bytes(out)
+
+        if encoding == "gzip":
+            try:
+                return _run(16 + zlib.MAX_WBITS)
+            except zlib.error as exc:
+                raise HttpError(
+                    ErrorCategory.INVALID_RESPONSE,
+                    f"failed to decode gzip response body from {final_url}: {exc}", status=status,
+                ) from exc
+        # deflate: try zlib-wrapped, then raw deflate.
+        try:
+            return _run(zlib.MAX_WBITS)
+        except HttpError:
+            raise
+        except zlib.error:
+            try:
+                return _run(-zlib.MAX_WBITS)
+            except (zlib.error, OSError) as exc:
+                raise HttpError(
+                    ErrorCategory.INVALID_RESPONSE,
+                    f"failed to decode deflate response body from {final_url}: {exc}", status=status,
+                ) from exc
 
     def _open_raw(
         self, method: str, url: str, headers: Mapping[str, str], body: Optional[bytes], timeout: float
@@ -448,4 +621,5 @@ __all__ = [
     "HttpResponse",
     "ReadOnlyHttpClient",
     "parse_retry_after",
+    "is_workday_cxs_search",
 ]

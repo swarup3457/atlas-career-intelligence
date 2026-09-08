@@ -87,6 +87,15 @@ def should_run_sentinel(kind: ZeroResultKind) -> bool:
     return kind == ZeroResultKind.UNTRUSTED_ZERO
 
 
+def _paced_search(adapter: SourceAdapter, request: SearchRequest, executor: Optional["object"]) -> SearchResult:
+    """Route one search through the shared rate-limited executor when supplied
+    (so the sentinel shares pacing/concurrency/request budgets), else a direct
+    single call (offline unit tests without an executor). Never retries."""
+    if executor is not None:
+        return executor.run_search(adapter, request)
+    return adapter.search(request)
+
+
 @dataclass
 class SentinelOutcome:
     ran: bool
@@ -108,16 +117,23 @@ def run_sentinel_probe(
     sentinel_request: SearchRequest,
     *,
     historical_yields: Sequence[int] = (),
+    executor: Optional["object"] = None,
 ) -> SentinelOutcome:
     """Run AT MOST ONE broad sentinel query and classify source health.
 
-    Never loops, never retries. A structurally-successful sentinel that
+    Never loops, never retries, and never recurses (a sentinel never triggers
+    another sentinel). The probe is routed through the SHARED
+    :class:`~atlas.sources.executor.RateLimitedExecutor` when one is supplied
+    (build spec 18) so it is paced by the same rate limiter, bounded by the same
+    per-source concurrency budget, and counted against the same HTTP request
+    budget as an ordinary search — it must NOT bypass the common executor by
+    calling ``adapter.search`` directly. A structurally-successful sentinel that
     yields results means the original zero was query-specific (trusted); a
     sentinel that also yields zero with intact structure is a trusted zero;
     anything else escalates to an untrusted/degraded verdict.
     """
     try:
-        probe = adapter.search(sentinel_request)
+        probe = _paced_search(adapter, sentinel_request, executor)
     except CapabilityNotSupported:
         return SentinelOutcome(
             ran=False,
