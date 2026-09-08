@@ -62,7 +62,13 @@ from atlas.persistence.sqlite import StateStore
 from atlas.planning import CoveragePlanner, PlanInput, PlannedCompany
 from atlas.planning.query_compiler import SearchQueryCompiler
 from atlas.policy import load_policy
-from atlas.policy.rules import VerificationInput, classify_verification
+from atlas.policy.rules import (
+    FRESHNESS_DATE_UNKNOWN,
+    FRESHNESS_LIVE_DATE_UNKNOWN,
+    VerificationInput,
+    classify_verification,
+    freshness_band as policy_freshness_band,
+)
 from atlas.reporting.mapping import load_report_mapping, validate_report, write_report
 from atlas.runtime.canonicalize import canonicalize_run
 from atlas.runtime.fixture_pipeline import FixtureExecutionPipeline
@@ -453,9 +459,19 @@ class ProductionSearchRuntime:
     def _h_dedupe(self, state: ProductionState, _rt) -> ProductionState:
         with StateStore(self.settings.state_db) as store:
             result = canonicalize_run(store, self.run_id)
-            unique = store.count_canonical_jobs()
-        state.setdefault("counters", {})["unique_after_dedupe"] = unique
-        state["counters"]["canonicalized_observations"] = result.observations_added
+            # Persist a DURABLE verification decision per current-run canonical job
+            # (build spec 10) now that canonical identity is assigned.
+            decisions = self._persist_verification_decisions(store)
+            # Current-run scoped unique count — NEVER the global canonical table
+            # (build spec 9). Prior runs' jobs must not inflate this run's summary.
+            unique = store.count_current_run_canonical_jobs(self.run_id)
+        counters = state.setdefault("counters", {})
+        counters["unique_after_dedupe"] = unique
+        counters["canonicalized_observations"] = result.observations_added
+        counters["reposts"] = result.reposts
+        counters["verified"] = decisions["verified"]
+        counters["official_search_live"] = decisions["official_search_live"]
+        counters["verification_decisions"] = decisions["decided"]
         return state
 
     def _h_match(self, state: ProductionState, _rt) -> ProductionState:
@@ -611,41 +627,38 @@ class ProductionSearchRuntime:
     _EVIDENCE_RANK = {"OFFICIAL_DETAIL_LIVE": 3, "OFFICIAL_SEARCH_LIVE": 2, "PORTAL_LIVE": 1}
 
     @staticmethod
-    def _freshness_band(posted_at, date_provenance, *, now=None) -> str:
-        """Map a KNOWN employer posted/updated date to a freshness band; only a
-        genuinely unknown/relative date is LIVE_DATE_UNKNOWN (build spec 19). A
-        crawl/discovery date is never used as the posting date (the adapter's
-        DateProvenance already guarantees that)."""
-        if not posted_at or date_provenance not in ("EMPLOYER_POSTED_AT", "EMPLOYER_UPDATED_AT"):
-            return "LIVE_DATE_UNKNOWN"
+    def _freshness_band(posted_at, date_provenance, *, now=None, has_live_official_page=True) -> str:
+        """Single freshness authority (build spec 11): delegate the band logic to
+        the canonical ``atlas.policy.rules.freshness_band`` — there is no second
+        runtime implementation. Only a true EMPLOYER POSTED date yields an age
+        band; an employer UPDATED date is stored separately and never substituted
+        for the posted date, and a crawl/discovery date is never treated as a
+        posting date. An impossible FUTURE posted date is a DATA_CONFLICT (from
+        the policy function), never clamped to '0-7 days'."""
+        if date_provenance != "EMPLOYER_POSTED_AT" or not posted_at:
+            # No trustworthy employer POSTED date: live official page -> date
+            # unknown but live; otherwise merely date unknown (never "live").
+            return FRESHNESS_LIVE_DATE_UNKNOWN if has_live_official_page else FRESHNESS_DATE_UNKNOWN
         try:
             raw = str(posted_at).replace("Z", "+00:00")
-            dt = datetime.datetime.fromisoformat(raw)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            posted_date = datetime.datetime.fromisoformat(raw).date()
         except (ValueError, TypeError):
-            return "LIVE_DATE_UNKNOWN"
-        now = now or datetime.datetime.now(datetime.timezone.utc)
-        age = (now - dt).days
-        if age < 0:
-            age = 0
-        if age <= 7:
-            return "0-7 days"
-        if age <= 14:
-            return "8-14 days"
-        if age <= 30:
-            return "15-30 days"
-        if age <= 45:
-            return "31-45 days exceptional"
-        return "STALE"
+            return FRESHNESS_LIVE_DATE_UNKNOWN if has_live_official_page else FRESHNESS_DATE_UNKNOWN
+        today = (now or datetime.datetime.now(datetime.timezone.utc)).date()
+        return policy_freshness_band(posted_date, today=today, has_live_official_page=has_live_official_page)
 
     def _current_run_jobs(self, *, now=None) -> list[dict]:
         """Project ONLY the current run's observations (grouped to canonical
         identity) into truthful report/verification rows — never every canonical
-        job globally (build spec 19). Each row carries the ACTUAL evidence-derived
-        verification level and freshness band, not a blanket label."""
+        job globally (build spec 9/19). Each row's verification level and
+        freshness come from the DURABLE persisted verification decision when one
+        exists (build spec 10); before DEDUPE it falls back to the evidence-
+        derived label. The highest-evidence revision wins per canonical, so a
+        hydrated job appears once."""
         best: dict[str, dict] = {}
         with StateStore(self.settings.state_db) as store:
+            decisions = {d["canonical_id"]: d for d in store.list_verification_decisions(self.run_id)
+                         if d["canonical_id"]}
             for row in store.list_raw_observations(self.run_id):
                 key = row["canonical_id"] or row["source_identity"] or row["observation_id"]
                 try:
@@ -657,10 +670,19 @@ class ProductionSearchRuntime:
                 prev = best.get(key)
                 if prev is not None and prev["_rank"] >= rank:
                     continue
-                verification = self._EVIDENCE_TO_VERIFICATION.get(evidence, "MANUAL_VERIFICATION")
-                freshness = self._freshness_band(row["posted_at"], detail.get("date_provenance"), now=now)
-                is_active = (row["is_active"] or "").upper()
-                lifecycle = "ACTIVE" if is_active == "ACTIVE" else ("CLOSED" if is_active == "INACTIVE" else "UNKNOWN")
+                is_official = evidence.startswith("OFFICIAL")
+                decision = decisions.get(row["canonical_id"]) if row["canonical_id"] else None
+                if decision is not None:
+                    # Report FROM the persisted decision, not the adapter label.
+                    verification = decision["verification_level"]
+                    freshness = decision["freshness_result"]
+                    lifecycle = decision["lifecycle_result"] or "UNKNOWN"
+                else:
+                    verification = self._EVIDENCE_TO_VERIFICATION.get(evidence, "MANUAL_VERIFICATION")
+                    freshness = self._freshness_band(row["posted_at"], detail.get("date_provenance"),
+                                                     now=now, has_live_official_page=is_official)
+                    is_active = (row["is_active"] or "").upper()
+                    lifecycle = "ACTIVE" if is_active == "ACTIVE" else ("CLOSED" if is_active == "INACTIVE" else "UNKNOWN")
                 best[key] = {
                     "_rank": rank,
                     "company": row["company"], "title": row["title"], "location": row["location"],
@@ -673,6 +695,63 @@ class ProductionSearchRuntime:
                     "evidence": evidence,
                 }
         return sorted(best.values(), key=lambda r: (r["company"] or "", r["title"] or ""))
+
+    def _persist_verification_decisions(self, store, *, now=None) -> dict:
+        """Compute and DURABLY persist one append-only verification decision per
+        current-run canonical job (build spec 10), from the ACTUAL highest-
+        evidence revision. Returns a small summary of counts. A deterministic
+        classifier bounds the level: an OFFICIAL_SEARCH_LIVE row is never
+        auto-VERIFIED_OFFICIAL; only a detail-hydrated, identity-aligned, current
+        official revision reaches VERIFIED_OFFICIAL (no final Submit); a portal
+        row stays a lead; closure requires positive evidence (access limitation
+        is not closure); an LLM can never exceed this deterministic ceiling."""
+        policy_fp = self.policy.short_fingerprint if self.policy is not None else ""
+        classifier_version = "det-verification-v1"
+        rows_by_canonical: dict[str, list] = {}
+        for row in store.list_raw_observations(self.run_id):
+            if row["canonical_id"]:
+                rows_by_canonical.setdefault(row["canonical_id"], []).append(row)
+        verified = search_live = portal = 0
+        for canonical_id, rows in rows_by_canonical.items():
+            rep = max(rows, key=lambda r: (self._EVIDENCE_RANK.get(
+                (json.loads(r["detail_json"] or "{}").get("verification_level") or ""), 0),
+                r["observed_at"] or "", r["observation_id"]))
+            detail = json.loads(rep["detail_json"] or "{}")
+            evidence = detail.get("verification_level") or ""
+            is_official = evidence.startswith("OFFICIAL")
+            is_detail = evidence == "OFFICIAL_DETAIL_LIVE"
+            identity_aligned = bool(rep["source_job_id"])
+            is_active = (rep["is_active"] or "").upper()
+            current = is_active != "INACTIVE"
+            lifecycle = "ACTIVE" if is_active == "ACTIVE" else ("CLOSED" if is_active == "INACTIVE" else "UNKNOWN")
+            # Deterministic ceiling.
+            ceiling = classify_verification(VerificationInput(
+                page_kind="specific_role_page" if is_official else "portal",
+                identity_aligned=identity_aligned, current_content=current,
+                positive_closure=(is_active == "INACTIVE"),
+            ))
+            if not is_official:
+                level = "PORTAL_CURRENT_LEAD"
+                portal += 1
+            elif is_detail and identity_aligned and current and ceiling.value == "VERIFIED_OFFICIAL":
+                level = "VERIFIED_OFFICIAL"
+                verified += 1
+            elif current:
+                level = "OFFICIAL_SEARCH_LIVE"
+                search_live += 1
+            else:
+                level = "MANUAL_VERIFICATION"
+            freshness = self._freshness_band(rep["posted_at"], detail.get("date_provenance"),
+                                             now=now, has_live_official_page=is_official)
+            closure = "CLOSED_POSITIVE_EVIDENCE" if is_active == "INACTIVE" else None
+            store.record_verification_decision(
+                f"vdec::{self.run_id}::{canonical_id}", self.run_id, canonical_id=canonical_id,
+                evidence_revision_ids=sorted(r["observation_id"] for r in rows),
+                verification_level=level, lifecycle_result=lifecycle, freshness_result=freshness,
+                closure_evidence=closure, classifier_version=classifier_version, policy_fingerprint=policy_fp,
+            )
+        return {"verified": verified, "official_search_live": search_live, "portal_leads": portal,
+                "decided": len(rows_by_canonical)}
 
     def _candidate_evidence_set(self) -> set:
         """Best-effort lowercase evidence-token set from the private candidate
