@@ -1001,6 +1001,144 @@ def _cmd_outputs(args: argparse.Namespace) -> int:
     return 2
 
 
+def _synthetic_daily_candidate():
+    from atlas.candidate.eligibility import CandidateProfile
+    from atlas.candidate.importer import build_synthetic_ledger
+
+    return CandidateProfile.from_ledger(
+        build_synthetic_ledger(), total_experience_years=4.5,
+        target_lanes=("JAVA_BACKEND", "GENERAL_SOFTWARE"),
+    )
+
+
+def _synthetic_daily_jobs():
+    """A small PII-free synthetic job set so `atlas daily` demonstrates the full
+    durable pipeline end-to-end offline. Live source wiring replaces this set."""
+    import datetime
+
+    from atlas.candidate.eligibility import RankableJob
+
+    today = datetime.date.today()
+    specs = [
+        ("Co-Alpha", ("Java", "Spring Boot"), ("MySQL",), "VERIFIED_OFFICIAL"),
+        ("Co-Bravo", ("Java", "REST"), ("AWS",), "VERIFIED_OFFICIAL"),
+        ("Co-Charlie", ("Java", "Kubernetes"), ("Docker",), "PORTAL_CURRENT_LEAD"),
+    ]
+    jobs = []
+    for i, (company, mand, pref, verif) in enumerate(specs):
+        jobs.append(RankableJob(
+            job_key=f"job_daily_synth_{i}", company=company, title="Java Backend Engineer",
+            location="Bengaluru, India", lane="JAVA_BACKEND",
+            mandatory_requirements=mand, preferred_requirements=pref,
+            experience_text="2+ years", eligibility_text="Bengaluru, India",
+            posted_date=today, verification_state=verif, has_live_official_page=(verif == "VERIFIED_OFFICIAL"),
+            url=f"https://{company.lower()}.example/jobs/{i}", source_family="synthetic",
+        ))
+    return jobs
+
+
+def _cmd_daily(args: argparse.Namespace) -> int:
+    """Daily operation family: plan / run / resume / status + Windows scheduler."""
+    import json as _json
+
+    from atlas.runtime.scheduler_install import WindowsDailyScheduler
+
+    settings = load_settings()
+    sub = getattr(args, "daily_command", None)
+    as_json = bool(getattr(args, "json", False))
+
+    # -- scheduler (dry-run default; enable is explicit) --------------------
+    if sub in ("install-task", "disable-task", "remove-task"):
+        sched = WindowsDailyScheduler()
+        if sub == "install-task":
+            try:
+                action = sched.install(getattr(args, "time", ""), enable=bool(getattr(args, "enable", False)))
+            except ValueError as exc:
+                print(f"ERROR: {exc}")
+                return 2
+            if as_json:
+                print(_json.dumps(action.to_dict(), indent=2))
+            elif action.dry_run:
+                print("DRY-RUN — no scheduled task was created. Re-run with --enable to install it.")
+                print(f"Task: {action.task}")
+                print(f"Command:\n  {action.command}")
+            else:
+                print(f"Task {action.task}: {'ENABLED' if action.enabled else 'FAILED'} (rc={action.returncode}).")
+                if action.stderr.strip():
+                    print(action.stderr.strip())
+            return 0 if (action.dry_run or action.enabled) else 1
+        action = sched.disable() if sub == "disable-task" else sched.remove()
+        if as_json:
+            print(_json.dumps(action.to_dict(), indent=2))
+        else:
+            print(f"{action.action} {action.task}: rc={action.returncode}")
+        return 0 if action.returncode == 0 else 1
+
+    # -- pipeline commands --------------------------------------------------
+    from atlas.orchestration.run_lock import RUN_ALREADY_ACTIVE, RunLock
+    from atlas.runtime.daily import DailyRunner
+
+    candidate = _synthetic_daily_candidate()
+    jobs = _synthetic_daily_jobs()
+
+    def _make_runner(run_id, *, live=False):
+        return DailyRunner(settings, run_id, jobs=jobs, candidate=candidate, live=live)
+
+    if sub == "plan":
+        run_id = getattr(args, "run_id", None) or _fresh_run_id("daily")
+        plan = _make_runner(run_id).plan()
+        if as_json:
+            print(_json.dumps(plan, indent=2))
+        else:
+            print(f"Daily plan for run {run_id}:")
+            print(f"  jobs={plan['jobs']} triage_limit={plan['triage_limit']} deep_limit={plan['deep_limit']}")
+            print(f"  run dir:   {plan['run_dir']}")
+            print(f"  workbook:  {plan['workbook_path']}")
+        return 0
+
+    if sub in ("run", "resume"):
+        if not bool(getattr(args, "live", False)):
+            print("NOTE: 'daily run/resume' requires --live to execute the durable pipeline.")
+            return 0
+        run_id = getattr(args, "run_id", None) or _fresh_run_id("daily")
+        lock = RunLock(settings.state_db.parent, filename="atlas_daily_run.lock")
+        acquired = lock.try_acquire(run_id)
+        if acquired.status == RUN_ALREADY_ACTIVE:
+            print(f"ERROR: another daily run is already active (run_id={acquired.run_id}). No concurrent runs.")
+            return 2
+        try:
+            runner = _make_runner(run_id, live=True)
+            result = runner.resume() if sub == "resume" else runner.run()
+        finally:
+            lock.release()
+        payload = result.to_dict()
+        if as_json:
+            print(_json.dumps(payload, indent=2))
+        else:
+            print(f"Daily {sub}: {payload['terminal_state']} (report_valid={payload['report_valid']}, "
+                  f"latest_updated={payload['latest_updated']})")
+            print(f"  discovered={payload['jobs_discovered']} ranked={payload['jobs_ranked']} "
+                  f"selected={payload['selected']} packs={payload['packs_built']}")
+            print(f"  run dir:  {payload['run_dir']}")
+            print(f"  workbook: {payload['workbook_path']}")
+        return 0 if payload["terminal_state"] == "COMPLETE" else (
+            2 if payload["terminal_state"] == "WAITING_FOR_HUMAN" else 1)
+
+    if sub == "status":
+        run_id = getattr(args, "run_id", None)
+        status = _make_runner(run_id).status()
+        if as_json:
+            print(_json.dumps(status, indent=2))
+        else:
+            print(f"Daily run {run_id}: phase={status['phase']} terminal={status['terminal_state']} "
+                  f"manifest={status['manifest_status']}")
+            print(f"  run dir: {status['run_dir']}")
+        return 0
+
+    print("ERROR: unknown daily subcommand")
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="atlas", description="Atlas Career Intelligence platform CLI (foundation build).")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1280,6 +1418,52 @@ def build_parser() -> argparse.ArgumentParser:
     p_out_open = outputs_sub.add_parser("open-latest", help="Open the latest workbook (explicit; requires --live).")
     p_out_open.add_argument("--live", action="store_true")
     p_out_open.set_defaults(func=_cmd_outputs)
+
+    # -- daily: root daily LangGraph run + Windows scheduler (Phase 1E/F §11) -
+    p_daily = subparsers.add_parser(
+        "daily", help="Daily operation: plan/run/resume/status + safe Windows scheduling.")
+    daily_sub = p_daily.add_subparsers(dest="daily_command", required=True)
+
+    p_da_plan = daily_sub.add_parser("plan", help="Plan a daily run (offline, no side effects).")
+    p_da_plan.add_argument("--run-id", default=None)
+    p_da_plan.add_argument("--json", action="store_true")
+    p_da_plan.set_defaults(func=_cmd_daily)
+
+    p_da_run = daily_sub.add_parser("run", help="Run the durable daily graph (requires --live).")
+    p_da_run.add_argument("--run-id", default=None)
+    p_da_run.add_argument("--live", action="store_true")
+    p_da_run.add_argument("--background", action="store_true", help="Headless/background (no interactive prompts).")
+    p_da_run.add_argument("--allow-private-candidate-to-copilot", dest="allow_private", action="store_true",
+                          help="Explicit consent to send real candidate data to Copilot (default OFF).")
+    p_da_run.add_argument("--json", action="store_true")
+    p_da_run.set_defaults(func=_cmd_daily)
+
+    p_da_resume = daily_sub.add_parser("resume", help="Resume a PARTIAL/interrupted daily run (requires --live).")
+    p_da_resume.add_argument("--run-id", required=True)
+    p_da_resume.add_argument("--live", action="store_true")
+    p_da_resume.add_argument("--background", action="store_true")
+    p_da_resume.add_argument("--json", action="store_true")
+    p_da_resume.set_defaults(func=_cmd_daily)
+
+    p_da_status = daily_sub.add_parser("status", help="Show a daily run's phase/terminal/manifest status.")
+    p_da_status.add_argument("--run-id", required=True)
+    p_da_status.add_argument("--json", action="store_true")
+    p_da_status.set_defaults(func=_cmd_daily)
+
+    p_da_install = daily_sub.add_parser("install-task", help="Generate/install the Windows daily task (DRY-RUN default).")
+    p_da_install.add_argument("--time", required=True, help="Daily start time HH:mm (24h).")
+    p_da_install.add_argument("--dry-run", action="store_true", help="Only print the command (default behavior).")
+    p_da_install.add_argument("--enable", action="store_true", help="Actually create the scheduled task (explicit).")
+    p_da_install.add_argument("--json", action="store_true")
+    p_da_install.set_defaults(func=_cmd_daily)
+
+    p_da_disable = daily_sub.add_parser("disable-task", help="Disable the scheduled daily task.")
+    p_da_disable.add_argument("--json", action="store_true")
+    p_da_disable.set_defaults(func=_cmd_daily)
+
+    p_da_remove = daily_sub.add_parser("remove-task", help="Delete the scheduled daily task.")
+    p_da_remove.add_argument("--json", action="store_true")
+    p_da_remove.set_defaults(func=_cmd_daily)
 
     return parser
 
