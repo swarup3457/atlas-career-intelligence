@@ -430,6 +430,115 @@ def _cmd_add_source(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_adapters(args: argparse.Namespace) -> int:
+    """List the official ATS adapters, or run a low-volume READ-ONLY canary."""
+    import json as _json
+
+    from atlas.runtime.canary import (
+        default_canary_config,
+        load_canary_config,
+        run_all_adapter_canaries,
+    )
+    from atlas.sources.ats import describe_ats_adapters
+    from atlas.sources.models import SourceFamily
+
+    sub = getattr(args, "adapters_command", None)
+    if sub == "list":
+        descriptors = describe_ats_adapters()
+        print(f"Official ATS adapters (Phase 1C-A): {len(descriptors)}")
+        for d in descriptors:
+            print(f"  [{d['source_family']}] {d['adapter_class']} v{d['adapter_version']}"
+                  f"/parser {d['parser_version']} caps={d['capabilities']}")
+        if getattr(args, "json", False):
+            print("\n" + _json.dumps({"adapters": descriptors}))
+        return 0
+
+    # canary
+    live = bool(getattr(args, "live", False))
+    families = None
+    if getattr(args, "family", None) and not getattr(args, "all", False):
+        try:
+            families = [SourceFamily(args.family)]
+        except ValueError:
+            print(f"ERROR: unknown family {args.family!r}")
+            return 2
+    config = load_canary_config(Path(args.config)) if getattr(args, "config", None) else default_canary_config()
+    if not live:
+        print("NOTE: read-only canary in DRY-RUN mode (no network). Pass --live to hit real boards.")
+    results = run_all_adapter_canaries(config, live=live, families=families, limit=int(getattr(args, "limit", 25)))
+    ok_any = False
+    for r in results:
+        ok_any = ok_any or r.ok
+        line = (f"[{r.family}] {r.board_identity} status={r.request_status} "
+                f"count={r.result_count} more={r.has_more} health={r.health_state}")
+        if r.limitation:
+            line += f" limitation={r.limitation}"
+        print(line)
+        for s in r.samples:
+            print(f"    - {s.title} | {s.location} | {s.source_job_id}")
+    if getattr(args, "json", False):
+        print("\n" + _json.dumps({"live": live, "results": [r.to_dict() for r in results]}))
+    if not results:
+        return 0
+    if live:
+        return 0 if ok_any else 1
+    return 0
+
+
+def _cmd_production_canary(args: argparse.Namespace) -> int:
+    """Run/resume/inspect a low-volume live production canary through the SAME
+    production graph with the bounded parallel dispatcher."""
+    from atlas.persistence.sqlite import StateStore
+    from atlas.runtime.canary import build_canary_runtime, default_canary_config, load_canary_config
+
+    settings = load_settings()
+    settings.ensure_directories()
+    run_id = args.run_id or "ats-canary-run"
+    sub = args.canary_command
+
+    if sub == "status":
+        with StateStore(settings.state_db) as store:
+            run = store.get_run(run_id)
+            plan = store.get_coverage_plan(run_id)
+            summary = store.coverage_summary(run_id)
+            leases = store.list_coverage_leases(run_id)
+            raw = store.count_raw_observations(run_id)
+            canon = store.count_canonical_jobs()
+        print(f"RUN_ID={run_id}")
+        print(f"RUN_STATUS={run['status'] if run else 'NOT_FOUND'}")
+        if plan is not None:
+            print(f"PLAN_STATE={plan['state']} SEALED_FP={(plan['fingerprint'] or '')[:12]}")
+        print(f"COVERAGE_PLANNED={summary.get('_planned', 0)} COVERAGE_TERMINAL={summary.get('_completed', 0)}")
+        print(f"LEASES={len(leases)} LEASES_DONE={sum(1 for l in leases if l['terminal'] == 1)}")
+        print(f"RAW_OBSERVATIONS={raw} CANONICAL_JOBS={canon}")
+        return 0
+
+    live = bool(getattr(args, "live", False))
+    if not live:
+        print("NOTE: production-canary requires --live to hit real boards; refusing to run without it.")
+        return 2
+    config = load_canary_config(Path(args.config)) if getattr(args, "config", None) else default_canary_config()
+    rt = build_canary_runtime(settings, config, run_id, live=live)
+    result = rt.resume() if sub == "resume" else rt.run()
+
+    print(f"RUN_ID={result.run_id}")
+    print(f"STATUS={result.terminal_state}")
+    print(f"PLANNED_CHILD_TASKS={result.planned_tasks}")
+    print(f"TERMINAL_CHILD_TASKS={result.terminal_tasks}")
+    print(f"LANES={sorted(result.lane_summary)}")
+    print(f"PLAN_FP={result.plan_fingerprint[:12]} POLICY_FP={result.policy_fingerprint[:12]}")
+    print(f"COUNTERS={result.counters}")
+    if result.report_path:
+        print(f"REPORT={result.report_path} VALID={result.report_valid}")
+    print(f"STATE_DB={settings.state_db}")
+    if getattr(args, "json", False):
+        import json as _json
+        print("\n" + _json.dumps({"run_id": result.run_id, "status": result.terminal_state,
+                                  "planned": result.planned_tasks, "terminal": result.terminal_tasks,
+                                  "counters": result.counters}))
+    return 0 if result.terminal_state in ("COMPLETE", "PARTIAL", "WAITING_FOR_HUMAN") else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="atlas", description="Atlas Career Intelligence platform CLI (foundation build).")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -546,6 +655,42 @@ def build_parser() -> argparse.ArgumentParser:
     p_pf_status.add_argument("--run-id", default=None)
     p_pf_status.add_argument("--companies", default=2)
     p_pf_status.set_defaults(func=_cmd_production_fixture)
+
+    # Phase 1C-A: official ATS adapters + low-volume read-only live canary.
+    p_adapters = subparsers.add_parser("adapters", help="List official ATS adapters or run a read-only canary.")
+    adapters_sub = p_adapters.add_subparsers(dest="adapters_command", required=True)
+    p_ad_list = adapters_sub.add_parser("list", help="List the registered official ATS adapters.")
+    p_ad_list.add_argument("--json", action="store_true")
+    p_ad_list.set_defaults(func=_cmd_adapters)
+    p_ad_can = adapters_sub.add_parser("canary", help="Per-family read-only canary (DRY-RUN unless --live).")
+    p_ad_can.add_argument("--family", default=None, help="greenhouse|lever|ashby|workday")
+    p_ad_can.add_argument("--all", action="store_true", help="Canary every configured board.")
+    p_ad_can.add_argument("--config", default=None, help="Path to a canary config YAML (defaults to leverdemo+Ashby).")
+    p_ad_can.add_argument("--live", action="store_true", help="Explicitly hit real public boards (opt-in).")
+    p_ad_can.add_argument("--limit", type=int, default=25, help="Max jobs to request per board (bounded).")
+    p_ad_can.add_argument("--json", action="store_true")
+    p_ad_can.set_defaults(func=_cmd_adapters)
+
+    p_canary = subparsers.add_parser(
+        "production-canary", help="Low-volume live production canary through the parallel dispatcher (opt-in)."
+    )
+    canary_sub = p_canary.add_subparsers(dest="canary_command", required=True)
+    p_cn_run = canary_sub.add_parser("run", help="Run the production canary (requires --live).")
+    p_cn_run.add_argument("--run-id", default=None)
+    p_cn_run.add_argument("--config", default=None, help="Canary config YAML (defaults to leverdemo+Ashby).")
+    p_cn_run.add_argument("--live", action="store_true")
+    p_cn_run.add_argument("--json", action="store_true")
+    p_cn_run.set_defaults(func=_cmd_production_canary)
+    p_cn_resume = canary_sub.add_parser("resume", help="Resume a PARTIAL/WAITING production canary (requires --live).")
+    p_cn_resume.add_argument("--run-id", default=None)
+    p_cn_resume.add_argument("--config", default=None)
+    p_cn_resume.add_argument("--live", action="store_true")
+    p_cn_resume.add_argument("--json", action="store_true")
+    p_cn_resume.set_defaults(func=_cmd_production_canary)
+    p_cn_status = canary_sub.add_parser("status", help="Show canary run plan/coverage/leases (offline).")
+    p_cn_status.add_argument("--run-id", default=None)
+    p_cn_status.add_argument("--json", action="store_true")
+    p_cn_status.set_defaults(func=_cmd_production_canary)
 
     return parser
 

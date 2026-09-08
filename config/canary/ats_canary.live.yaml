@@ -1,0 +1,48 @@
+# Atlas Phase 1C-A — VERIFIED-LIVE official ATS canary configuration.
+#
+# All board identities below are PUBLIC and were confirmed live and read-only
+# during the Phase 1C-A gate (2026-09-08). Opt-in only: run with `--live`.
+# Bounded, low-volume, GET-only (plus the public Workday CXS search the careers
+# page itself issues). No credentials, no application actions, no bypass.
+#
+# India relevance: greenhouse:gitlab lists Bangalore roles; workday:workday
+# lists Pune (IND) roles.
+
+version: 1
+
+limits:
+  max_companies: 12
+  max_jobs_per_company: 100
+  workers: 4
+
+lane: CANARY
+
+boards:
+  - family: greenhouse
+    instance_id: greenhouse-canary-gitlab
+    display_name: "GitLab (Greenhouse)"
+    board_token: gitlab
+    request_budget: 4
+    lanes: ["CANARY"]
+
+  - family: lever
+    instance_id: lever-canary-leverdemo
+    display_name: "Lever Demo (official)"
+    site: leverdemo
+    request_budget: 4
+    lanes: ["CANARY"]
+
+  - family: ashby
+    instance_id: ashby-canary-ashby
+    display_name: "Ashby (official board)"
+    board_name: Ashby
+    include_compensation: true
+    request_budget: 4
+    lanes: ["CANARY"]
+
+  - family: workday
+    instance_id: workday-canary-workday
+    display_name: "Workday (own careers)"
+    base_url: https://workday.wd5.myworkdayjobs.com/en-US/Workday
+    request_budget: 4
+    lanes: ["CANARY"]

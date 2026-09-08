@@ -1,0 +1,60 @@
+# Atlas Phase 1C-A — official ATS live canary configuration (EXAMPLE)
+#
+# Opt-in, low-volume, READ-ONLY canary boards for the four official ATS
+# adapters. This is an EXAMPLE: copy it, verify each board is live, and run with
+# an explicit `--live` acknowledgement. Nothing here runs by default; instances
+# are disabled unless `--live` is passed.
+#
+# SAFETY: public job-board GET requests only (plus the public Workday CXS
+# search the employer's own careers page issues). No application submission, no
+# credentials, no login, no CAPTCHA/anti-bot bypass. Fetching links found inside
+# a job description is forbidden.
+#
+# Identity fields per family:
+#   greenhouse: board_token           (from boards.greenhouse.io/{board_token})
+#   lever:      site                   (from jobs.lever.co/{site}); eu: true for EU
+#   ashby:      board_name             (from jobs.ashbyhq.com/{board_name}, case-sensitive)
+#   workday:    base_url               (full careers URL — the datacenter shard
+#                                       wdN cannot be guessed and MUST come from
+#                                       the real URL), or tenant + datacenter + site
+
+version: 1
+
+limits:
+  max_companies: 12            # hard cap on boards in one canary run
+  max_jobs_per_company: 100    # hard per-board cap
+  workers: 4                   # bounded parallel HTTP workers
+
+lane: CANARY                   # one lane per board (keeps volume minimal)
+
+boards:
+  # Lever — official documented demo board (safest canary of the three).
+  - family: lever
+    instance_id: lever-canary-leverdemo
+    display_name: "Lever Demo (official example)"
+    site: leverdemo
+    lanes: ["CANARY"]
+
+  # Ashby — Ashby's own public board (documented example, case-sensitive name).
+  - family: ashby
+    instance_id: ashby-canary-ashby
+    display_name: "Ashby (official board)"
+    board_name: Ashby
+    include_compensation: true
+    lanes: ["CANARY"]
+
+  # Greenhouse — replace with a verified-live board token before running live.
+  # (The docs example tokens are placeholders; confirm liveness first.)
+  - family: greenhouse
+    instance_id: greenhouse-canary-example
+    display_name: "Greenhouse Example Board"
+    board_token: REPLACE_WITH_LIVE_BOARD_TOKEN
+    lanes: ["CANARY"]
+
+  # Workday — highest risk. Provide the FULL public careers URL so the
+  # datacenter shard (wd1/wd3/wd5/…) is taken from the real hostname.
+  - family: workday
+    instance_id: workday-canary-example
+    display_name: "Workday Example Careers"
+    base_url: https://TENANT.wd1.myworkdayjobs.com/en-US/EXTERNAL_SITE
+    lanes: ["CANARY"]
