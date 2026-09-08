@@ -1,9 +1,10 @@
 """Two-tier candidate ranking + deep evaluation (Phase 1E/F §8.B/§8.C).
 
-Inspired by ai-job-search `/rank` (MIT; reimplemented Atlas-native, no code
-copied): jobs are SELECTED with a query (never the whole backlog is loaded into a
-reasoning worker), triaged in small batches, and only the top/selected jobs get a
-deep fit review. Nothing here is a completion authority; the deterministic
+Inspired by the reviewed MIT research reference's `/rank` command (reimplemented
+Atlas-native, no code copied; exact repo + license recorded in
+docs/EXTERNAL_RESEARCH_DECISIONS.md): jobs are SELECTED with a query (never the
+whole backlog is loaded into a reasoning worker), triaged in small batches, and
+only the top/selected jobs get a deep fit review. Nothing here is a completion authority; the deterministic
 eligibility gate is the ceiling an optional LLM can reorder under but never
 override. Every score axis is persisted separately — this is a candidate-fit
 score, never an "ATS score".
