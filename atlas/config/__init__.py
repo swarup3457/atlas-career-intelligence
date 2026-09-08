@@ -30,6 +30,11 @@ _ENV_PREFIX = "ATLAS_"
 
 ALLOWED_BROWSER_CHANNELS = frozenset({"chrome", "chromium", "msedge", "chrome-beta", "msedge-beta"})
 ALLOWED_CONTROLLERS = frozenset({"none", "copilot", "codex"})
+# Copilot account-type acknowledgement for the private-candidate consent gate
+# (Phase 1E/F §7). "unspecified" means the operator has NOT acknowledged whether
+# the Copilot account is a personal or organization-managed one, which — on its
+# own — is never sufficient to release real candidate PII to a reasoning model.
+ALLOWED_COPILOT_ACCOUNT_TYPES = frozenset({"unspecified", "personal", "organization"})
 
 
 class ConfigValidationError(ValueError):
@@ -52,6 +57,11 @@ class Settings:
     agents_dir: Path = _PROJECT_ROOT_DEFAULT / "agents"
     skills_dir: Path = _PROJECT_ROOT_DEFAULT / "skills"
 
+    # Stable production output contract (Phase 1E/F §10). Every live run
+    # publishes an immutable run directory under this root and atomically
+    # updates a ``latest`` pointer. Git-ignored (under output/ by default).
+    production_output_root: Path = _PROJECT_ROOT_DEFAULT / "output" / "production"
+
     # Browser execution policy (see docs/BROWSER_POLICY.md).
     default_headless: bool = True
     navigation_timeout_ms: int = 30000
@@ -66,6 +76,23 @@ class Settings:
     # "codex". See atlas/controllers/.
     controller: str = "none"
 
+    # Optional Copilot SDK reasoning controller settings (Phase 1E/F §7). The
+    # controller is DISABLED by default; deterministic runs never call a model.
+    # When enabled, Atlas prefers ``controller_model`` if the account exposes
+    # it, otherwise an explicitly-configured available model.
+    controller_model: str = "claude-opus-4.8"
+    controller_max_session_credits: int = 50
+    controller_session_timeout_s: int = 60
+    controller_retry_budget: int = 1
+
+    # Private-candidate consent gate (Phase 1E/F §7). BOTH must hold before the
+    # real candidate profile may be sent to a reasoning model: this flag AND an
+    # explicit account-type acknowledgement (``copilot_account_type`` !=
+    # "unspecified"). Default OFF — deterministic matching and a synthetic
+    # canary only.
+    allow_private_candidate_to_copilot: bool = False
+    copilot_account_type: str = "unspecified"
+
     def ensure_directories(self) -> None:
         """Create all managed directories if they do not yet exist."""
         for path in (
@@ -76,6 +103,7 @@ class Settings:
             self.browser_profile,
             self.agents_dir,
             self.skills_dir,
+            self.production_output_root,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -109,6 +137,7 @@ class Settings:
             ("logs_dir", self.logs_dir),
             ("agents_dir", self.agents_dir),
             ("skills_dir", self.skills_dir),
+            ("production_output_root", self.production_output_root),
         ):
             if not str(path).strip():
                 problems.append(f"{label} must not be empty.")
@@ -126,6 +155,23 @@ class Settings:
             problems.append(
                 f"controller '{self.controller}' is not one of the supported values "
                 f"{sorted(ALLOWED_CONTROLLERS)}."
+            )
+        if self.controller_max_session_credits < 0:
+            problems.append(
+                f"controller_max_session_credits must be >= 0, got {self.controller_max_session_credits}."
+            )
+        if self.controller_session_timeout_s <= 0:
+            problems.append(
+                f"controller_session_timeout_s must be > 0, got {self.controller_session_timeout_s}."
+            )
+        if self.controller_retry_budget < 0:
+            problems.append(
+                f"controller_retry_budget must be >= 0, got {self.controller_retry_budget}."
+            )
+        if self.copilot_account_type not in ALLOWED_COPILOT_ACCOUNT_TYPES:
+            problems.append(
+                f"copilot_account_type '{self.copilot_account_type}' is not one of "
+                f"{sorted(ALLOWED_COPILOT_ACCOUNT_TYPES)}."
             )
 
         if problems:

@@ -32,13 +32,31 @@ adapter interchangeable.
   `ControllerResponse` objects (`metadata={"noop": True}`) for every
   method. This is what makes `controller=none` fully deterministic test
   runs possible — no code path secretly requires an LLM to run.
-- `CopilotController` (`atlas/controllers/copilot.py`) — **SCAFFOLDED**.
-  Every method raises `NotImplementedError` with a docstring explaining
-  that no supported programmatic integration exists yet. This is
-  deliberate: the spec forbids "unsupported hacks to programmatically
-  invoke" Copilot.
-- `CodexController` (`atlas/controllers/codex.py`) — **SCAFFOLDED**, same
-  shape/reasoning as `CopilotController`.
+- `CopilotController` / `CopilotSdkController`
+  (`atlas/controllers/copilot.py`) — **IMPLEMENTED (optional, Phase 1E/F
+  §7)**. A real, OPTIONAL, least-privilege, typed reasoning controller. It
+  is DISABLED by default (`controller='none'`); deterministic runs never
+  construct it and never call a model. Key properties:
+  - **Optional transport seam.** The controller depends on a
+    `CopilotSdkTransport` protocol, not on the SDK. The official-SDK
+    transport (`_OfficialCopilotSdkTransport`) imports the pinned package
+    (`OFFICIAL_SDK_PACKAGE`) LAZILY, only on first real use, so importing
+    or constructing Atlas never requires the SDK. Tests inject fakes.
+  - **Least privilege.** `LeastPrivilegePermissionHandler` is default-DENY;
+    `FORBIDDEN_TOOLS` (shell/edit/git/network/browser) are always denied,
+    and agents may only be granted a subset of `LOCAL_READONLY_TOOLS`.
+  - **Custom typed agents.** `triage-ranker`, `deep-fit-reviewer`,
+    `application-drafter`, `factual-grounding-reviewer` — each with a
+    narrow prompt, explicit tool list, timeout, retry budget, deterministic
+    fallback, and invalid-output quarantine.
+  - **Bounded usage.** `UsageMeter` records model/tokens/credits/latency/
+    session id (never prompt/PII) and fails closed on the credit ceiling.
+  - **Private-data consent gate.** Real candidate PII requires BOTH
+    `--allow-private-candidate-to-copilot` AND a personal/organization
+    `copilot_account_type` acknowledgement, else `PrivateDataConsentError`.
+  - It is NEVER a completion authority — Python/LangGraph decide.
+- `CodexController` (`atlas/controllers/codex.py`) — **SCAFFOLDED**,
+  reserved placeholder until a supported integration path exists.
 
 ## Factory / isolation boundary
 

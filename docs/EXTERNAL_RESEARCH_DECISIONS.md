@@ -40,3 +40,32 @@ discovery, wholesale copying of external repositories or datasets.
 
 See `02_RESEARCH_AND_LICENSE_MATRIX.md` in the phase evidence pack for the full
 per-source matrix (commits, useful vs rejected patterns, destinations).
+
+## Phase 1E/F additions
+
+### GitHub Copilot Python SDK
+
+| Concern | Decision |
+|---|---|
+| Package identity | The reasoning controller imports an official SDK LAZILY via `OFFICIAL_SDK_PACKAGE` in `atlas/controllers/copilot.py`. The generic PyPI names `copilot` (0.1.9) and `copilot-sdk` are NOT GitHub's official SDK and are not used. |
+| Integration model | Transport seam (`CopilotSdkTransport`): the controller never imports the SDK directly. The official transport is the ONLY place the SDK is loaded, on first real use. Deterministic runs and the entire offline suite work with `controller='none'` and injected fakes — no SDK required. |
+| Enablement | OPTIONAL, disabled by default. Live Copilot reasoning requires the operator to install + pin a verified SDK version and authenticate; until a verified version is pinned, the official transport quarantines (callers fall back deterministically). This is recorded truthfully rather than fabricating an install. |
+| Least privilege | Default-DENY permission handler; shell/edit/git/network always denied; agents get only a subset of typed local read-only tools. |
+| Privacy | Real candidate PII is gated behind BOTH an explicit CLI flag and an account-type acknowledgement. Usage logs store only non-PII metrics. |
+
+### ai-job-search refresh (MIT)
+
+Refreshed to HEAD `ccf786b`. Concepts reviewed and REIMPLEMENTED Atlas-native (no
+code copied): `/rank` two-tier triage (query-scoped candidate selection, ~5-job
+reasoning batches, preserved deferred backlog), deterministic path-safe job key,
+drafter→grounding→validate application flow, and untrusted-posting policy. Atlas
+does not depend on Claude Code, Bun, its state files, or its LaTeX templates.
+
+### wellfound_autoApply
+
+Remains EXPLICITLY EXCLUDED as a dependency (no clear repository-level license).
+Ideas-only: dedicated persistent Chrome profile, one-time visible manual sign-in,
+headless normal browsing, bounded infinite scroll, read-only card/detail
+extraction. Its auto-apply / form-fill / Q&A / stealth code is never adopted. A
+read-only Wellfound discovery adapter is gated on an independent license
+verification; absent that, it stays deferred by evidence.
