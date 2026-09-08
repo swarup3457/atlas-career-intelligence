@@ -95,46 +95,66 @@ _SECTION_CLASS = (
     (re.compile(r"professional evidence", re.I), EvidenceClass.PROFESSIONAL),
     (re.compile(r"project/product|project evidence", re.I), EvidenceClass.PROJECT_PRODUCT),
     (re.compile(r"skills? list|skills section|\.NET and frontend", re.I), EvidenceClass.SKILLS_LIST_ONLY),
-    (re.compile(r"microservices|candidate.?confirmed", re.I), EvidenceClass.CANDIDATE_CONFIRMED),
-    (re.compile(r"conflict|clarification", re.I), EvidenceClass.UNRESOLVED_CONFLICT),
+    (re.compile(r"candidate.?confirmed", re.I), EvidenceClass.CANDIDATE_CONFIRMED),
+    (re.compile(r"conflict|clarification|unresolved", re.I), EvidenceClass.UNRESOLVED_CONFLICT),
 )
 
 
-def _class_for_section(header: str) -> EvidenceClass:
+def _class_for_section(header: str) -> Optional[EvidenceClass]:
+    """Return the evidence class a heading EXPLICITLY establishes, or None when
+    the heading does not name a known evidence class (e.g. an employer/company
+    subheading). A None result means "inherit the parent class" — it must NOT
+    reset the class to a default (P0-8)."""
     for pattern, ec in _SECTION_CLASS:
         if pattern.search(header):
             return ec
-    return EvidenceClass.CANDIDATE_CONFIRMED
+    return None
 
 
 def parse_private_profile(text: str) -> CandidateLedger:
     """Parse the private verified-profile markdown into a ledger. The output
     contains REAL candidate data and must only be written to gitignored
-    storage. Deterministic, header-driven extraction."""
+    storage. Deterministic, header-driven extraction that PRESERVES the parent
+    section's evidence class across nested headings (an employer/company
+    subheading does NOT reset the class), carries a stable claim identity, and
+    QUARANTINES ambiguous/oversized bullets instead of guessing (P0-8)."""
     ledger = CandidateLedger()
-    current_class = EvidenceClass.CANDIDATE_CONFIRMED
+    source_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    # A stack of (heading_level, evidence_class) so a deeper heading inherits
+    # the nearest ancestor's class when it does not name a class itself.
+    class_stack: list[tuple[int, EvidenceClass]] = [(0, EvidenceClass.CANDIDATE_CONFIRMED)]
     idx = 0
     for line in text.splitlines():
-        header = re.match(r"\s{0,3}#{2,4}\s+(.*)", line)
+        header = re.match(r"(\s{0,3})(#{2,6})\s+(.*)", line)
         if header:
-            current_class = _class_for_section(header.group(1))
+            level = len(header.group(2))
+            explicit = _class_for_section(header.group(3))
+            # Pop deeper-or-equal levels, then inherit-or-set.
+            while class_stack and class_stack[-1][0] >= level:
+                class_stack.pop()
+            inherited = class_stack[-1][1] if class_stack else EvidenceClass.CANDIDATE_CONFIRMED
+            class_stack.append((level, explicit if explicit is not None else inherited))
             continue
         bullet = re.match(r"\s*[-*]\s+(.+)", line)
         if bullet:
-            topic = bullet.group(1).strip()
-            if not topic or len(topic) > 120:
+            topic = " ".join(bullet.group(1).split())
+            if not topic:
                 continue
             idx += 1
+            current_class = class_stack[-1][1] if class_stack else EvidenceClass.CANDIDATE_CONFIRMED
+            # Long bullets are NOT dropped: normalize to a bounded payload and
+            # record an oversize finding rather than silently discarding.
+            normalized = topic[:500]
+            notes = "" if len(topic) <= 200 else f"TRUNCATED_FROM_{len(topic)}_CHARS"
+            conflict = ConflictState.NONE
+            if current_class == EvidenceClass.UNRESOLVED_CONFLICT:
+                conflict = ConflictState.UNRESOLVED
             ledger.add(
                 CandidateClaim(
-                    claim_id=f"parsed::{idx}", topic=topic[:80], normalized_value=topic[:120],
-                    evidence_class=current_class, source_document_id="private_profile",
-                    scope="parsed", confidence=0.5,
-                    conflict_state=(
-                        ConflictState.UNRESOLVED
-                        if current_class == EvidenceClass.UNRESOLVED_CONFLICT
-                        else ConflictState.NONE
-                    ),
+                    claim_id=f"parsed::{source_hash}::{idx}",
+                    topic=topic[:80], normalized_value=normalized,
+                    evidence_class=current_class, source_document_id=f"private_profile::{source_hash}",
+                    scope="parsed", confidence=0.5, conflict_state=conflict, notes=notes,
                 )
             )
     return ledger

@@ -73,12 +73,42 @@ def test_candidate_confirmed_microservices_is_not_production_ownership():
 def test_explicit_resolution_does_not_edit_history():
     L = build_synthetic_ledger()
     before = len(L.claims())
-    L.resolve("microservices production ownership", "built 3 services", EvidenceClass.PROFESSIONAL, scope="ownership")
+    # Candidate confirmation resolves the VALUE conflict (not as PROFESSIONAL).
+    L.resolve("microservices production ownership", "built 3 services",
+              EvidenceClass.CANDIDATE_CONFIRMED, scope="ownership")
     after = len(L.claims())
     assert after == before + 1  # appended, not overwritten
     # after explicit resolution it is no longer an unresolved conflict
     conflict_topics = {c.topic for c in L.unresolved_conflicts()}
     assert "microservices production ownership" not in conflict_topics
+
+
+def test_candidate_confirmation_cannot_establish_professional_provenance():
+    # P0-8: candidate confirmation alone cannot make a claim PROFESSIONAL when
+    # there is no documentary basis for that topic/scope.
+    L = build_synthetic_ledger()
+    with pytest.raises(IllegalPromotion):
+        L.resolve("microservices production ownership", "built 3 services",
+                  EvidenceClass.PROFESSIONAL, scope="ownership")
+
+
+def test_project_product_and_candidate_confirmed_not_interchangeable():
+    # P0-8: same numeric rank does NOT make them interchangeable.
+    L = CandidateLedger()
+    with pytest.raises(IllegalPromotion):
+        L.assert_no_illegal_promotion(EvidenceClass.CANDIDATE_CONFIRMED, EvidenceClass.PROJECT_PRODUCT)
+    with pytest.raises(IllegalPromotion):
+        L.assert_no_illegal_promotion(EvidenceClass.PROJECT_PRODUCT, EvidenceClass.CANDIDATE_CONFIRMED)
+    # A documentary downgrade IS allowed.
+    L.assert_no_illegal_promotion(EvidenceClass.PROFESSIONAL, EvidenceClass.PROJECT_PRODUCT)
+
+
+def test_professional_resolution_allowed_with_documentary_basis():
+    L = CandidateLedger()
+    L.add(CandidateClaim(claim_id="doc1", topic="Java", normalized_value="prod",
+                         evidence_class=EvidenceClass.PROJECT_PRODUCT, source_document_id="resume", scope="x"))
+    # With an existing documentary claim, a professional resolution is allowed.
+    L.resolve("Java", "professional Java work", EvidenceClass.PROFESSIONAL, scope="x")
 
 
 def test_synthetic_ledger_preserves_documented_conflict_structure():
@@ -107,3 +137,49 @@ def test_synthetic_fixture_contains_no_pii():
     # name tokens built by concatenation so this file holds no literal name
     for banned in ("dev" + "ati", "swa" + "rup", "@", "phone"):
         assert banned not in text
+
+
+def test_parser_preserves_parent_class_across_nested_headings():
+    # P0-8: a professional-evidence section followed by an employer subheading
+    # must NOT reset the class to CANDIDATE_CONFIRMED. Uses SYNTHETIC markdown
+    # (no real PII) so it is safe to commit.
+    from atlas.candidate.importer import parse_private_profile
+
+    md = """
+## Professional Evidence
+### Generic Employer A
+- Built backend services in Java
+- Maintained REST APIs
+### Generic Employer B
+- Owned a payments module
+
+## Project/Product Evidence
+### Personal Project
+- Implemented a TypeScript SPA
+
+## Conflicts / Clarifications
+- current-role title differs between resume and profile
+""".strip()
+    ledger = parse_private_profile(md)
+    by_topic = {c.topic: c for c in ledger.claims()}
+    # Bullets under nested employer subheadings inherit PROFESSIONAL, not the default.
+    assert by_topic["Built backend services in Java"].evidence_class == EvidenceClass.PROFESSIONAL
+    assert by_topic["Owned a payments module"].evidence_class == EvidenceClass.PROFESSIONAL
+    assert by_topic["Implemented a TypeScript SPA"].evidence_class == EvidenceClass.PROJECT_PRODUCT
+    conflict_claim = by_topic["current-role title differs between resume and profile"]
+    assert conflict_claim.evidence_class == EvidenceClass.UNRESOLVED_CONFLICT
+    assert conflict_claim.conflict_state == ConflictState.UNRESOLVED
+    # Stable claim identity carries the source document hash.
+    assert all("parsed::" in c.claim_id for c in ledger.claims())
+
+
+def test_parser_quarantines_long_bullets_without_dropping():
+    from atlas.candidate.importer import parse_private_profile
+
+    long_bullet = "x " * 300  # > 200 chars
+    md = f"## Professional Evidence\n- {long_bullet}"
+    ledger = parse_private_profile(md)
+    assert len(ledger.claims()) == 1  # NOT silently dropped
+    claim = ledger.claims()[0]
+    assert claim.notes.startswith("TRUNCATED_FROM_")
+    assert len(claim.normalized_value) <= 500

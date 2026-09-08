@@ -194,11 +194,15 @@ class FixtureExecutionPipeline:
         )
 
     # -- execution ----------------------------------------------------------
-    def execute(self, manifest: CoverageManifest, coverage_ids: list[str]) -> PipelineResult:
+    def execute(
+        self, manifest: CoverageManifest, coverage_ids: list[str], *, max_children: Optional[int] = None
+    ) -> PipelineResult:
         result = PipelineResult()
         for coverage_id in coverage_ids:
+            if max_children is not None and result.executed >= max_children:
+                break
             task = manifest.get(coverage_id)
-            if task is None or task.is_terminal:
+            if task is None or task.is_terminal or task.status == CoverageStatus.BLOCKED_HUMAN:
                 continue
             if task.source_instance not in self.instances:
                 # A pseudo-instance (discovery/portal/ats placeholder) has no
@@ -206,11 +210,16 @@ class FixtureExecutionPipeline:
                 # unresolved extraction rather than pretending it completed.
                 manifest.mark(coverage_id, CoverageStatus.EXTRACTION_UNRESOLVED,
                               next_action="NONE", detail={"reason": "no fixture adapter for instance"})
+                self._persist_task(manifest, coverage_id)
                 task_res = TaskExecutionResult(coverage_id, task.lane, CoverageStatus.EXTRACTION_UNRESOLVED, 0, 0)
                 result.per_task.append(task_res)
                 result.executed += 1
                 continue
             task_res = self._execute_one(manifest, task)
+            # Persist this child IMMEDIATELY so a crash mid-DISCOVER leaves a
+            # durable partial subset (build spec 6) — the next process resumes
+            # the exact remaining children without repeating this one.
+            self._persist_task(manifest, coverage_id)
             result.per_task.append(task_res)
             result.executed += 1
             result.attempts += task_res.attempts
@@ -218,6 +227,20 @@ class FixtureExecutionPipeline:
             if task_res.sentinel_ran:
                 result.sentinels_run += 1
         return result
+
+    def _persist_task(self, manifest: CoverageManifest, coverage_id: str) -> None:
+        task = manifest.get(coverage_id)
+        if task is None:
+            return
+        self.store.upsert_coverage(
+            task.coverage_id, self.run_id, task.source_instance,
+            company=task.company, source_type=task.source_type, lane=task.lane,
+            query_key=task.query_key, attempted=task.attempted, completed=task.completed,
+            status=task.status.value, jobs_found=task.jobs_found, new_jobs=task.new_jobs,
+            changed_jobs=task.changed_jobs, closed_jobs=task.closed_jobs,
+            started_at=task.started_at, completed_at=task.completed_at,
+            next_action=task.next_action, detail=task.detail,
+        )
 
     def _execute_one(self, manifest: CoverageManifest, task: CoverageTask) -> TaskExecutionResult:
         source_task, sig = self._build_source_task(task)

@@ -67,11 +67,22 @@ def make_advance_node(handlers: Mapping[ProductionPhase, PhaseHandler], runtime:
         if handler is not None:
             state = handler(state, runtime)
 
+        # A handler may request re-entry into the SAME phase (batched/resumable
+        # work, e.g. paged discovery) by setting ``_repeat_phase``. The flag is
+        # transient and never checkpointed.
+        repeat = bool(state.pop("_repeat_phase", False))
+
         assert_compact(state)
 
         # If a handler declared a terminal outcome (WAITING/FAILED/PARTIAL),
         # stop here — do NOT advance to COMPLETE.
         if state.get("terminal_state"):
+            return state
+
+        if repeat:
+            # Stay in the current phase; the next invoke re-runs this handler on
+            # the remaining work (checkpointed durable progress in between).
+            state["phase"] = phase.value
             return state
 
         completed = list(state.get("phases_completed", []))

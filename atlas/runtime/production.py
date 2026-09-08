@@ -158,6 +158,7 @@ class ProductionSearchRuntime:
         rate_limiter: Optional[RateLimiter] = None,
         retry_budget: int = 2,
         candidate_snapshot_path: Optional[Path] = None,
+        discover_batch: Optional[int] = None,
         simulate_plan_failure: bool = False,
         simulate_local_persist_failure: bool = False,
         remote_audit=None,
@@ -174,6 +175,7 @@ class ProductionSearchRuntime:
         self.policy_dir = policy_dir
         self.retry_budget = retry_budget
         self.candidate_snapshot_path = candidate_snapshot_path
+        self.discover_batch = discover_batch
         self.simulate_plan_failure = simulate_plan_failure
         self.simulate_local_persist_failure = simulate_local_persist_failure
         self.remote_audit = remote_audit or NullRemoteAudit()
@@ -250,7 +252,16 @@ class ProductionSearchRuntime:
         return state
 
     def _h_load_profile(self, state: ProductionState, _rt) -> ProductionState:
-        self._ensure_ledger(state)
+        try:
+            self._ensure_ledger(state)
+        except ProductionCandidateError as exc:
+            # Production mode with a missing/invalid private snapshot fails
+            # clearly to WAITING_FOR_HUMAN — synthetic evidence is NEVER silently
+            # substituted (build spec 16 / P0-7).
+            state["terminal_state"] = ProductionTerminalState.WAITING_FOR_HUMAN.value
+            state.setdefault("human_waiting", []).append("private_candidate_snapshot")
+            state.setdefault("notes", []).append(f"MISSING_PRIVATE_CANDIDATE_SNAPSHOT: {exc}")
+            return state
         state["candidate_snapshot"] = self.candidate_snapshot_hash
         state.setdefault("counters", {})["candidate_claims"] = len(self.ledger.claims())
         state["counters"]["unresolved_conflicts"] = len(self.ledger.unresolved_conflicts())
@@ -309,18 +320,25 @@ class ProductionSearchRuntime:
             # Reload from durable state so a fresh process sees persisted statuses.
             manifest = CoverageManifest.load(store, self.run_id)
             self.plan = manifest
-            pending = [t.coverage_id for t in manifest.remaining()]
+            # Genuinely-pending children only (a human-blocked child is NOT
+            # re-attempted in the same run — it awaits human action).
+            pending = [t.coverage_id for t in manifest.remaining() if t.status != CoverageStatus.BLOCKED_HUMAN]
             pipeline = FixtureExecutionPipeline(
                 store, self.registry, self.instances, executor=self.executor,
                 run_id=self.run_id, policy_version=state.get("policy_fingerprint", "unversioned"),
                 retry_budget=self.retry_budget,
             )
-            result = pipeline.execute(manifest, pending)
+            result = pipeline.execute(manifest, pending, max_children=self.discover_batch)
             manifest.persist(store, policy_fingerprint=state.get("policy_fingerprint", ""))
+            remaining_after = sum(1 for t in manifest.remaining() if t.status != CoverageStatus.BLOCKED_HUMAN)
         bump(state, "discovered", result.observations_staged)
         bump(state, "attempts", result.attempts)
         bump(state, "sentinels", result.sentinels_run)
         bump(state, "children_executed", result.executed)
+        # Batched/resumable discovery: if children remain, re-enter DISCOVER on
+        # the next invoke (durable partial progress is already persisted).
+        if remaining_after > 0:
+            state["_repeat_phase"] = True
         return state
 
     def _h_health_gate(self, state: ProductionState, _rt) -> ProductionState:
@@ -576,6 +594,16 @@ class ProductionSearchRuntime:
             run_lock.release()
 
     def resume(self) -> ProductionRunResult:
+        # A resume after WAITING_FOR_HUMAN represents an authorized human
+        # resolution: reset human-blocked children to NOT_ATTEMPTED so discover
+        # re-attempts them (e.g. after the access limitation is cleared).
+        with StateStore(self.settings.state_db) as store:
+            manifest = CoverageManifest.load(store, self.run_id)
+            for task in manifest.tasks():
+                if task.status == CoverageStatus.BLOCKED_HUMAN:
+                    manifest.mark(task.coverage_id, CoverageStatus.NOT_ATTEMPTED, next_action="SEARCH")
+            if manifest.tasks():
+                manifest.persist(store, policy_fingerprint=manifest.policy_fingerprint)
         with open_checkpointer(self.settings.checkpoint_db) as checkpointer:
             graph = build_production_graph(self._handlers(), self).compile(checkpointer=checkpointer)
             config = thread_config(self.thread_id)
@@ -585,6 +613,12 @@ class ProductionSearchRuntime:
                 ProductionTerminalState.PARTIAL.value, ProductionTerminalState.WAITING_FOR_HUMAN.value
             ):
                 values["terminal_state"] = None
+                # Re-enter DISCOVER so reset children are re-attempted.
+                if values.get("phase") in (
+                    ProductionPhase.BUILD_REPORT.value, ProductionPhase.OPTIONAL_REMOTE_AUDIT.value,
+                    ProductionPhase.COMPLETE.value,
+                ):
+                    values["phase"] = ProductionPhase.DISCOVER.value
                 graph.update_state(config, values)
         return self.run()
 

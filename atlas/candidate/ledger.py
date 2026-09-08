@@ -57,7 +57,23 @@ class CandidateLedger:
     ) -> CandidateClaim:
         """Record an EXPLICIT candidate-confirmed resolution for a (topic,
         scope). This appends a new resolving claim; it does not edit or delete
-        any historical claim."""
+        any historical claim.
+
+        Candidate confirmation may resolve a VALUE conflict, but it cannot
+        establish PROFESSIONAL provenance by itself (build spec 16 / P0-8):
+        resolving to PROFESSIONAL requires an appropriate existing documentary
+        claim (PROFESSIONAL or PROJECT_PRODUCT) for the same (topic, scope)."""
+        if evidence_class == EvidenceClass.PROFESSIONAL:
+            has_documentary = any(
+                c.topic == topic and c.scope == scope
+                and c.evidence_class in (EvidenceClass.PROFESSIONAL, EvidenceClass.PROJECT_PRODUCT)
+                for c in self._claims
+            )
+            if not has_documentary:
+                raise IllegalPromotion(
+                    f"candidate confirmation alone cannot establish PROFESSIONAL provenance for "
+                    f"{topic!r}/{scope!r}; an appropriate documentary/source claim is required"
+                )
         resolving = CandidateClaim(
             claim_id=claim_id or f"resolve::{topic}::{scope}::{len(self._claims)}",
             topic=topic,

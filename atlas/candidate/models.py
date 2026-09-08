@@ -27,8 +27,9 @@ class EvidenceClass(str, enum.Enum):
     UNSUPPORTED = "UNSUPPORTED"
 
 
-# Strength ordering (higher = stronger). Promotion to a strictly stronger
-# class is FORBIDDEN except by an explicit candidate-confirmed resolution.
+# Strength ordering (higher = stronger), used for tie-break display only —
+# NOT for deciding legal transitions (P0-8: PROJECT_PRODUCT and
+# CANDIDATE_CONFIRMED share a rank but are NOT interchangeable).
 _STRENGTH: dict[EvidenceClass, int] = {
     EvidenceClass.UNSUPPORTED: 0,
     EvidenceClass.SKILLS_LIST_ONLY: 1,
@@ -36,6 +37,31 @@ _STRENGTH: dict[EvidenceClass, int] = {
     EvidenceClass.PROJECT_PRODUCT: 2,
     EvidenceClass.PROFESSIONAL: 3,
     EvidenceClass.UNRESOLVED_CONFLICT: 0,
+}
+
+# EXPLICIT allowed automatic-transition matrix (build spec 16 / P0-8). A claim
+# may be replaced automatically ONLY by a target in its allowed set. Cross-
+# lineage moves — e.g. CANDIDATE_CONFIRMED (self-asserted) <-> PROJECT_PRODUCT
+# (documentary), or anything -> PROFESSIONAL — are NEVER automatic even when
+# ranks match; they require an explicit, appropriately-sourced resolution.
+_ALLOWED_TRANSITIONS: dict[EvidenceClass, frozenset[EvidenceClass]] = {
+    EvidenceClass.PROFESSIONAL: frozenset(
+        {EvidenceClass.PROFESSIONAL, EvidenceClass.PROJECT_PRODUCT,
+         EvidenceClass.SKILLS_LIST_ONLY, EvidenceClass.UNSUPPORTED}
+    ),
+    EvidenceClass.PROJECT_PRODUCT: frozenset(
+        {EvidenceClass.PROJECT_PRODUCT, EvidenceClass.SKILLS_LIST_ONLY, EvidenceClass.UNSUPPORTED}
+    ),
+    EvidenceClass.CANDIDATE_CONFIRMED: frozenset(
+        {EvidenceClass.CANDIDATE_CONFIRMED, EvidenceClass.UNSUPPORTED}
+    ),
+    EvidenceClass.SKILLS_LIST_ONLY: frozenset(
+        {EvidenceClass.SKILLS_LIST_ONLY, EvidenceClass.UNSUPPORTED}
+    ),
+    EvidenceClass.UNSUPPORTED: frozenset({EvidenceClass.UNSUPPORTED}),
+    EvidenceClass.UNRESOLVED_CONFLICT: frozenset(
+        {EvidenceClass.UNRESOLVED_CONFLICT, EvidenceClass.UNSUPPORTED}
+    ),
 }
 
 
@@ -95,8 +121,10 @@ class CandidateClaim:
 
 def can_promote(current: EvidenceClass, target: EvidenceClass) -> bool:
     """Whether ``current`` may be replaced by ``target`` WITHOUT an explicit
-    candidate resolution. Only same-or-weaker moves are automatic."""
-    return _STRENGTH[target] <= _STRENGTH[current]
+    candidate resolution, per the explicit allowed-transition matrix. Same-rank
+    but different-lineage classes (PROJECT_PRODUCT vs CANDIDATE_CONFIRMED) are
+    NOT interchangeable, and nothing auto-promotes to PROFESSIONAL (P0-8)."""
+    return target in _ALLOWED_TRANSITIONS.get(current, frozenset({current}))
 
 
 __all__ = [
