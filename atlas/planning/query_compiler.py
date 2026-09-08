@@ -19,10 +19,33 @@ The compiler produces both:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Iterable, Mapping, Optional
 
 from atlas.policy.models import GeographyPolicy, SearchLane
+
+
+@lru_cache(maxsize=8192)
+def _term_pattern(term: str):
+    """Compile a TOKEN/PHRASE-aware matcher for a lane term (build spec 12).
+    The term must appear delimited by non-alphanumeric boundaries, so ``java``
+    never matches ``javascript`` and ``react`` never matches ``reactive`` — while
+    punctuated technical terms (``c#``, ``.net``, ``c++``, ``node.js``) still
+    match despite their punctuation. Whitespace-separated multi-word terms match
+    as a contiguous phrase."""
+    t = " ".join(str(term).lower().split())
+    if not t:
+        return None
+    # Boundaries are alphanumerics only, so a term cannot match when it is merely
+    # a prefix/suffix of a longer word; punctuation inside the term is literal.
+    return re.compile(r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])")
+
+
+def _text_has_term(text: str, term: str) -> bool:
+    pat = _term_pattern(term)
+    return bool(pat and pat.search(text))
 
 
 def _dedupe_keep_order(items: Iterable[str]) -> tuple[str, ...]:
@@ -64,19 +87,21 @@ class CompiledQuery:
         return list(self.query_terms)
 
     def is_relevant(self, title: Optional[str], *, description: Optional[str] = None) -> bool:
-        """Local lane relevance for a list-only board: a posting is on-lane when
-        it carries at least one positive lane signal and matches no negative
-        term. This keeps each lane INDEPENDENT — a Java posting is not React, and
-        an unrelated sales/support posting matches no lane signal so it is
-        excluded."""
+        """Local lane relevance for a list-only board using TOKEN/PHRASE-aware
+        matching (build spec 12), never arbitrary substring: a posting is on-lane
+        when it carries at least one positive lane signal as a whole token/phrase
+        and matches no negative term as a whole token/phrase. So a Java posting is
+        NOT React, ``java`` does not match ``javascript``, ``react`` does not
+        match ``reactive``, and ``.net``/``c#`` match despite punctuation. This
+        keeps each lane INDEPENDENT and deterministic."""
         text = " ".join(t for t in (title, description) if t).lower()
         if not text:
             return False
         for neg in self.negative_terms:
-            if neg.lower() in text:
+            if _text_has_term(text, neg):
                 return False
         for pos in self.positive_signals:
-            if pos.lower() in text:
+            if _text_has_term(text, pos):
                 return True
         return False
 

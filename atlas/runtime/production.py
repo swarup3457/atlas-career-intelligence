@@ -150,6 +150,7 @@ class ProductionRunResult:
     persistence_side_effects: tuple[str, ...] = ()
     run_lock_status: Optional[str] = None
     manifest: dict = field(default_factory=dict)
+    final_status_persisted: bool = True
 
 
 class ProductionSearchRuntime:
@@ -170,6 +171,7 @@ class ProductionSearchRuntime:
         discover_batch: Optional[int] = None,
         simulate_plan_failure: bool = False,
         simulate_local_persist_failure: bool = False,
+        simulate_final_status_persist_failure: bool = False,
         remote_audit=None,
         remote_audit_enabled: bool = False,
         stop_after_phase: Optional[ProductionPhase] = None,
@@ -193,6 +195,7 @@ class ProductionSearchRuntime:
         self.discover_batch = discover_batch
         self.simulate_plan_failure = simulate_plan_failure
         self.simulate_local_persist_failure = simulate_local_persist_failure
+        self.simulate_final_status_persist_failure = simulate_final_status_persist_failure
         self.remote_audit = remote_audit or NullRemoteAudit()
         self.remote_audit_enabled = remote_audit_enabled
         self.stop_after_phase = stop_after_phase
@@ -940,16 +943,29 @@ class ProductionSearchRuntime:
             "terminal_tasks": terminal_tasks,
             "lane_summary": lane_summary,
         }
-        # Record run status (best-effort; the truthful terminal already accounts
-        # for any local persistence failure via resolve_terminal()).
+        # Persist the final run status. A FAILURE here is NOT silently swallowed
+        # (build spec 15): the result stays available to the caller, but it
+        # truthfully records that final-status persistence failed and the terminal
+        # is downgraded from a fully-durable COMPLETE so the report/evidence never
+        # claims durable completion it could not persist.
+        final_status_persisted = True
         try:
+            if self.simulate_final_status_persist_failure:
+                raise LocalPersistenceError("injected final run-status persistence failure")
             with StateStore(self.settings.state_db) as store:
                 if store.get_run(self.run_id) is None:
                     store.create_run(self.run_id, controller=getattr(self.settings, "controller", "none"),
                                      metadata={"production": True})
                 store.complete_run(self.run_id, status=terminal)
-        except Exception:  # noqa: BLE001 - status row is a mirror; terminal already truthful
-            pass
+        except Exception as exc:  # noqa: BLE001 - surfaced truthfully, never swallowed
+            final_status_persisted = False
+            state.setdefault("notes", []).append(
+                f"FINAL_STATUS_PERSIST_FAILED: {type(exc).__name__}: {exc}")
+            if terminal == ProductionTerminalState.COMPLETE.value:
+                # Not a fully durable COMPLETE — downgrade the reported terminal.
+                terminal = ProductionTerminalState.PARTIAL.value
+                result_manifest["status"] = terminal
+                result_manifest["final_status_persisted"] = False
         return ProductionRunResult(
             run_id=self.run_id,
             terminal_state=terminal,
@@ -970,6 +986,7 @@ class ProductionSearchRuntime:
             persistence_side_effects=tuple(self.ctx.persistence_side_effects),
             run_lock_status=run_lock_status,
             manifest=result_manifest,
+            final_status_persisted=final_status_persisted,
         )
 
 

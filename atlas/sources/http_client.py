@@ -437,6 +437,18 @@ class ReadOnlyHttpClient:
                     # Same-origin 303 (and 301/302 for a POST) downgrade to GET.
                     method = "GET"
                     body = None
+                # Revalidate METHOD + TARGET before EVERY hop (build spec 13). A
+                # preserved non-GET (a same-origin 307/308 that kept the Workday
+                # CXS POST) may proceed ONLY when the NEW target is STILL an
+                # allowed Workday CXS search endpoint; a 307/308 to any non-CXS
+                # path (even same-origin) is refused rather than POSTing a body to
+                # an unintended endpoint.
+                if method != "GET" and not is_workday_cxs_search(new_url):
+                    raise HttpError(
+                        ErrorCategory.INVALID_RESPONSE,
+                        f"refusing to preserve a {method} body across a redirect to a non-CXS target {new_url}",
+                        status=raw.status,
+                    )
                 url = new_url
                 redirects += 1
                 continue
