@@ -918,6 +918,89 @@ def _cmd_portals(args: argparse.Namespace) -> int:
     return 2
 
 
+def _cmd_outputs(args: argparse.Namespace) -> int:
+    """Inspect the stable production output directory (runs + latest pointer)."""
+    import json as _json
+
+    from atlas.reporting.production_output import (
+        LatestPaths,
+        ProductionOutputPublisher,
+        ProductionRunPaths,
+    )
+
+    settings = load_settings()
+    pub = ProductionOutputPublisher(settings)
+    sub = getattr(args, "outputs_command", None)
+    as_json = bool(getattr(args, "json", False))
+
+    if sub == "latest":
+        latest = pub.latest()
+        wb = LatestPaths(pub.root).workbook
+        if latest is None:
+            print(_json.dumps({"latest": None}) if as_json else "No latest production run yet.")
+            return 0
+        if as_json:
+            print(_json.dumps({"latest": latest, "workbook": str(wb)}, indent=2))
+        else:
+            print(f"Latest run: {latest['run_id']} ({latest.get('status')})")
+            print(f"Workbook:   {wb}")
+            print(f"Run dir:    {latest.get('run_dir')}")
+        return 0
+
+    if sub == "list":
+        runs = pub.list_runs()
+        if as_json:
+            print(_json.dumps({"runs": runs, "production_root": str(pub.root)}, indent=2))
+        else:
+            if not runs:
+                print("No production runs published yet.")
+            for r in runs:
+                print(f"  {r['run_id']:<28} {str(r.get('status')):<14} {r.get('published_at')}")
+            print(f"Production root: {pub.root}")
+        return 0
+
+    if sub == "show":
+        run_id = getattr(args, "run_id", None)
+        manifest = pub.show_run(run_id)
+        if manifest is None:
+            print(f"ERROR: no such run: {run_id}")
+            return 1
+        if as_json:
+            print(_json.dumps(manifest, indent=2))
+        else:
+            paths = ProductionRunPaths(pub.root, run_id)
+            print(f"Run: {manifest['run_id']} ({manifest.get('status')})")
+            print(f"Published: {manifest.get('published_at')}  report_valid={manifest.get('report_valid')}")
+            print(f"Run dir:  {paths.run_dir}")
+            print(f"Workbook: {paths.workbook}")
+            print("Files (sha256):")
+            for rel, digest in sorted(manifest.get("files", {}).items()):
+                print(f"  {rel:<40} {str(digest)[:16]}")
+        return 0
+
+    if sub == "open-latest":
+        latest = pub.latest()
+        if latest is None:
+            print("No latest run to open.")
+            return 1
+        wb = LatestPaths(pub.root).workbook
+        if not bool(getattr(args, "live", False)):
+            print(f"NOTE: would open {wb}. Pass --live to actually open it.")
+            return 0
+        try:
+            import os as _os
+
+            _os.startfile(str(wb))  # noqa: S606 - explicit, operator-initiated open (Windows)
+        except Exception as exc:  # noqa: BLE001
+            print(f"ERROR: could not open workbook: {exc}")
+            return 1
+        print(f"Opened {wb}")
+        return 0
+
+    print("ERROR: unknown outputs subcommand")
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="atlas", description="Atlas Career Intelligence platform CLI (foundation build).")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1179,6 +1262,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_po_auth.add_argument("--profile", default=None, help="Dedicated browser profile dir (optional).")
     p_po_auth.add_argument("--live", action="store_true", help="Actually open the visible window.")
     p_po_auth.set_defaults(func=_cmd_portals)
+
+    # -- outputs: stable production output directory (Phase 1E/F §10) --------
+    p_outputs = subparsers.add_parser(
+        "outputs", help="Inspect the stable production output directory (runs + latest).")
+    outputs_sub = p_outputs.add_subparsers(dest="outputs_command", required=True)
+    p_out_latest = outputs_sub.add_parser("latest", help="Show the latest published run pointer.")
+    p_out_latest.add_argument("--json", action="store_true")
+    p_out_latest.set_defaults(func=_cmd_outputs)
+    p_out_list = outputs_sub.add_parser("list", help="List published production runs.")
+    p_out_list.add_argument("--json", action="store_true")
+    p_out_list.set_defaults(func=_cmd_outputs)
+    p_out_show = outputs_sub.add_parser("show", help="Show one run manifest (--run-id).")
+    p_out_show.add_argument("--run-id", required=True)
+    p_out_show.add_argument("--json", action="store_true")
+    p_out_show.set_defaults(func=_cmd_outputs)
+    p_out_open = outputs_sub.add_parser("open-latest", help="Open the latest workbook (explicit; requires --live).")
+    p_out_open.add_argument("--live", action="store_true")
+    p_out_open.set_defaults(func=_cmd_outputs)
 
     return parser
 
