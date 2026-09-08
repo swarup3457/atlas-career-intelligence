@@ -2204,6 +2204,61 @@ class StateStore:
             self._upsert_coverage(conn, coverage_id, run_id, source_instance, now=at, **ck)
             return LeaseMutationResult.APPLIED
 
+    def human_reopen_child(
+        self, run_id: str, coverage_id: str, *, reason: str, reference: Optional[str] = None,
+        op_key: str, now: Optional[str] = None,
+    ) -> "LeaseMutationResult":
+        """Explicit, authorized human reopen of ONE human-blocked child (build
+        spec 4). In ONE transaction, and ONLY when the child's coverage status is
+        BLOCKED_HUMAN: reset the coverage row to NOT_ATTEMPTED, reopen the lease
+        (AVAILABLE, terminal=0, version++ — fencing any old token) WHEN a lease
+        row exists (the parallel path), append a HUMAN_REOPEN audit event, and
+        record the idempotency ``op_key``. All-or-none, so coverage and lease can
+        never diverge if a fault occurs mid-reopen. Idempotent by ``op_key``:
+        a duplicate reopen is a harmless no-op. A normally-completed / non-blocked
+        child is NEVER reopened."""
+        at = now or _utcnow()
+        with self.immediate_transaction() as conn:
+            if conn.execute("SELECT 1 FROM applied_operations WHERE op_key=?", (op_key,)).fetchone():
+                return LeaseMutationResult.ALREADY_APPLIED_IDEMPOTENTLY
+            cov = conn.execute(
+                "SELECT status FROM coverage_records WHERE run_id=? AND coverage_id=?",
+                (run_id, coverage_id),
+            ).fetchone()
+            if cov is None:
+                return LeaseMutationResult.NOT_FOUND
+            if cov["status"] != "BLOCKED_HUMAN":
+                # Only a human-blocked child may be reopened; a normal terminal
+                # child is never reopened.
+                return LeaseMutationResult.STALE_TOKEN_REJECTED
+            conn.execute(
+                "UPDATE coverage_records SET status='NOT_ATTEMPTED', attempted=0, completed=0, "
+                "next_action='SEARCH', updated_at=? WHERE run_id=? AND coverage_id=?",
+                (at, run_id, coverage_id),
+            )
+            lease = conn.execute(
+                "SELECT version FROM coverage_leases WHERE run_id=? AND coverage_id=?",
+                (run_id, coverage_id),
+            ).fetchone()
+            new_version = None
+            if lease is not None:
+                new_version = int(lease["version"]) + 1
+                conn.execute(
+                    "UPDATE coverage_leases SET status='AVAILABLE', terminal=0, worker_id=NULL, "
+                    "lease_expires_at=NULL, heartbeat_at=NULL, version=?, updated_at=? "
+                    "WHERE run_id=? AND coverage_id=?",
+                    (new_version, at, run_id, coverage_id),
+                )
+            self._append_lease_event(
+                conn, coverage_id, run_id, "HUMAN_REOPEN", worker_id=None, at=at,
+                detail={"reason": reason, "reference": reference, "new_version": new_version},
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO applied_operations (op_key, applied_at, result_json) VALUES (?, ?, ?)",
+                (op_key, at, json.dumps({"coverage_id": coverage_id, "new_version": new_version}, sort_keys=True)),
+            )
+            return LeaseMutationResult.APPLIED
+
     # ------------------------------------------------------------------
     # Phase 1C-A FINAL — durable verification decisions (build spec 10)
     # ------------------------------------------------------------------

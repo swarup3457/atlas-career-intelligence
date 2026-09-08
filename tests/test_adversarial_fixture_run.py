@@ -123,11 +123,12 @@ def test_adversarial_run_waits_then_resumes_to_complete(tmp_path):
     assert res.terminal_state == ProductionTerminalState.WAITING_FOR_HUMAN.value
 
     # Simulated authorized resolution: the previously login-walled source now
-    # returns results. A brand-new runtime resumes the exact remaining children.
+    # returns results. A brand-new runtime performs an EXPLICIT human resume
+    # (build spec 4) — ordinary resume never reopens a human-blocked child.
     resolved_instances, _ = _topology(login_scenario="results")
     rt2 = ProductionSearchRuntime(settings, "adversarial", instances=resolved_instances, companies=companies,
                                   registry=_registry(), rate_limiter=_fast_limiter())
-    res2 = rt2.resume()
+    res2 = rt2.resume_after_human("login wall cleared by operator", reference="OPS-1")
 
     assert res2.terminal_state == ProductionTerminalState.COMPLETE.value
     assert res2.planned_tasks == 60 and res2.terminal_tasks == 60

@@ -789,16 +789,38 @@ class ProductionSearchRuntime:
             run_lock.release()
 
     def resume(self) -> ProductionRunResult:
-        # A resume after WAITING_FOR_HUMAN represents an authorized human
-        # resolution: reset human-blocked children to NOT_ATTEMPTED so discover
-        # re-attempts them (e.g. after the access limitation is cleared).
+        """Resume ordinary PARTIAL work only (build spec 4). This NEVER changes a
+        BLOCKED_HUMAN child and NEVER performs a human reopen: a human-blocked
+        child stays blocked and the run stays WAITING_FOR_HUMAN until an explicit
+        ``resume_after_human`` authorizes the reopen. It re-enters DISCOVER so
+        genuinely-pending (non-blocked) children are re-attempted."""
+        self._reenter_discover_for_resume()
+        return self.run()
+
+    def resume_after_human(self, reason: str, reference: Optional[str] = None) -> ProductionRunResult:
+        """Explicit, AUTHORIZED human resolution (build spec 4). Requires a
+        non-empty ``reason``. Reopens ONLY BLOCKED_HUMAN coverage children —
+        atomically resetting coverage + lease (fencing version++) and appending a
+        HUMAN_REOPEN audit event, idempotent by an operation key — then resumes
+        the graph so the reopened children are re-attempted. A normally-completed
+        child is never reopened; ``reason``/``reference`` must not carry secrets."""
+        if not reason or not str(reason).strip():
+            raise ValueError("resume_after_human requires a non-empty reason (human authorization)")
         with StateStore(self.settings.state_db) as store:
             manifest = CoverageManifest.load(store, self.run_id)
             for task in manifest.tasks():
                 if task.status == CoverageStatus.BLOCKED_HUMAN:
-                    manifest.mark(task.coverage_id, CoverageStatus.NOT_ATTEMPTED, next_action="SEARCH")
-            if manifest.tasks():
-                manifest.persist(store, policy_fingerprint=manifest.policy_fingerprint)
+                    op_key = f"human_reopen::{self.run_id}::{task.coverage_id}::{reference or reason}"
+                    store.human_reopen_child(
+                        self.run_id, task.coverage_id, reason=str(reason), reference=reference, op_key=op_key,
+                    )
+        self._reenter_discover_for_resume()
+        return self.run()
+
+    def _reenter_discover_for_resume(self) -> None:
+        """Clear a PARTIAL/WAITING terminal state and re-enter DISCOVER so a
+        resume re-attempts the remaining pending children. Coverage statuses are
+        NOT touched here (only ``resume_after_human`` reopens a blocked child)."""
         with open_checkpointer(self.settings.checkpoint_db) as checkpointer:
             graph = build_production_graph(self._handlers(), self).compile(checkpointer=checkpointer)
             config = thread_config(self.thread_id)
@@ -808,14 +830,12 @@ class ProductionSearchRuntime:
                 ProductionTerminalState.PARTIAL.value, ProductionTerminalState.WAITING_FOR_HUMAN.value
             ):
                 values["terminal_state"] = None
-                # Re-enter DISCOVER so reset children are re-attempted.
                 if values.get("phase") in (
                     ProductionPhase.BUILD_REPORT.value, ProductionPhase.OPTIONAL_REMOTE_AUDIT.value,
                     ProductionPhase.COMPLETE.value,
                 ):
                     values["phase"] = ProductionPhase.DISCOVER.value
                 graph.update_state(config, values)
-        return self.run()
 
     def _finalize(self, state: ProductionState, terminal: str, *, run_lock_status: Optional[str] = None) -> ProductionRunResult:
         now = _utcnow()

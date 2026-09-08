@@ -241,7 +241,16 @@ def _cmd_production_fixture(args: argparse.Namespace) -> int:
         settings, run_id, instances=instances, companies=companies,
         stop_after_phase=stop_after,
     )
-    result = rt.resume() if sub == "resume" else rt.run()
+    if sub == "resume-after-human":
+        reason = getattr(args, "reason", None)
+        if not reason or not str(reason).strip():
+            print("ERROR: resume-after-human requires a non-empty --reason (human authorization).")
+            return 2
+        result = rt.resume_after_human(str(reason), reference=getattr(args, "reference", None))
+    elif sub == "resume":
+        result = rt.resume()
+    else:
+        result = rt.run()
 
     print(f"RUN_ID={result.run_id}")
     print(f"STATUS={result.terminal_state}")
@@ -651,6 +660,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_pf_resume.add_argument("--run-id", default=None)
     p_pf_resume.add_argument("--companies", default=2)
     p_pf_resume.set_defaults(func=_cmd_production_fixture)
+    p_pf_reopen = prodfix_sub.add_parser(
+        "resume-after-human",
+        help="EXPLICIT, authorized human resolution: reopen BLOCKED_HUMAN children then resume.",
+    )
+    p_pf_reopen.add_argument("--run-id", default=None)
+    p_pf_reopen.add_argument("--companies", default=2)
+    p_pf_reopen.add_argument("--reason", required=True, help="Non-empty human authorization reason (no secrets).")
+    p_pf_reopen.add_argument("--reference", default=None, help="Optional ticket/reference (no secrets).")
+    p_pf_reopen.set_defaults(func=_cmd_production_fixture)
     p_pf_status = prodfix_sub.add_parser("status", help="Show sealed plan / coverage / report references.")
     p_pf_status.add_argument("--run-id", default=None)
     p_pf_status.add_argument("--companies", default=2)
