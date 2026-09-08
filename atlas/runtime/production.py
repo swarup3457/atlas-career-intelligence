@@ -65,6 +65,7 @@ from atlas.policy.rules import VerificationInput, classify_verification
 from atlas.reporting.mapping import load_report_mapping, validate_report, write_report
 from atlas.runtime.canonicalize import canonicalize_run
 from atlas.runtime.fixture_pipeline import FixtureExecutionPipeline
+from atlas.runtime.parallel_pipeline import ParallelExecutionPipeline
 from atlas.sources.coverage import (
     CoverageManifest,
     CoveragePlanState,
@@ -167,6 +168,12 @@ class ProductionSearchRuntime:
         write_report: bool = True,
         report_path: Optional[Path] = None,
         use_run_lock: bool = True,
+        parallel_workers: int = 1,
+        max_per_company: int = 1,
+        max_per_instance: int = 1,
+        max_per_tenant: int = 1,
+        live_canary: bool = False,
+        lane_override: Optional[list[str]] = None,
     ):
         self.settings = settings
         self.run_id = run_id
@@ -184,6 +191,17 @@ class ProductionSearchRuntime:
         self.write_report = write_report
         self.report_path = report_path
         self.use_run_lock = use_run_lock
+        # Phase 1C-A: bounded parallel discovery. Default 1 keeps the exact
+        # Phase 1B.1 sequential behavior; >1 selects the parallel dispatcher for
+        # the SAME graph's DISCOVER phase (not a second orchestrator).
+        self.parallel_workers = max(1, int(parallel_workers))
+        self.max_per_company = max(1, int(max_per_company))
+        self.max_per_instance = max(1, int(max_per_instance))
+        self.max_per_tenant = max(1, int(max_per_tenant))
+        self.live_canary = bool(live_canary)
+        # Optional explicit lane set (used by the low-volume canary to run ONE
+        # child per board instead of the full policy lane fan-out).
+        self.lane_override = lane_override
 
         if instances is None or companies is None:
             default_instances, default_companies = default_fixture_topology()
@@ -280,7 +298,7 @@ class ProductionSearchRuntime:
             state.setdefault("notes", []).append("plan build failed")
             return state
         self._ensure_policy(state)
-        lanes = list(self.policy.lanes.keys()) if self.policy else []
+        lanes = self.lane_override if self.lane_override else (list(self.policy.lanes.keys()) if self.policy else [])
         plan_input = PlanInput(
             run_id=self.run_id, companies=self.companies,
             portal_families=[], ats_families=[],
@@ -323,13 +341,31 @@ class ProductionSearchRuntime:
             # Genuinely-pending children only (a human-blocked child is NOT
             # re-attempted in the same run — it awaits human action).
             pending = [t.coverage_id for t in manifest.remaining() if t.status != CoverageStatus.BLOCKED_HUMAN]
-            pipeline = FixtureExecutionPipeline(
-                store, self.registry, self.instances, executor=self.executor,
-                run_id=self.run_id, policy_version=state.get("policy_fingerprint", "unversioned"),
-                retry_budget=self.retry_budget,
-            )
-            result = pipeline.execute(manifest, pending, max_children=self.discover_batch)
-            manifest.persist(store, policy_fingerprint=state.get("policy_fingerprint", ""))
+            if self.parallel_workers > 1:
+                # Bounded parallel dispatcher: atomic leases + per-company /
+                # per-instance / per-tenant caps. Each worker opens its OWN
+                # StateStore connection via the factory (never shared).
+                db_path = self.settings.state_db
+                parallel = ParallelExecutionPipeline(
+                    lambda: StateStore(db_path), self.registry, self.instances,
+                    run_id=self.run_id, policy_version=state.get("policy_fingerprint", "unversioned"),
+                    retry_budget=self.retry_budget, workers=self.parallel_workers,
+                    max_per_company=self.max_per_company, max_per_instance=self.max_per_instance,
+                    max_per_tenant=self.max_per_tenant, rate_limiter=self.rate_limiter,
+                )
+                result = parallel.execute(manifest, pending, max_children=self.discover_batch)
+                # Workers persisted every child; reload to reflect true statuses
+                # (do NOT re-persist the stale in-memory manifest).
+                manifest = CoverageManifest.load(store, self.run_id)
+                self.plan = manifest
+            else:
+                pipeline = FixtureExecutionPipeline(
+                    store, self.registry, self.instances, executor=self.executor,
+                    run_id=self.run_id, policy_version=state.get("policy_fingerprint", "unversioned"),
+                    retry_budget=self.retry_budget,
+                )
+                result = pipeline.execute(manifest, pending, max_children=self.discover_batch)
+                manifest.persist(store, policy_fingerprint=state.get("policy_fingerprint", ""))
             remaining_after = sum(1 for t in manifest.remaining() if t.status != CoverageStatus.BLOCKED_HUMAN)
         bump(state, "discovered", result.observations_staged)
         bump(state, "attempts", result.attempts)

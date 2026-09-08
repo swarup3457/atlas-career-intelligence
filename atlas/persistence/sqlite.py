@@ -536,6 +536,53 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_raw_obs_coverage ON raw_discovery_observations(coverage_id)",
         ],
     ),
+    (
+        8,
+        "Phase 1C-A: atomic coverage task leases + append-only lease-event audit "
+        "(build spec 7). Enables a bounded parallel worker pool to atomically claim "
+        "the exact coverage child as the unique unit of work, prevents a second "
+        "worker from claiming an unexpired lease, allows an expired lease to be "
+        "reclaimed and a long task to heartbeat, and keeps a terminal task "
+        "un-leasable — all in UTC, with every lease transition auditable.",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS coverage_leases (
+                coverage_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                worker_id TEXT,
+                status TEXT NOT NULL DEFAULT 'AVAILABLE',
+                terminal INTEGER NOT NULL DEFAULT 0,
+                attempt INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 0,
+                lease_acquired_at TEXT,
+                lease_expires_at TEXT,
+                heartbeat_at TEXT,
+                company TEXT,
+                source_instance TEXT,
+                tenant TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS coverage_lease_events (
+                event_id TEXT PRIMARY KEY,
+                coverage_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                worker_id TEXT,
+                event TEXT NOT NULL,
+                attempt INTEGER,
+                lease_expires_at TEXT,
+                at TEXT NOT NULL,
+                detail_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_cov_leases_run ON coverage_leases(run_id, status, terminal)",
+            "CREATE INDEX IF NOT EXISTS idx_cov_leases_expiry ON coverage_leases(run_id, lease_expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_cov_lease_events_cov ON coverage_lease_events(coverage_id, at)",
+            "CREATE INDEX IF NOT EXISTS idx_cov_lease_events_run ON coverage_lease_events(run_id, at)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)
@@ -1449,6 +1496,256 @@ class StateStore:
                 "WHERE observation_id=?",
                 (processing_status, canonical_id, observation_id),
             )
+
+    # ------------------------------------------------------------------
+    # Phase 1C-A — atomic coverage task leases (build spec 7)
+    # ------------------------------------------------------------------
+    @contextlib.contextmanager
+    def immediate_transaction(self) -> Iterator[sqlite3.Connection]:
+        """A transaction that takes a RESERVED write lock up front via
+        ``BEGIN IMMEDIATE``. This makes a read-decide-write lease claim atomic
+        against other writers (on separate connections/processes): a second
+        writer blocks on the reserved lock — up to the busy timeout — instead of
+        racing, so two workers can never both observe the same lease as free."""
+        conn = self._conn
+        if conn.in_transaction:
+            conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+
+    def _append_lease_event(
+        self,
+        conn: sqlite3.Connection,
+        coverage_id: str,
+        run_id: str,
+        event: str,
+        *,
+        worker_id: Optional[str] = None,
+        attempt: Optional[int] = None,
+        lease_expires_at: Optional[str] = None,
+        at: str,
+        detail: Optional[dict] = None,
+    ) -> None:
+        event_id = f"lev::{run_id}::{coverage_id}::{event}::{attempt}::{at}"
+        conn.execute(
+            "INSERT OR IGNORE INTO coverage_lease_events (event_id, coverage_id, run_id, worker_id, "
+            "event, attempt, lease_expires_at, at, detail_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event_id, coverage_id, run_id, worker_id, event, attempt, lease_expires_at, at,
+             json.dumps(detail or {}, sort_keys=True)),
+        )
+
+    def ensure_coverage_lease(
+        self,
+        coverage_id: str,
+        run_id: str,
+        *,
+        company: Optional[str] = None,
+        source_instance: Optional[str] = None,
+        tenant: Optional[str] = None,
+        terminal: bool = False,
+        now: Optional[str] = None,
+    ) -> bool:
+        """Create the lease row for a coverage child if absent (idempotent).
+        An already-terminal child is recorded ``DONE``/terminal so it can never
+        be leased. Returns True if a new row was inserted."""
+        at = now or _utcnow()
+        status = "DONE" if terminal else "AVAILABLE"
+        with self._auto() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO coverage_leases (coverage_id, run_id, worker_id, status, terminal, "
+                "attempt, version, company, source_instance, tenant, created_at, updated_at) "
+                "VALUES (?, ?, NULL, ?, ?, 0, 0, ?, ?, ?, ?, ?)",
+                (coverage_id, run_id, status, 1 if terminal else 0, company, source_instance, tenant, at, at),
+            )
+        return bool(cur.rowcount)
+
+    def acquire_coverage_lease(
+        self,
+        coverage_id: str,
+        run_id: str,
+        worker_id: str,
+        *,
+        now: str,
+        lease_expires_at: str,
+    ) -> Optional[dict]:
+        """Atomically claim a specific coverage child. Returns a lease dict on
+        success, or ``None`` when the child is terminal, missing, or already
+        held by an unexpired lease. ``now``/``lease_expires_at`` are fixed-width
+        UTC ISO strings from the caller's (injectable) clock."""
+        with self.immediate_transaction() as conn:
+            row = conn.execute(
+                "SELECT status, terminal, attempt, version, lease_expires_at FROM coverage_leases "
+                "WHERE coverage_id = ? AND run_id = ?",
+                (coverage_id, run_id),
+            ).fetchone()
+            if row is None or int(row["terminal"]) == 1:
+                return None
+            held = row["status"] == "LEASED" and row["lease_expires_at"] is not None and row["lease_expires_at"] > now
+            if held:
+                return None
+            attempt = int(row["attempt"]) + 1
+            version = int(row["version"]) + 1
+            conn.execute(
+                "UPDATE coverage_leases SET status='LEASED', worker_id=?, attempt=?, version=?, "
+                "lease_acquired_at=?, lease_expires_at=?, heartbeat_at=?, updated_at=? WHERE coverage_id=?",
+                (worker_id, attempt, version, now, lease_expires_at, now, now, coverage_id),
+            )
+            self._append_lease_event(
+                conn, coverage_id, run_id, "ACQUIRE", worker_id=worker_id, attempt=attempt,
+                lease_expires_at=lease_expires_at, at=now,
+                detail={"reclaimed": row["status"] == "LEASED"},
+            )
+            return {"coverage_id": coverage_id, "run_id": run_id, "worker_id": worker_id,
+                    "attempt": attempt, "version": version, "lease_expires_at": lease_expires_at}
+
+    def acquire_next_coverage_lease(
+        self,
+        run_id: str,
+        worker_id: str,
+        *,
+        now: str,
+        lease_expires_at: str,
+        eligible: Optional[list[str]] = None,
+    ) -> Optional[dict]:
+        """Atomically claim the next available (or expired-and-reclaimable),
+        non-terminal coverage child for ``run_id``, in deterministic
+        ``coverage_id`` order. ``eligible`` optionally restricts the candidate
+        set (e.g. children whose company/instance/tenant is under its
+        concurrency cap). Returns a lease dict or ``None`` when none claimable."""
+        with self.immediate_transaction() as conn:
+            rows = conn.execute(
+                "SELECT coverage_id, attempt, version FROM coverage_leases WHERE run_id=? AND terminal=0 "
+                "AND (status='AVAILABLE' OR (status='LEASED' AND lease_expires_at <= ?)) ORDER BY coverage_id",
+                (run_id, now),
+            ).fetchall()
+            eligible_set = set(eligible) if eligible is not None else None
+            chosen = None
+            for r in rows:
+                if eligible_set is None or r["coverage_id"] in eligible_set:
+                    chosen = r
+                    break
+            if chosen is None:
+                return None
+            attempt = int(chosen["attempt"]) + 1
+            version = int(chosen["version"]) + 1
+            conn.execute(
+                "UPDATE coverage_leases SET status='LEASED', worker_id=?, attempt=?, version=?, "
+                "lease_acquired_at=?, lease_expires_at=?, heartbeat_at=?, updated_at=? WHERE coverage_id=?",
+                (worker_id, attempt, version, now, lease_expires_at, now, now, chosen["coverage_id"]),
+            )
+            self._append_lease_event(
+                conn, chosen["coverage_id"], run_id, "ACQUIRE", worker_id=worker_id, attempt=attempt,
+                lease_expires_at=lease_expires_at, at=now,
+            )
+            return {"coverage_id": chosen["coverage_id"], "run_id": run_id, "worker_id": worker_id,
+                    "attempt": attempt, "version": version, "lease_expires_at": lease_expires_at}
+
+    def heartbeat_coverage_lease(
+        self, coverage_id: str, run_id: str, worker_id: str, *, now: str, lease_expires_at: str
+    ) -> bool:
+        """Extend a held lease's expiry (a long task proving it is still alive).
+        Succeeds only when ``worker_id`` still owns a non-terminal, unexpired
+        lease — a lease already reclaimed by another worker cannot be
+        heartbeat-extended."""
+        with self.immediate_transaction() as conn:
+            row = conn.execute(
+                "SELECT status, terminal, worker_id, lease_expires_at FROM coverage_leases "
+                "WHERE coverage_id=? AND run_id=?",
+                (coverage_id, run_id),
+            ).fetchone()
+            if row is None or int(row["terminal"]) == 1 or row["status"] != "LEASED":
+                return False
+            if row["worker_id"] != worker_id:
+                return False
+            if row["lease_expires_at"] is not None and row["lease_expires_at"] <= now:
+                return False  # already expired; must be re-acquired, not extended
+            conn.execute(
+                "UPDATE coverage_leases SET lease_expires_at=?, heartbeat_at=?, updated_at=? WHERE coverage_id=?",
+                (lease_expires_at, now, now, coverage_id),
+            )
+            self._append_lease_event(
+                conn, coverage_id, run_id, "HEARTBEAT", worker_id=worker_id,
+                lease_expires_at=lease_expires_at, at=now,
+            )
+            return True
+
+    def complete_coverage_lease(
+        self, coverage_id: str, run_id: str, *, worker_id: Optional[str] = None, now: str, terminal_status: str = "DONE"
+    ) -> None:
+        """Mark a coverage child's lease terminal so it can never be leased
+        again (idempotent duplicate delivery is harmless)."""
+        with self._auto() as conn:
+            conn.execute(
+                "UPDATE coverage_leases SET status=?, terminal=1, heartbeat_at=?, updated_at=? WHERE coverage_id=?",
+                (terminal_status, now, now, coverage_id),
+            )
+            self._append_lease_event(
+                conn, coverage_id, run_id, "COMPLETE", worker_id=worker_id, at=now,
+                detail={"terminal_status": terminal_status},
+            )
+
+    def release_coverage_lease(
+        self, coverage_id: str, run_id: str, *, worker_id: Optional[str] = None, now: str, requeue: bool = True
+    ) -> None:
+        """Release a held (non-terminal) lease. With ``requeue`` the child
+        returns to ``AVAILABLE`` for another worker; a terminal child is never
+        reopened."""
+        with self._auto() as conn:
+            row = conn.execute(
+                "SELECT terminal FROM coverage_leases WHERE coverage_id=? AND run_id=?",
+                (coverage_id, run_id),
+            ).fetchone()
+            if row is None or int(row["terminal"]) == 1:
+                return
+            new_status = "AVAILABLE" if requeue else "HELD_RELEASED"
+            conn.execute(
+                "UPDATE coverage_leases SET status=?, worker_id=NULL, lease_expires_at=NULL, updated_at=? "
+                "WHERE coverage_id=?",
+                (new_status, now, coverage_id),
+            )
+            self._append_lease_event(
+                conn, coverage_id, run_id, "RELEASE", worker_id=worker_id, at=now, detail={"requeue": requeue},
+            )
+
+    def get_coverage_lease(self, coverage_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM coverage_leases WHERE coverage_id = ?", (coverage_id,)
+        ).fetchone()
+
+    def list_coverage_leases(self, run_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM coverage_leases WHERE run_id = ? ORDER BY coverage_id", (run_id,)
+        ).fetchall()
+
+    def count_active_coverage_leases(self, run_id: str, *, now: str) -> int:
+        return int(self._conn.execute(
+            "SELECT COUNT(*) AS n FROM coverage_leases WHERE run_id=? AND status='LEASED' AND terminal=0 "
+            "AND (lease_expires_at IS NULL OR lease_expires_at > ?)",
+            (run_id, now),
+        ).fetchone()["n"])
+
+    def list_coverage_lease_events(
+        self, *, coverage_id: Optional[str] = None, run_id: Optional[str] = None
+    ) -> list[sqlite3.Row]:
+        if coverage_id is not None:
+            return self._conn.execute(
+                "SELECT * FROM coverage_lease_events WHERE coverage_id = ? ORDER BY at, rowid",
+                (coverage_id,),
+            ).fetchall()
+        if run_id is not None:
+            return self._conn.execute(
+                "SELECT * FROM coverage_lease_events WHERE run_id = ? ORDER BY at, rowid",
+                (run_id,),
+            ).fetchall()
+        return self._conn.execute(
+            "SELECT * FROM coverage_lease_events ORDER BY at, rowid"
+        ).fetchall()
 
     # ------------------------------------------------------------------
     # Phase 1B — coverage plan lifecycle (build spec 7.8)

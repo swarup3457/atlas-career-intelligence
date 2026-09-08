@@ -46,9 +46,23 @@ class RateLimitedExecutor:
         """Execute exactly one paced adapter search. On a 429 the executor
         records the rate-limit signal (honoring Retry-After when provided) and
         re-raises so the centralized retry policy decides what happens next —
-        the executor never retries or swallows the error."""
+        the executor never retries or swallows the error.
+
+        The per-source concurrency slot is acquired in BLOCKING mode: under real
+        parallel execution a worker waits for a free slot rather than exceeding
+        the cap. Crucially, the adapter is called ONLY when a slot was actually
+        acquired, and a slot is released ONLY when it was held — a failed
+        acquisition never falls through to the adapter call nor corrupts the
+        active-slot count (build spec 8)."""
         rate_key = key or self.rate_key(adapter)
-        self.limiter.acquire_slot(rate_key)
+        acquired = self.limiter.acquire_slot(rate_key, blocking=True)
+        if not acquired:
+            # Defensive: with blocking=True this is only reachable on a future
+            # timeout variant. Never call the adapter without a held slot.
+            raise AdapterError(
+                ErrorCategory.SOURCE_UNAVAILABLE,
+                f"could not acquire a concurrency slot for {rate_key!r}; adapter not called",
+            )
         try:
             self.limiter.acquire(rate_key)  # pace: min interval + not-before
             try:

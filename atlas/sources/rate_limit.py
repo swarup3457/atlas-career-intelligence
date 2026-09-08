@@ -74,7 +74,10 @@ class RateLimiter:
         self._not_before: dict[str, float] = {}
         self._active: dict[str, int] = {}
         self._backoff: dict[str, float] = {}
-        self._lock = threading.Lock()
+        # A Condition (lock + wait/notify) so a blocking slot acquisition can
+        # wait for a slot to free instead of busy-spinning. It is also a valid
+        # plain lock for every other critical section below.
+        self._lock = threading.Condition()
 
     # -- pacing -------------------------------------------------------------
     def next_available(self, key: str) -> float:
@@ -130,20 +133,41 @@ class RateLimiter:
         with self._lock:
             return self._active.get(key, 0) >= self.policy.max_concurrency
 
-    def acquire_slot(self, key: str) -> bool:
-        """Reserve a concurrency slot; returns False if already at capacity."""
+    def acquire_slot(self, key: str, *, blocking: bool = False, timeout: Optional[float] = None) -> bool:
+        """Reserve a concurrency slot for ``key``.
+
+        With ``blocking=False`` (the default, preserving the original
+        contract) it returns ``False`` immediately when already at capacity.
+        With ``blocking=True`` it waits (via the internal condition, releasing
+        the lock while it waits) until a slot frees or ``timeout`` elapses,
+        returning ``True`` only when a slot was actually reserved. Callers MUST
+        honor the return value: a ``False`` result means NO slot was acquired
+        and the caller must neither proceed nor later release a slot it never
+        held."""
+        deadline = None if (timeout is None or not blocking) else (time.monotonic() + timeout)
         with self._lock:
-            active = self._active.get(key, 0)
-            if active >= self.policy.max_concurrency:
-                return False
-            self._active[key] = active + 1
-            return True
+            while True:
+                active = self._active.get(key, 0)
+                if active < self.policy.max_concurrency:
+                    self._active[key] = active + 1
+                    return True
+                if not blocking:
+                    return False
+                wait = None
+                if deadline is not None:
+                    wait = deadline - time.monotonic()
+                    if wait <= 0:
+                        return False
+                # wait() releases the lock while blocked and re-acquires on wake.
+                self._lock.wait(timeout=wait)
 
     def release_slot(self, key: str) -> None:
         with self._lock:
             active = self._active.get(key, 0)
             if active > 0:
                 self._active[key] = active - 1
+            # Wake a blocked acquirer, if any, now that a slot may be free.
+            self._lock.notify_all()
 
     def active_count(self, key: str) -> int:
         with self._lock:
