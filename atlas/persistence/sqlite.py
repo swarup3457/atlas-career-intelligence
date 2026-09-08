@@ -831,6 +831,184 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             """,
         ],
     ),
+    (
+        12,
+        "Phase 1D market discovery + adaptive search (build spec 6/10/12/13/17): "
+        "additive, data-preserving tables for (a) append-only PORTAL job LEADS "
+        "(LinkedIn/Naukri, run-scoped, never auto-official); (b) MARKET CAMPAIGN "
+        "and append-only sealed WAVE definitions; (c) wave DEFICITS and expansion "
+        "reasons; (d) bounded QUERY VARIANTS + policy versions; (e) DYNAMIC-COMPANY "
+        "provenance; (f) PORTAL->OFFICIAL relationships; and (g) a run-scoped global "
+        "CAMPAIGN BUDGET ledger. Also adds two additive columns to career_entry_points "
+        "(validated / reachability) so a common-path LEAD is distinguished from a "
+        "reachability-validated entry. No existing table/column is modified.",
+        [
+            # -- (a) career entry-point reachability (LEAD vs validated) --------
+            "ALTER TABLE career_entry_points ADD COLUMN validated INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE career_entry_points ADD COLUMN reachability TEXT",
+            # -- (b) append-only portal job leads -------------------------------
+            """
+            CREATE TABLE IF NOT EXISTS portal_leads (
+                lead_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                campaign_id TEXT,
+                wave_id TEXT,
+                source_family TEXT NOT NULL,
+                source_instance TEXT,
+                portal_job_id TEXT,
+                canonical_url TEXT,
+                title TEXT,
+                company_name TEXT,
+                company_id TEXT,
+                location TEXT,
+                posted_text TEXT,
+                posted_provenance TEXT,
+                work_mode TEXT,
+                lane TEXT,
+                result_query TEXT,
+                result_page INTEGER,
+                result_cursor TEXT,
+                salary_text TEXT,
+                experience_text TEXT,
+                official_apply_url TEXT,
+                company_url TEXT,
+                verification_state TEXT NOT NULL DEFAULT 'PORTAL_CURRENT_LEAD',
+                raw_evidence_ref TEXT,
+                health_findings_json TEXT NOT NULL DEFAULT '[]',
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                content_hash TEXT,
+                observed_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_portal_leads_run ON portal_leads(run_id)",
+            "CREATE INDEX IF NOT EXISTS idx_portal_leads_family ON portal_leads(source_family)",
+            "CREATE INDEX IF NOT EXISTS idx_portal_leads_company ON portal_leads(company_id)",
+            "CREATE INDEX IF NOT EXISTS idx_portal_leads_state ON portal_leads(verification_state)",
+            # -- (c) market campaign --------------------------------------------
+            """
+            CREATE TABLE IF NOT EXISTS market_campaigns (
+                campaign_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                policy_fingerprint TEXT,
+                candidate_fingerprint TEXT,
+                mode TEXT NOT NULL DEFAULT 'DELTA',
+                budgets_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'SEALED',
+                current_wave INTEGER NOT NULL DEFAULT 0,
+                terminal_reason TEXT,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_campaign_run ON market_campaigns(run_id)",
+            # -- (c) append-only sealed waves -----------------------------------
+            """
+            CREATE TABLE IF NOT EXISTS market_waves (
+                wave_id TEXT PRIMARY KEY,
+                campaign_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                wave_index INTEGER NOT NULL,
+                parent_wave_id TEXT,
+                seal_hash TEXT,
+                status TEXT NOT NULL DEFAULT 'PLANNED',
+                deficit_reason TEXT,
+                tasks_json TEXT NOT NULL DEFAULT '[]',
+                terminal_reason TEXT,
+                created_at TEXT NOT NULL,
+                sealed_at TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_waves_campaign ON market_waves(campaign_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_waves_campaign_index ON market_waves(campaign_id, wave_index)",
+            # -- (d) wave deficits ----------------------------------------------
+            """
+            CREATE TABLE IF NOT EXISTS wave_deficits (
+                deficit_id TEXT PRIMARY KEY,
+                campaign_id TEXT NOT NULL,
+                wave_id TEXT NOT NULL,
+                deficit_kind TEXT NOT NULL,
+                lane TEXT,
+                geography TEXT,
+                source_family TEXT,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_deficits_campaign ON wave_deficits(campaign_id)",
+            # -- (d) bounded query variants -------------------------------------
+            """
+            CREATE TABLE IF NOT EXISTS query_variants (
+                variant_id TEXT PRIMARY KEY,
+                campaign_id TEXT NOT NULL,
+                wave_id TEXT,
+                lane TEXT,
+                geography TEXT,
+                source_family TEXT,
+                query TEXT NOT NULL,
+                origin TEXT NOT NULL DEFAULT 'SYNONYM',
+                policy_version TEXT,
+                reason TEXT,
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_variants_campaign ON query_variants(campaign_id)",
+            # -- (e) dynamic-company provenance ---------------------------------
+            """
+            CREATE TABLE IF NOT EXISTS dynamic_company_provenance (
+                provenance_id TEXT PRIMARY KEY,
+                company_id TEXT,
+                run_id TEXT,
+                discovery_source TEXT NOT NULL,
+                portal_lead_id TEXT,
+                normalized_name TEXT,
+                resolved_domain TEXT,
+                resolution_status TEXT NOT NULL DEFAULT 'DYNAMICALLY_DISCOVERED',
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_dynco_company ON dynamic_company_provenance(company_id)",
+            "CREATE INDEX IF NOT EXISTS idx_dynco_status ON dynamic_company_provenance(resolution_status)",
+            # -- (f) portal -> official relationships ---------------------------
+            """
+            CREATE TABLE IF NOT EXISTS portal_official_links (
+                link_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                portal_lead_id TEXT NOT NULL,
+                canonical_id TEXT,
+                official_observation_id TEXT,
+                match_kind TEXT NOT NULL DEFAULT 'NONE',
+                confidence REAL NOT NULL DEFAULT 0.0,
+                verification_state TEXT NOT NULL DEFAULT 'PORTAL_CURRENT_LEAD',
+                ambiguous INTEGER NOT NULL DEFAULT 0,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_polink_run ON portal_official_links(run_id)",
+            "CREATE INDEX IF NOT EXISTS idx_polink_lead ON portal_official_links(portal_lead_id)",
+            # -- (g) run-scoped global campaign budget ledger -------------------
+            """
+            CREATE TABLE IF NOT EXISTS campaign_budget (
+                campaign_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                http_calls INTEGER NOT NULL DEFAULT 0,
+                browser_calls INTEGER NOT NULL DEFAULT 0,
+                llm_calls INTEGER NOT NULL DEFAULT 0,
+                results INTEGER NOT NULL DEFAULT 0,
+                max_http INTEGER,
+                max_browser INTEGER,
+                max_llm INTEGER,
+                max_results INTEGER,
+                max_wall_clock_s REAL,
+                started_at TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """,
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)
@@ -1673,26 +1851,37 @@ class StateStore:
         trust_kind: Optional[str] = None,
         confidence: float = 0.0,
         evidence: Optional[dict] = None,
+        validated: bool = False,
+        reachability: Optional[str] = None,
         observed_at: Optional[str] = None,
     ) -> None:
         """Append-only record of a discovered career entry point (idempotent on
         ``entry_id``). A company may have MANY current entry points (global /
-        India / graduate); recording one never overwrites another."""
+        India / graduate); recording one never overwrites another.
+
+        ``trusted`` means only that the URL SHAPE is an official/known-ATS host;
+        ``validated`` means reachability/content/redirect evidence confirmed a
+        real entry point. A guessed common path (``/careers``) that no one has
+        fetched is trusted-but-not-validated — a LEAD, never a resolved entry
+        (build spec 5.3)."""
         now = observed_at or _utcnow()
         with self._auto() as conn:
             conn.execute(
                 "INSERT INTO career_entry_points (entry_id, company_id, entry_url, label, "
-                "discovery_method, trusted, trust_kind, confidence, evidence_json, observed_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "discovery_method, trusted, trust_kind, confidence, evidence_json, validated, "
+                "reachability, observed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(entry_id) DO UPDATE SET company_id=excluded.company_id, "
                 "entry_url=excluded.entry_url, label=excluded.label, "
                 "discovery_method=excluded.discovery_method, trusted=excluded.trusted, "
                 "trust_kind=excluded.trust_kind, confidence=excluded.confidence, "
-                "evidence_json=excluded.evidence_json",
+                "evidence_json=excluded.evidence_json, validated=excluded.validated, "
+                "reachability=excluded.reachability",
                 (
                     entry_id, company_id, entry_url, label, discovery_method,
                     1 if trusted else 0, trust_kind, float(confidence),
-                    json.dumps(evidence or {}, sort_keys=True), now,
+                    json.dumps(evidence or {}, sort_keys=True),
+                    1 if validated else 0, reachability, now,
                 ),
             )
 
@@ -1833,6 +2022,412 @@ class StateStore:
     def get_career_pilot_run(self, run_id: str) -> Optional[sqlite3.Row]:
         return self._conn.execute(
             "SELECT * FROM career_pilot_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+
+    # ================================================================
+    # Phase 1D — market discovery / portals / campaigns / waves
+    # ================================================================
+    def record_portal_lead(
+        self,
+        lead_id: str,
+        run_id: str,
+        source_family: str,
+        *,
+        campaign_id: Optional[str] = None,
+        wave_id: Optional[str] = None,
+        source_instance: Optional[str] = None,
+        portal_job_id: Optional[str] = None,
+        canonical_url: Optional[str] = None,
+        title: Optional[str] = None,
+        company_name: Optional[str] = None,
+        company_id: Optional[str] = None,
+        location: Optional[str] = None,
+        posted_text: Optional[str] = None,
+        posted_provenance: Optional[str] = None,
+        work_mode: Optional[str] = None,
+        lane: Optional[str] = None,
+        result_query: Optional[str] = None,
+        result_page: Optional[int] = None,
+        result_cursor: Optional[str] = None,
+        salary_text: Optional[str] = None,
+        experience_text: Optional[str] = None,
+        official_apply_url: Optional[str] = None,
+        company_url: Optional[str] = None,
+        verification_state: str = "PORTAL_CURRENT_LEAD",
+        raw_evidence_ref: Optional[str] = None,
+        health_findings: Optional[list] = None,
+        detail: Optional[dict] = None,
+        content_hash: Optional[str] = None,
+        observed_at: Optional[str] = None,
+    ) -> None:
+        """Append-only portal job lead (idempotent on ``lead_id``). A portal lead
+        is NEVER an official-verified job; its ``verification_state`` starts at
+        PORTAL_CURRENT_LEAD (build spec 6). Later columns (company_id / official
+        apply URL / verification_state) may be enriched by follow-up without ever
+        deleting the original observation."""
+        now = observed_at or _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO portal_leads (lead_id, run_id, campaign_id, wave_id, source_family, "
+                "source_instance, portal_job_id, canonical_url, title, company_name, company_id, "
+                "location, posted_text, posted_provenance, work_mode, lane, result_query, "
+                "result_page, result_cursor, salary_text, experience_text, official_apply_url, "
+                "company_url, verification_state, raw_evidence_ref, health_findings_json, "
+                "detail_json, content_hash, observed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(lead_id) DO UPDATE SET company_id=excluded.company_id, "
+                "official_apply_url=excluded.official_apply_url, company_url=excluded.company_url, "
+                "verification_state=excluded.verification_state, detail_json=excluded.detail_json",
+                (
+                    lead_id, run_id, campaign_id, wave_id, source_family, source_instance,
+                    portal_job_id, canonical_url, title, company_name, company_id, location,
+                    posted_text, posted_provenance, work_mode, lane, result_query, result_page,
+                    result_cursor, salary_text, experience_text, official_apply_url, company_url,
+                    verification_state, raw_evidence_ref,
+                    json.dumps(health_findings or [], sort_keys=True),
+                    json.dumps(detail or {}, sort_keys=True), content_hash, now,
+                ),
+            )
+
+    def list_portal_leads(
+        self, run_id: str, *, source_family: Optional[str] = None,
+        verification_state: Optional[str] = None,
+    ) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM portal_leads WHERE run_id = ?"
+        params: list = [run_id]
+        if source_family is not None:
+            sql += " AND source_family = ?"
+            params.append(source_family)
+        if verification_state is not None:
+            sql += " AND verification_state = ?"
+            params.append(verification_state)
+        sql += " ORDER BY lead_id"
+        return self._conn.execute(sql, tuple(params)).fetchall()
+
+    def get_portal_lead(self, lead_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM portal_leads WHERE lead_id = ?", (lead_id,)
+        ).fetchone()
+
+    def set_portal_lead_company(self, lead_id: str, company_id: Optional[str]) -> None:
+        with self._auto() as conn:
+            conn.execute(
+                "UPDATE portal_leads SET company_id = ? WHERE lead_id = ?", (company_id, lead_id)
+            )
+
+    def set_portal_lead_verification(self, lead_id: str, verification_state: str) -> None:
+        with self._auto() as conn:
+            conn.execute(
+                "UPDATE portal_leads SET verification_state = ? WHERE lead_id = ?",
+                (verification_state, lead_id),
+            )
+
+    # -- market campaigns --------------------------------------------------
+    def upsert_market_campaign(
+        self,
+        campaign_id: str,
+        run_id: str,
+        *,
+        policy_fingerprint: Optional[str] = None,
+        candidate_fingerprint: Optional[str] = None,
+        mode: str = "DELTA",
+        budgets: Optional[dict] = None,
+        status: str = "SEALED",
+        current_wave: int = 0,
+        terminal_reason: Optional[str] = None,
+        config: Optional[dict] = None,
+    ) -> None:
+        now = _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO market_campaigns (campaign_id, run_id, policy_fingerprint, "
+                "candidate_fingerprint, mode, budgets_json, status, current_wave, terminal_reason, "
+                "config_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(campaign_id) DO UPDATE SET status=excluded.status, "
+                "current_wave=excluded.current_wave, terminal_reason=excluded.terminal_reason, "
+                "budgets_json=excluded.budgets_json, updated_at=excluded.updated_at",
+                (
+                    campaign_id, run_id, policy_fingerprint, candidate_fingerprint, mode,
+                    json.dumps(budgets or {}, sort_keys=True), status, int(current_wave),
+                    terminal_reason, json.dumps(config or {}, sort_keys=True), now, now,
+                ),
+            )
+
+    def get_market_campaign(self, campaign_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM market_campaigns WHERE campaign_id = ?", (campaign_id,)
+        ).fetchone()
+
+    def get_market_campaign_for_run(self, run_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM market_campaigns WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+
+    # -- market waves (append-only, sealed) --------------------------------
+    def upsert_market_wave(
+        self,
+        wave_id: str,
+        campaign_id: str,
+        run_id: str,
+        wave_index: int,
+        *,
+        parent_wave_id: Optional[str] = None,
+        seal_hash: Optional[str] = None,
+        status: str = "PLANNED",
+        deficit_reason: Optional[str] = None,
+        tasks: Optional[list] = None,
+        terminal_reason: Optional[str] = None,
+        sealed_at: Optional[str] = None,
+    ) -> None:
+        """Idempotent on ``wave_id``. A SEALED wave's identity fields (index/
+        seal_hash/tasks) must never be mutated — only its status/terminal_reason
+        advance (build spec 10)."""
+        now = _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO market_waves (wave_id, campaign_id, run_id, wave_index, parent_wave_id, "
+                "seal_hash, status, deficit_reason, tasks_json, terminal_reason, created_at, "
+                "sealed_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(wave_id) DO UPDATE SET status=excluded.status, "
+                "terminal_reason=excluded.terminal_reason, sealed_at=COALESCE(market_waves.sealed_at, "
+                "excluded.sealed_at), updated_at=excluded.updated_at",
+                (
+                    wave_id, campaign_id, run_id, int(wave_index), parent_wave_id, seal_hash,
+                    status, deficit_reason, json.dumps(tasks or [], sort_keys=True),
+                    terminal_reason, now, sealed_at, now,
+                ),
+            )
+
+    def get_market_wave(self, wave_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM market_waves WHERE wave_id = ?", (wave_id,)
+        ).fetchone()
+
+    def list_market_waves(self, campaign_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM market_waves WHERE campaign_id = ? ORDER BY wave_index",
+            (campaign_id,),
+        ).fetchall()
+
+    def record_wave_deficit(
+        self,
+        deficit_id: str,
+        campaign_id: str,
+        wave_id: str,
+        deficit_kind: str,
+        *,
+        lane: Optional[str] = None,
+        geography: Optional[str] = None,
+        source_family: Optional[str] = None,
+        detail: Optional[dict] = None,
+        created_at: Optional[str] = None,
+    ) -> None:
+        now = created_at or _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO wave_deficits (deficit_id, campaign_id, wave_id, deficit_kind, lane, "
+                "geography, source_family, detail_json, created_at) VALUES (?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(deficit_id) DO UPDATE SET detail_json=excluded.detail_json",
+                (
+                    deficit_id, campaign_id, wave_id, deficit_kind, lane, geography,
+                    source_family, json.dumps(detail or {}, sort_keys=True), now,
+                ),
+            )
+
+    def list_wave_deficits(self, campaign_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM wave_deficits WHERE campaign_id = ? ORDER BY created_at",
+            (campaign_id,),
+        ).fetchall()
+
+    def record_query_variant(
+        self,
+        variant_id: str,
+        campaign_id: str,
+        query: str,
+        *,
+        wave_id: Optional[str] = None,
+        lane: Optional[str] = None,
+        geography: Optional[str] = None,
+        source_family: Optional[str] = None,
+        origin: str = "SYNONYM",
+        policy_version: Optional[str] = None,
+        reason: Optional[str] = None,
+        created_at: Optional[str] = None,
+    ) -> None:
+        now = created_at or _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO query_variants (variant_id, campaign_id, wave_id, lane, geography, "
+                "source_family, query, origin, policy_version, reason, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(variant_id) DO NOTHING",
+                (
+                    variant_id, campaign_id, wave_id, lane, geography, source_family, query,
+                    origin, policy_version, reason, now,
+                ),
+            )
+
+    def list_query_variants(self, campaign_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM query_variants WHERE campaign_id = ? ORDER BY created_at",
+            (campaign_id,),
+        ).fetchall()
+
+    # -- dynamic company provenance ----------------------------------------
+    def record_dynamic_company_provenance(
+        self,
+        provenance_id: str,
+        discovery_source: str,
+        *,
+        company_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        portal_lead_id: Optional[str] = None,
+        normalized_name: Optional[str] = None,
+        resolved_domain: Optional[str] = None,
+        resolution_status: str = "DYNAMICALLY_DISCOVERED",
+        evidence: Optional[dict] = None,
+        created_at: Optional[str] = None,
+    ) -> None:
+        now = created_at or _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO dynamic_company_provenance (provenance_id, company_id, run_id, "
+                "discovery_source, portal_lead_id, normalized_name, resolved_domain, "
+                "resolution_status, evidence_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(provenance_id) DO UPDATE SET company_id=excluded.company_id, "
+                "resolved_domain=excluded.resolved_domain, resolution_status=excluded.resolution_status, "
+                "evidence_json=excluded.evidence_json",
+                (
+                    provenance_id, company_id, run_id, discovery_source, portal_lead_id,
+                    normalized_name, resolved_domain, resolution_status,
+                    json.dumps(evidence or {}, sort_keys=True), now,
+                ),
+            )
+
+    def list_dynamic_company_provenance(
+        self, *, resolution_status: Optional[str] = None, run_id: Optional[str] = None,
+    ) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM dynamic_company_provenance WHERE 1=1"
+        params: list = []
+        if resolution_status is not None:
+            sql += " AND resolution_status = ?"
+            params.append(resolution_status)
+        if run_id is not None:
+            sql += " AND run_id = ?"
+            params.append(run_id)
+        sql += " ORDER BY created_at"
+        return self._conn.execute(sql, tuple(params)).fetchall()
+
+    # -- portal -> official links ------------------------------------------
+    def record_portal_official_link(
+        self,
+        link_id: str,
+        run_id: str,
+        portal_lead_id: str,
+        *,
+        canonical_id: Optional[str] = None,
+        official_observation_id: Optional[str] = None,
+        match_kind: str = "NONE",
+        confidence: float = 0.0,
+        verification_state: str = "PORTAL_CURRENT_LEAD",
+        ambiguous: bool = False,
+        evidence: Optional[dict] = None,
+        created_at: Optional[str] = None,
+    ) -> None:
+        now = created_at or _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO portal_official_links (link_id, run_id, portal_lead_id, canonical_id, "
+                "official_observation_id, match_kind, confidence, verification_state, ambiguous, "
+                "evidence_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(link_id) DO UPDATE SET canonical_id=excluded.canonical_id, "
+                "official_observation_id=excluded.official_observation_id, match_kind=excluded.match_kind, "
+                "confidence=excluded.confidence, verification_state=excluded.verification_state, "
+                "ambiguous=excluded.ambiguous, evidence_json=excluded.evidence_json",
+                (
+                    link_id, run_id, portal_lead_id, canonical_id, official_observation_id,
+                    match_kind, float(confidence), verification_state, 1 if ambiguous else 0,
+                    json.dumps(evidence or {}, sort_keys=True), now,
+                ),
+            )
+
+    def list_portal_official_links(self, run_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM portal_official_links WHERE run_id = ? ORDER BY link_id",
+            (run_id,),
+        ).fetchall()
+
+    # -- global campaign budget (run-scoped) -------------------------------
+    def init_campaign_budget(
+        self,
+        campaign_id: str,
+        run_id: str,
+        *,
+        max_http: Optional[int] = None,
+        max_browser: Optional[int] = None,
+        max_llm: Optional[int] = None,
+        max_results: Optional[int] = None,
+        max_wall_clock_s: Optional[float] = None,
+        started_at: Optional[str] = None,
+    ) -> None:
+        now = _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO campaign_budget (campaign_id, run_id, max_http, max_browser, max_llm, "
+                "max_results, max_wall_clock_s, started_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(campaign_id) DO UPDATE SET max_http=excluded.max_http, "
+                "max_browser=excluded.max_browser, max_llm=excluded.max_llm, "
+                "max_results=excluded.max_results, max_wall_clock_s=excluded.max_wall_clock_s",
+                (
+                    campaign_id, run_id, max_http, max_browser, max_llm, max_results,
+                    max_wall_clock_s, started_at or now, now,
+                ),
+            )
+
+    def bump_campaign_budget(
+        self, campaign_id: str, *, http: int = 0, browser: int = 0, llm: int = 0, results: int = 0,
+    ) -> sqlite3.Row:
+        """Atomically add to the run-scoped campaign budget counters and return
+        the updated row. The caller compares against the max_* ceilings to decide
+        PARTIAL_BUDGET (build spec 9)."""
+        now = _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "UPDATE campaign_budget SET http_calls = http_calls + ?, browser_calls = browser_calls + ?, "
+                "llm_calls = llm_calls + ?, results = results + ?, updated_at = ? WHERE campaign_id = ?",
+                (int(http), int(browser), int(llm), int(results), now, campaign_id),
+            )
+        return self.get_campaign_budget(campaign_id)
+
+    def reserve_campaign_budget(
+        self, campaign_id: str, *, http: int = 0, browser: int = 0, llm: int = 0,
+    ) -> bool:
+        """Atomically RESERVE budget for one call-class only when the reservation
+        stays within the configured ceiling (build spec 9). Returns True when the
+        reservation succeeded (the counter was advanced), False when the ceiling
+        would be exceeded (nothing advanced) — so the caller records PARTIAL_BUDGET.
+
+        The conditional UPDATE is serialized by SQLite's single-writer lock, so
+        concurrent workers can never collectively exceed the cap (the check and
+        the increment are one atomic statement, not a racy read-then-write)."""
+        now = _utcnow()
+        col = "browser_calls" if browser else "http_calls" if http else "llm_calls"
+        maxcol = "max_browser" if browser else "max_http" if http else "max_llm"
+        amount = int(browser or http or llm or 0)
+        if amount <= 0:
+            return True
+        with self._auto() as conn:
+            cur = conn.execute(
+                f"UPDATE campaign_budget SET {col} = {col} + ?, updated_at = ? "
+                f"WHERE campaign_id = ? AND ({maxcol} IS NULL OR {col} + ? <= {maxcol})",
+                (amount, now, campaign_id, amount),
+            )
+            return cur.rowcount > 0
+
+    def get_campaign_budget(self, campaign_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM campaign_budget WHERE campaign_id = ?", (campaign_id,)
         ).fetchone()
 
     def append_coverage_attempt(

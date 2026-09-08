@@ -33,7 +33,7 @@ def test_reopen_does_not_rerun_migrations(tmp_path):
     store.close()
     store2 = StateStore(db)
     try:
-        assert store2.schema_version() == 11
+        assert store2.schema_version() == 12
         assert store2.get_company("co-x") is not None
     finally:
         store2.close()
@@ -75,7 +75,7 @@ def test_backup_restore_preserves_company_data(tmp_path):
 
     backups = tmp_path / "backups"
     manifest = create_backup(settings, backups)
-    assert manifest.state_schema_version == 11
+    assert manifest.state_schema_version == 12
 
     target = tmp_path / "restored"
     result = restore_backup(backup_dir_for(backups, manifest), target)

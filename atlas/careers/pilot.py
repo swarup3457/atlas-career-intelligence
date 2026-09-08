@@ -25,24 +25,41 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from atlas.careers.discovery import CareerSourceDiscoveryService, DiscoveryMethod
 from atlas.careers.profile import (
     CareerSiteProfile,
     RecipeHealth,
     RouteKind,
+    load_profile,
     save_profile,
 )
 from atlas.careers.router import CareerSourceRouter, RouteDecision
-from atlas.careers.trust import OfficialUrlTrustPolicy
+from atlas.careers.trust import OfficialUrlTrustPolicy, TrustDecision
 from atlas.config import Settings
 from atlas.models import ErrorCategory
 from atlas.sources.ats.base import detect_challenge
+from atlas.sources.fingerprint import fingerprint_ats
 from atlas.sources.generic import build_careers_registry
 from atlas.sources.http_client import HttpError, HttpRequest, ReadOnlyHttpClient
-from atlas.sources.models import SourceInstance
+from atlas.sources.models import SourceInstance, SourceType
 from atlas.persistence.sqlite import StateStore
 from atlas.planning import PlannedCompany
 
 _HTML_ACCEPT = "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"
+
+# The four ATS families the router routes to a structured adapter (mirrors
+# atlas.careers.router._ATS_ROUTABLE) — used for the §5.2 fingerprint-first
+# fast route in the pilot.
+_ATS_ROUTABLE_TYPES: frozenset[SourceType] = frozenset(
+    {SourceType.ATS_GREENHOUSE, SourceType.ATS_LEVER, SourceType.ATS_ASHBY, SourceType.ATS_WORKDAY}
+)
+
+
+class PilotRunReuseError(RuntimeError):
+    """Raised when a FRESH live pilot is started with a run_id that already has a
+    terminal (completed) sealed pilot run. A completed run id must never silently
+    masquerade as a new live test (build spec 5.8). Pass ``resume=True`` to
+    explicitly, idempotently resume that run instead."""
 
 
 def _utcnow() -> str:
@@ -151,6 +168,26 @@ class _Prepared:
     unroutable: list[tuple[PilotCompany, RouteDecision]] = field(default_factory=list)
 
 
+@dataclass
+class _PreparedEntry:
+    """One company's resolved career entry point: its route decision plus the
+    ACTUAL trust decision, discovery method, and reachability validation. The
+    pilot persists the REAL trust/validation — never a hard-coded True."""
+
+    company: "PilotCompany"
+    decision: RouteDecision
+    trust: TrustDecision
+    discovery_method: str
+    validated: bool
+    reachability: Optional[str] = None
+
+
+@dataclass
+class _Prepared:
+    routable: list[_PreparedEntry] = field(default_factory=list)
+    unroutable: list[_PreparedEntry] = field(default_factory=list)
+
+
 class CareerPilot:
     """Seals, prepares (discovery + routing) and executes a career pilot."""
 
@@ -168,24 +205,81 @@ class CareerPilot:
             request_budget=self.config.request_budget, accept=_HTML_ACCEPT,
         )
 
-    def _entry_url(self, company: PilotCompany) -> str:
+    def _entry_url(self, company: PilotCompany) -> tuple[str, str]:
+        """Resolve one entry URL + its discovery method. A user-supplied URL is
+        USER_SUPPLIED; a domain-only company falls back to a COMMON_PATH guess —
+        a LEAD that is only validated once a bounded fetch confirms it."""
         if company.known_careers_url:
-            return company.known_careers_url
-        return f"https://{company.official_domain.strip().lower().lstrip('.')}/careers"
+            return company.known_careers_url, DiscoveryMethod.USER_SUPPLIED
+        return f"https://{company.official_domain.strip().lower().lstrip('.')}/careers", DiscoveryMethod.COMMON_PATH
+
+    def _discover_entry(self, company: PilotCompany, *, client: Optional[ReadOnlyHttpClient]) -> Optional[tuple[str, str, bool, str]]:
+        """§5.3: for a domain-only company, integrate CareerSourceDiscoveryService
+        to find a REAL entry point (homepage nav link / sitemap / redirect) from
+        bounded evidence. Returns (url, method, validated, reachability) for the
+        best trusted, evidence-VALIDATED entry point, or None if discovery found
+        only shape-trusted leads (so the caller falls back to the common path)."""
+        if company.known_careers_url or client is None:
+            return None
+        svc = CareerSourceDiscoveryService(http_client=client)
+        outcome = svc.discover(company.official_domain, company_id=company.company_id, name=company.name, fetch=True)
+        # Persist every discovered entry point (append-only, trust + validation).
+        with StateStore(self.settings.state_db) as store:
+            svc.persist(store, outcome)
+        validated = [e for e in outcome.trusted_entry_points if e.validated]
+        if validated:
+            best = max(validated, key=lambda e: e.confidence)
+            return best.url, best.discovery_method, True, best.reachability or "DISCOVERED"
+        return None
 
     def prepare(self, *, live: bool) -> _Prepared:
         prepared = _Prepared()
         router = CareerSourceRouter()
         client = self._client() if live else None
         for company in self.config.companies:
-            entry_url = self._entry_url(company)
+            # §5.3 domain-only discovery first (evidence-validated entry wins).
+            discovered = self._discover_entry(company, client=client) if live else None
+            if discovered is not None:
+                entry_url, method, disc_validated, disc_reach = discovered
+            else:
+                entry_url, method = self._entry_url(company)
+                disc_validated, disc_reach = False, None
+
             trust = OfficialUrlTrustPolicy(company.official_domain)
-            decision_trust = trust.classify(entry_url)
+            trust_decision = trust.classify(entry_url)
+
+            # §5.1 UNTRUSTED entry: NEVER fetched, routed, or planned.
+            if not trust_decision.trusted:
+                decision = RouteDecision(
+                    RouteKind.UNSUPPORTED_SITE, entry_url,
+                    reason=f"untrusted entry ({trust_decision.reason})",
+                    evidence={"trust": trust_decision.to_dict()},
+                )
+                prepared.unroutable.append(
+                    _PreparedEntry(company, decision, trust_decision, method, False, "UNTRUSTED_NOT_FETCHED")
+                )
+                continue
+
+            # §5.2 KNOWN-ATS FAST ROUTE: fingerprint the URL BEFORE any fetch. A
+            # known ATS host routes to its structured adapter with no landing
+            # fetch (a blocked landing never disables the API path).
+            fp = fingerprint_ats(entry_url)
+            if fp.matched and fp.source_type in _ATS_ROUTABLE_TYPES:
+                decision = router.route(entry_url, company_id=company.company_id, html=None)
+                if decision.source_instance is not None:
+                    decision = self._bound_instance(decision)
+                entry = _PreparedEntry(company, decision, trust_decision, method, True, "KNOWN_ATS_HOST")
+                (prepared.routable if decision.routable else prepared.unroutable).append(entry)
+                continue
+
+            # Generic route: bounded live fetch, then classify + validate.
             html = None
             status = 200
             challenge = login = False
             final_url = entry_url
-            if live and client is not None and decision_trust.trusted:
+            validated = disc_validated
+            reachability = disc_reach
+            if live and client is not None:
                 try:
                     resp = client.fetch(HttpRequest(entry_url, headers={"Accept": _HTML_ACCEPT}))
                     status = resp.status
@@ -194,26 +288,54 @@ class CareerPilot:
                     cat = detect_challenge(resp)
                     challenge = cat == ErrorCategory.ANTI_BOT
                     login = cat == ErrorCategory.LOGIN_WALL
+                    # A redirect that lands on a known ATS host is a validated
+                    # official route regardless of the original guess.
+                    fp_final = fingerprint_ats(final_url)
+                    if fp_final.matched and fp_final.source_type in _ATS_ROUTABLE_TYPES:
+                        validated = True
+                        reachability = "REDIRECT_TO_ATS"
+                    elif status == 200 and html and not challenge and not login:
+                        validated = True
+                        reachability = "FETCH_200_CONTENT"
+                    elif challenge or login or status in (401, 403, 429):
+                        reachability = f"ACCESS_LIMITED_HTTP_{status}"
+                    else:
+                        # §5.3: a nonexistent/failed common path (404/5xx) is a
+                        # LEAD that never became a validated entry — not routed.
+                        reachability = f"HTTP_{status}"
+                        decision = RouteDecision(
+                            RouteKind.UNSUPPORTED_SITE, entry_url,
+                            reason=f"entry not reachable (HTTP {status})",
+                            evidence={"final_url": final_url, "status": status},
+                        )
+                        prepared.unroutable.append(
+                            _PreparedEntry(company, decision, trust_decision, method, False, reachability)
+                        )
+                        continue
                 except HttpError as exc:
                     prepared.unroutable.append(
-                        (company, RouteDecision(RouteKind.UNSUPPORTED_SITE, entry_url,
-                                                reason=f"fetch error: {exc.category.value}",
-                                                evidence={"error": exc.message}))
+                        _PreparedEntry(
+                            company,
+                            RouteDecision(RouteKind.UNSUPPORTED_SITE, entry_url,
+                                          reason=f"fetch error: {exc.category.value}",
+                                          evidence={"error": exc.message}),
+                            trust_decision, method, False, f"FETCH_ERROR_{exc.category.value}",
+                        )
                     )
                     continue
+
             decision = router.route(
                 entry_url, company_id=company.company_id, html=html, status=status,
                 final_url=final_url, challenge=challenge, login_wall=login,
             )
-            # Bound per-instance behavior via metadata (pilot limits).
             if decision.source_instance is not None:
                 decision = self._bound_instance(decision)
-                if decision.routable:
-                    prepared.routable.append((company, decision))
-                else:
-                    prepared.unroutable.append((company, decision))
+                entry = _PreparedEntry(company, decision, trust_decision, method, validated, reachability)
+                (prepared.routable if decision.routable else prepared.unroutable).append(entry)
             else:
-                prepared.unroutable.append((company, decision))
+                prepared.unroutable.append(
+                    _PreparedEntry(company, decision, trust_decision, method, validated, reachability)
+                )
         return prepared
 
     def _bound_instance(self, decision: RouteDecision) -> RouteDecision:
@@ -245,14 +367,25 @@ class CareerPilot:
     def _persist_prepared(self, prepared: _Prepared) -> None:
         router = CareerSourceRouter()
         with StateStore(self.settings.state_db) as store:
-            for company, decision in prepared.routable + prepared.unroutable:
+            for entry in prepared.routable + prepared.unroutable:
+                company = entry.company
+                decision = entry.decision
+                # §5.1: persist the REAL trust decision + validation — NEVER a
+                # hard-coded trusted=True. Entry identity includes company_id.
+                entry_id = "entry::" + hashlib.sha1(
+                    f"{company.company_id}::{decision.entry_url}".encode()
+                ).hexdigest()[:16]
                 store.record_career_entry_point(
-                    "entry::" + hashlib.sha1(f"{company.company_id}::{decision.entry_url}".encode()).hexdigest()[:16],
-                    decision.entry_url, company_id=company.company_id, label=company.name,
-                    discovery_method="USER_SUPPLIED" if company.known_careers_url else "COMMON_PATH",
-                    trusted=True, trust_kind="OFFICIAL", confidence=decision.confidence,
-                    evidence={"expected_route": company.expected_route},
+                    entry_id, decision.entry_url, company_id=company.company_id, label=company.name,
+                    discovery_method=entry.discovery_method,
+                    trusted=entry.trust.trusted, trust_kind=entry.trust.kind.value,
+                    confidence=decision.confidence, validated=entry.validated,
+                    reachability=entry.reachability,
+                    evidence={"expected_route": company.expected_route, "trust_reason": entry.trust.reason},
                 )
+                # Only a TRUSTED entry is routed/persisted as a route + profile.
+                if not entry.trust.trusted:
+                    continue
                 router.persist(store, decision, company_id=company.company_id)
                 if decision.source_instance is not None and decision.routable:
                     profile = CareerSiteProfile(
@@ -271,13 +404,22 @@ class CareerPilot:
                     save_profile(store, profile)
 
     # -- execution ----------------------------------------------------------
-    def run(self, *, live: bool, report_path: Optional[Path] = None) -> PilotResult:
+    def run(self, *, live: bool, report_path: Optional[Path] = None, resume: bool = False) -> PilotResult:
         started = time.monotonic()
         config_hash = self.config.seal_hash()
-        # Seal the config BEFORE execution begins.
+        # §5.8: a fresh live run must not silently reuse a completed run id.
         with StateStore(self.settings.state_db) as store:
+            existing = store.get_career_pilot_run(self.config.run_id)
+            if live and existing is not None and not resume:
+                if existing["status"] in ("PASS", "PARTIAL", "COMPLETE"):
+                    raise PilotRunReuseError(
+                        f"pilot run_id {self.config.run_id!r} already completed with status "
+                        f"{existing['status']!r}; pass resume=True to resume it, or use a fresh run_id."
+                    )
+            # Seal the config BEFORE execution begins.
             store.upsert_career_pilot_run(
-                self.config.run_id, config_hash, config=self.config.canonical(), status="SEALED",
+                self.config.run_id, config_hash, config=self.config.canonical(),
+                status="RESUMING" if (resume and existing is not None) else "SEALED",
             )
         prepared = self.prepare(live=live)
         self._persist_prepared(prepared)
@@ -287,8 +429,9 @@ class CareerPilot:
         report_valid = None
         planned_companies: list[PlannedCompany] = []
         instances: dict[str, SourceInstance] = {}
-        for company, decision in prepared.routable:
-            inst = decision.source_instance
+        for entry in prepared.routable:
+            company = entry.company
+            inst = entry.decision.source_instance
             instances[inst.instance_id] = inst
             planned_companies.append(
                 PlannedCompany(
@@ -313,6 +456,10 @@ class CareerPilot:
             runtime_terminal = rr.terminal_state
             report_written = rr.report_path
             report_valid = rr.report_valid
+            # §5.7: mark the recipe/profile HEALTHY for every instance that
+            # actually extracted current-run jobs, with a last_success/validation
+            # time — so a later run reuses the route only after revalidation.
+            self._mark_successful_profiles_healthy(instances)
 
         result = self._build_matrix(prepared, runtime_terminal)
         result.config_hash = config_hash
@@ -327,6 +474,24 @@ class CareerPilot:
                 status=result.status, results=result.to_dict(),
             )
         return result
+
+    # -- profile health (build spec 5.7) -----------------------------------
+    def _mark_successful_profiles_healthy(self, instances: dict[str, SourceInstance]) -> None:
+        """Mark a persisted career-site profile HEALTHY (with last_success_at /
+        last_validated_at) for each instance that staged >=1 current-run
+        observation — a successful recipe is HEALTHY and revalidate-before-reuse;
+        an instance that yielded nothing keeps its UNVALIDATED/drift state."""
+        with StateStore(self.settings.state_db) as store:
+            staged: dict[str, int] = {}
+            for row in store.list_raw_observations(self.config.run_id):
+                staged[row["source_instance"]] = staged.get(row["source_instance"], 0) + 1
+            for instance_id in instances:
+                profile = load_profile(store, instance_id)
+                if profile is None:
+                    continue
+                if staged.get(instance_id, 0) > 0:
+                    profile.mark_success(confidence=max(profile.confidence, 0.8))
+                    save_profile(store, profile)
 
     # -- matrix -------------------------------------------------------------
     def _build_matrix(self, prepared: _Prepared, runtime_terminal: Optional[str]) -> PilotResult:
@@ -344,7 +509,9 @@ class CareerPilot:
             for row in obs:
                 obs_by_company.setdefault(row["company"] or "", []).append(row)
 
-            for company, decision in prepared.routable:
+            for entry in prepared.routable:
+                company = entry.company
+                decision = entry.decision
                 cr = PilotCompanyResult(
                     company_id=company.company_id, name=company.name,
                     official_domain=company.official_domain, entry_url=decision.entry_url,
@@ -382,7 +549,9 @@ class CareerPilot:
                 cr.terminal_status = self._company_terminal(statuses)
                 result.companies.append(cr)
 
-            for company, decision in prepared.unroutable:
+            for entry in prepared.unroutable:
+                company = entry.company
+                decision = entry.decision
                 limitation = decision.reason
                 cr = PilotCompanyResult(
                     company_id=company.company_id, name=company.name,

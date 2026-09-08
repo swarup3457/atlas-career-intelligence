@@ -49,6 +49,20 @@ class DiscoveryMethod:
     REDIRECT_ATS = "REDIRECT_ATS"
 
 
+# Discovery methods whose CANDIDATE is backed by real reachability/content/
+# redirect evidence (so the entry point is VALIDATED, not merely a shape-trusted
+# guess). A COMMON_PATH / SUBDOMAIN guess and even a USER_SUPPLIED URL are LEADS
+# until a bounded fetch validates them (build spec 5.3).
+_VALIDATED_METHODS: frozenset[str] = frozenset(
+    {DiscoveryMethod.NAV_LINK, DiscoveryMethod.ROBOTS_SITEMAP, DiscoveryMethod.REDIRECT_ATS}
+)
+_REACHABILITY_FOR_METHOD: dict[str, str] = {
+    DiscoveryMethod.NAV_LINK: "PRESENT_IN_HOMEPAGE",
+    DiscoveryMethod.ROBOTS_SITEMAP: "PRESENT_IN_SITEMAP",
+    DiscoveryMethod.REDIRECT_ATS: "REDIRECT_TO_ATS",
+}
+
+
 @dataclass(frozen=True)
 class CareerEntryPoint:
     url: str
@@ -57,11 +71,17 @@ class CareerEntryPoint:
     trusted: bool
     trust_kind: str
     confidence: float
+    company_id: Optional[str] = None
+    validated: bool = False
+    reachability: Optional[str] = None
     evidence: dict = field(default_factory=dict)
 
     @property
     def entry_id(self) -> str:
-        return "entry::" + hashlib.sha1(self.url.encode("utf-8")).hexdigest()[:16]
+        # Identity includes company_id so two companies whose careers pages share
+        # a URL get DISTINCT append-only observations (build spec 5.3).
+        digest = hashlib.sha1(f"{self.company_id or ''}::{self.url}".encode("utf-8")).hexdigest()[:16]
+        return "entry::" + digest
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +91,9 @@ class CareerEntryPoint:
             "trusted": self.trusted,
             "trust_kind": self.trust_kind,
             "confidence": round(self.confidence, 3),
+            "company_id": self.company_id,
+            "validated": self.validated,
+            "reachability": self.reachability,
             "evidence": dict(self.evidence),
         }
 
@@ -165,10 +188,14 @@ class CareerSourceDiscoveryService:
                 return
             seen.add(norm)
             decision = policy.classify(norm, from_posting_text=from_posting)
+            is_validated = decision.trusted and method in _VALIDATED_METHODS
             ep = CareerEntryPoint(
                 url=norm, label=label[:120], discovery_method=method,
                 trusted=decision.trusted, trust_kind=decision.kind.value,
                 confidence=base_conf if decision.trusted else 0.0,
+                company_id=company_id,
+                validated=is_validated,
+                reachability=_REACHABILITY_FOR_METHOD.get(method) if is_validated else None,
                 evidence={**(evidence or {}), "trust_reason": decision.reason},
             )
             if len(outcome.entry_points) + len(outcome.rejected) >= MAX_ENTRY_POINTS * 3:
@@ -252,9 +279,10 @@ class CareerSourceDiscoveryService:
         current entry points across runs."""
         for ep in outcome.entry_points + outcome.rejected:
             store.record_career_entry_point(
-                ep.entry_id, ep.url, company_id=outcome.company_id, label=ep.label,
+                ep.entry_id, ep.url, company_id=ep.company_id or outcome.company_id, label=ep.label,
                 discovery_method=ep.discovery_method, trusted=ep.trusted,
-                trust_kind=ep.trust_kind, confidence=ep.confidence, evidence=ep.evidence,
+                trust_kind=ep.trust_kind, confidence=ep.confidence,
+                validated=ep.validated, reachability=ep.reachability, evidence=ep.evidence,
             )
 
 

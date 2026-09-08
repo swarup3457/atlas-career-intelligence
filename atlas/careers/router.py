@@ -181,7 +181,28 @@ class CareerSourceRouter:
         the URL, so a KNOWN ATS host routes immediately."""
         target_url = final_url or entry_url
 
-        # 1. Access / auth conditions dominate — classified, never bypassed.
+        # 0. §5.2 KNOWN-ATS FAST ROUTE (URL fingerprint, marker-independent).
+        #    A known ATS host/path is routed to its structured adapter BEFORE any
+        #    landing-page access condition is considered — a blocked, aged, or
+        #    JS-only HTML landing page NEVER disables the usable structured API
+        #    path. If the structured API itself is blocked, the ADAPTER classifies
+        #    that real API failure at execution time (not here).
+        url_fp = fingerprint_ats(target_url)
+        if url_fp.matched and url_fp.source_type is not None and url_fp.source_type in _ATS_ROUTABLE:
+            instance = self._build_ats_instance(company_id, url_fp.source_type, target_url)
+            return RouteDecision(
+                RouteKind.ATS, entry_url, source_instance=instance,
+                fingerprint_family=instance.adapter_key, confidence=url_fp.confidence,
+                reason=f"known ATS host: {url_fp.matched_on}",
+                evidence={
+                    "fingerprint": url_fp.to_dict(), "final_url": target_url,
+                    "landing_status": status,
+                    "landing_blocked": bool(challenge or login_wall or status in (401, 403, 429)),
+                },
+            )
+
+        # 1. Access / auth conditions dominate for GENERIC routes — classified,
+        #    never bypassed.
         if login_wall or status == 401:
             return RouteDecision(RouteKind.AUTH_REQUIRED, entry_url, reason="login wall (no bypass)",
                                  evidence={"status": status})
@@ -190,7 +211,7 @@ class CareerSourceRouter:
                                  reason=f"anti-bot/access-limited (status={status})",
                                  evidence={"status": status})
 
-        # 2. Known ATS fingerprint (host/path/marker) -> existing adapter.
+        # 2. Known ATS fingerprint from EMBEDDED markers (a widget on the page).
         markers = _markers_from_html(html or "")
         fp = fingerprint_ats(target_url, markers=markers)
         if fp.matched and fp.source_type is not None and fp.source_type in _ATS_ROUTABLE:
