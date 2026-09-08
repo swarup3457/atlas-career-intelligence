@@ -1,0 +1,49 @@
+# Atlas status axes + legacy aliases (build spec section 17).
+# Separate typed axes; legacy labels (spacing/case variants) map onto
+# canonical states WITHOUT creating duplicate canonical values. The
+# authoritative implementation is atlas/policy/status.py; this file is the
+# public policy record.
+schema_version: 1
+policy_version: "1B.1"
+source: "12_STEP3_VERIFICATION_HARDENING.md, 00_CURRENT_LIVE_AGENT_INSTRUCTIONS.md, 10_STEP3_HIGH_COVERAGE_INDIA_DISCOVERY.md"
+
+axes:
+  DiscoveryStatus: [DISCOVERY_CANDIDATE, NORMALIZED, DEDUPLICATED, VERIFICATION_PENDING, VERIFIED, MATCHED, REPORTED, REJECTED]
+  JobLifecycleStatus: [ACTIVE, CLOSED, UNKNOWN]
+  VerificationLevel: [VERIFIED_OFFICIAL, OFFICIAL_PAGE_FOUND_APPLY_PATH_UNCONFIRMED, PORTAL_CURRENT_LEAD, MANUAL_VERIFICATION, SUSPICIOUS_REJECTED]
+  RecommendationStatus: [PRIORITY_APPLY, STRONG_APPLY, APPLY_AFTER_TAILORING, STRETCH, MANUAL_REVIEW, MONITOR, REJECT, CLOSED]
+  SourceHealthState: [HEALTHY, DEGRADED, SELECTOR_DRIFT_SUSPECTED, AUTH_REQUIRED, RATE_LIMITED, ACCESS_LIMITED, SOURCE_UNAVAILABLE, UNKNOWN]
+  CoverageStatus: [NOT_ATTEMPTED, IN_PROGRESS, COMPLETED_WITH_RESULTS, ATTEMPTED_ZERO, EXTRACTION_UNRESOLVED, ACCESS_LIMITED, RATE_LIMITED, SOURCE_UNAVAILABLE, FAILED, BLOCKED_HUMAN]
+
+# CLOSED belongs to lifecycle, not verification or source-health.
+notes:
+  - "CLOSED is lifecycle truth, never a source-health or verification shortcut."
+  - "A combined human-facing verification column may DERIVE CLOSED from lifecycle."
+
+verification_aliases:
+  "Verified Official": VERIFIED_OFFICIAL
+  "VERIFIED_LIVE": VERIFIED_OFFICIAL
+  "Verified Authorized Recruiter": VERIFIED_OFFICIAL
+  "Official Page Found Apply Path Unconfirmed": OFFICIAL_PAGE_FOUND_APPLY_PATH_UNCONFIRMED
+  "Portal Current Lead": PORTAL_CURRENT_LEAD
+  "PORTAL_ONLY_UNVERIFIED": PORTAL_CURRENT_LEAD
+  "Portal-Only Unverified": PORTAL_CURRENT_LEAD
+  "Manual Verification": MANUAL_VERIFICATION
+  "Live — Date Unknown": MANUAL_VERIFICATION
+  "Suspicious": SUSPICIOUS_REJECTED
+
+lifecycle_aliases:
+  "Open": ACTIVE
+  "Live": ACTIVE
+  "Expired": CLOSED
+  "Filled": CLOSED
+  "Removed": CLOSED
+  "No Longer Accepting": CLOSED
+
+recommendation_aliases:
+  "Apply Now": PRIORITY_APPLY
+  "Priority Apply": PRIORITY_APPLY
+  "Strong Apply": STRONG_APPLY
+  "Apply After Tailoring": APPLY_AFTER_TAILORING
+  "Tailoring Needed": APPLY_AFTER_TAILORING
+  "Manual Review": MANUAL_REVIEW

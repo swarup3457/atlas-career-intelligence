@@ -1,0 +1,33 @@
+# Atlas company recheck cadence policy (build spec section 13).
+# Configurable initial values. 25-40 is a BATCH-SIZE hint, never a completion
+# criterion. `Completed` is a historical cycle fact, never a permanent state.
+schema_version: 1
+policy_version: "1B.1"
+source: "04_COMPANY_RECHECK_CADENCE_V5.md, 08_COMPANY_SCHEDULER_LIVE_VERIFICATION_STEP2.md (cadence values)"
+
+tiers:
+  A:
+    delta_days: 1
+    deep_days: 2
+  B:
+    delta_days: 2
+    deep_days: 3
+  C:
+    delta_days: 2
+    deep_days: 5
+
+# Deep-check batch chunk size (25-40). This bounds one execution chunk; it is
+# NOT a run-completion cap.
+batch_size_hint: 40
+
+# Signals that promote a company to Tier A (kept for a hold window).
+promotion_signals:
+  - "active relevant job"
+  - "recruiter response"
+  - "assessment"
+  - "interview"
+  - "referral"
+  - "application progress"
+  - "explicit candidate priority"
+
+outcome_promotion_hold_days: 30

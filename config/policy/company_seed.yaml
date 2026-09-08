@@ -1,0 +1,132 @@
+# Atlas Tier A company seed universe (build spec section 13).
+# EXACTLY 108 Tier A seed companies imported from 06_COMPANY_SEARCH_UNIVERSE_V5.md.
+# The seed is NOT a whitelist or cap — portal/ATS discovery adds companies and
+# outcome signals promote them. Never remove a company for one empty cycle.
+schema_version: 1
+policy_version: "1B.1"
+source: "06_COMPANY_SEARCH_UNIVERSE_V5.md"
+is_whitelist: false
+
+groups:
+  - name: "Services, consulting, and enterprise technology"
+    companies:
+      - Accenture
+      - Infosys
+      - TCS
+      - Wipro
+      - Cognizant
+      - Capgemini
+      - HCLTech
+      - LTIMindtree
+      - Mphasis
+      - Persistent Systems
+      - Tech Mahindra
+      - Deloitte
+      - EY
+      - KPMG
+      - PwC
+      - IBM
+      - Oracle
+      - SAP
+      - NTT DATA
+      - DXC Technology
+      - Publicis Sapient
+      - Thoughtworks
+      - EPAM
+      - UST
+      - Virtusa
+      - Genpact
+
+  - name: "Product, cloud, infrastructure, and developer platforms"
+    companies:
+      - Microsoft
+      - Google
+      - Amazon
+      - Apple
+      - Adobe
+      - Salesforce
+      - ServiceNow
+      - Atlassian
+      - Intuit
+      - Cisco
+      - Red Hat
+      - Dell Technologies
+      - HPE
+      - Broadcom
+      - NVIDIA
+      - Intel
+      - Qualcomm
+      - Akamai
+      - Cloudflare
+      - NetApp
+      - Nutanix
+
+  - name: "Banking, fintech, and payments"
+    companies:
+      - JPMorgan Chase
+      - Goldman Sachs
+      - Morgan Stanley
+      - Wells Fargo
+      - Citi
+      - HSBC
+      - Barclays
+      - Deutsche Bank
+      - UBS
+      - BNY
+      - State Street
+      - American Express
+      - Visa
+      - Mastercard
+      - PayPal
+      - Fiserv
+      - FIS
+      - PhonePe
+      - Razorpay
+      - Groww
+      - Paytm
+      - Pine Labs
+      - Juspay
+      - Zeta
+      - Cashfree Payments
+      - Worldpay
+
+  - name: "Commerce, logistics, industrial, and healthcare"
+    companies:
+      - Flipkart
+      - Myntra
+      - Swiggy
+      - Zomato
+      - Meesho
+      - Zepto
+      - Walmart Global Tech
+      - Target
+      - Lowe's
+      - Tesco
+      - FedEx
+      - DHL
+      - Maersk
+      - Siemens
+      - Bosch
+      - Honeywell
+      - GE Aerospace
+      - GE HealthCare
+      - Schneider Electric
+      - Philips
+      - Optum
+      - Carelon
+      - McKesson
+
+  - name: "HR technology and SaaS"
+    companies:
+      - Dayforce
+      - Workday
+      - ADP
+      - UKG
+      - Freshworks
+      - Zoho
+      - BrowserStack
+      - Postman
+      - Chargebee
+      - Whatfix
+      - Darwinbox
+      - HighRadius

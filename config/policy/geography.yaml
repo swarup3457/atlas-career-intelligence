@@ -1,0 +1,58 @@
+# Atlas geography policy (build spec section 10).
+# Normalized aliases + groups. International eligibility requires EXPLICIT
+# evidence — "Remote" alone is NOT worldwide eligibility.
+schema_version: 1
+policy_version: "1B.1"
+source: "00_CURRENT_LIVE_AGENT_INSTRUCTIONS.md, 10_STEP3_HIGH_COVERAGE_INDIA_DISCOVERY.md"
+
+primary:
+  - canonical: "Bengaluru"
+    aliases: ["Bangalore", "Bengaluru/Bangalore", "Blr"]
+  - canonical: "Hyderabad"
+    aliases: ["Hyd"]
+
+secondary:
+  - canonical: "Remote India"
+    aliases: ["India Remote", "Remote - India", "WFH India"]
+  - canonical: "Pune"
+    aliases: []
+  - canonical: "Chennai"
+    aliases: ["Madras"]
+  - canonical: "Noida"
+    aliases: []
+  - canonical: "Gurugram"
+    aliases: ["Gurgaon", "Gurugram/Gurgaon"]
+  - canonical: "Mumbai"
+    aliases: ["Bombay"]
+
+expansion:
+  - canonical: "Kochi"
+    aliases: ["Cochin"]
+  - canonical: "Kolkata"
+    aliases: ["Calcutta"]
+  - canonical: "Ahmedabad"
+    aliases: []
+  - canonical: "Coimbatore"
+    aliases: []
+  - canonical: "Indore"
+    aliases: []
+  - canonical: "Jaipur"
+    aliases: []
+  - canonical: "Chandigarh"
+    aliases: []
+  - canonical: "Mysuru"
+    aliases: ["Mysore", "Mysuru/Mysore"]
+
+# Tokens that alone grant international eligibility for a candidate in India.
+# "Remote" is intentionally absent — it does not imply worldwide eligibility.
+international_eligibility_signals:
+  - "India remote"
+  - "remote India"
+  - "worldwide including India"
+  - "remote worldwide including India"
+  - "India EOR"
+  - "employer of record India"
+  - "visa sponsorship"
+  - "sponsorship available"
+  - "relocation provided"
+  - "relocation assistance"

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "provenance": {"source_id": "SYNTHETIC", "note": "synthetic fixture — contains NO candidate PII"},
+  "claims": [
+    {"claim_id": "s1", "topic": "Java", "normalized_value": "professional", "evidence_class": "PROFESSIONAL", "source_document_id": "synthetic_resume", "scope": "employment", "confidence": 0.85, "conflict_state": "NONE", "notes": ""},
+    {"claim_id": "s2", "topic": "Kotlin", "normalized_value": "listed", "evidence_class": "SKILLS_LIST_ONLY", "source_document_id": "synthetic_resume", "scope": "skills_section", "confidence": 0.4, "conflict_state": "NONE", "notes": ""},
+    {"claim_id": "s3", "topic": "GraphQL", "normalized_value": "project_product", "evidence_class": "PROJECT_PRODUCT", "source_document_id": "synthetic_project", "scope": "project", "confidence": 0.7, "conflict_state": "NONE", "notes": ""},
+    {"claim_id": "s4", "topic": "message queues", "normalized_value": "knowledge", "evidence_class": "CANDIDATE_CONFIRMED", "source_document_id": "synthetic_profile", "scope": "knowledge", "confidence": 0.6, "conflict_state": "NONE", "notes": ""},
+    {"claim_id": "s5a", "topic": "cloud production ownership", "normalized_value": "candidate_stated", "evidence_class": "CANDIDATE_CONFIRMED", "source_document_id": "synthetic_profile", "scope": "ownership", "confidence": 0.3, "conflict_state": "NONE", "notes": ""},
+    {"claim_id": "s5b", "topic": "cloud production ownership", "normalized_value": "not_established", "evidence_class": "UNSUPPORTED", "source_document_id": "synthetic_resume", "scope": "ownership", "confidence": 0.3, "conflict_state": "NONE", "notes": ""}
+  ]
+}

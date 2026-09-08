@@ -1,0 +1,19 @@
+# Atlas experience/seniority policy (build spec section 11).
+# Title alone never decides eligibility; represent min/max/preferred/ambiguous
+# experience separately and never invent a range from a title.
+schema_version: 1
+policy_version: "1B.1"
+source: "00_CURRENT_LIVE_AGENT_INSTRUCTIONS.md, 02_CORE_OPERATING_POLICY_V5.md, 06_CANDIDATE_PROFILE_VERIFIED.md"
+
+preferred_ranges:
+  - "1-2"
+  - "1-3"
+  - "2"
+  - "2+"
+  - "2-3"
+
+# A hard mandatory minimum at/above this many years normally fails.
+hard_reject_min_years: 4
+
+# A suitable three-year role may survive when overall evidence is strong.
+allow_three_year_when_strong: true

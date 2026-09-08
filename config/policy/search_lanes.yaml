@@ -1,0 +1,214 @@
+# Atlas six independent search lanes (build spec section 9).
+# Public policy — no candidate PII. Source-specific URL syntax lives in
+# adapters, NEVER here. Each lane is searched independently; a broad general
+# lane and specific technology lanes must never collapse into one.
+schema_version: 1
+policy_version: "1B.1"
+source: "00_CURRENT_LIVE_AGENT_INSTRUCTIONS.md, 10_STEP3_HIGH_COVERAGE_INDIA_DISCOVERY.md, 02_CORE_OPERATING_POLICY_V5.md"
+
+lanes:
+  GENERAL_SOFTWARE:
+    display_name: "General software engineering"
+    role_families:
+      - Software Engineer
+      - Software Developer
+      - Application Developer
+    positive_titles:
+      - Software Engineer
+      - Software Developer
+      - SDE I
+      - Software Engineer I
+      - Associate Software Engineer
+      - Application Developer
+      - Application Engineer
+      - Product Engineer
+      - Programmer Analyst
+      - Member of Technical Staff
+    technology_terms:
+      - programming
+      - software development
+      - application development
+    negative_terms:
+      - manual testing only
+      - support only
+    transferable_evidence:
+      - Java
+      - React
+      - JavaScript
+      - REST APIs
+    source_query_hints:
+      - "software engineer"
+      - "software developer"
+    detail_hydration_hints:
+      - mandatory experience
+      - required skills
+
+  JAVA_BACKEND:
+    display_name: "Java / backend / Spring / API / microservices"
+    role_families:
+      - Java Developer
+      - Backend Engineer
+    positive_titles:
+      - Java Developer
+      - Java Backend Developer
+      - Backend Engineer
+      - Backend Developer
+    technology_terms:
+      - Java
+      - Spring
+      - Spring Boot
+      - Spring MVC
+      - REST
+      - API
+      - JPA
+      - Hibernate
+      - SQL
+      - MySQL
+      - Maven
+      - microservices
+      - distributed services
+    negative_terms:
+      - manual testing only
+      - functional consulting only
+    transferable_evidence:
+      - Java
+      - Spring Boot
+      - RESTful APIs
+      - Hibernate
+      - MySQL
+    source_query_hints:
+      - "java developer"
+      - "spring boot"
+      - "backend engineer"
+    detail_hydration_hints:
+      - mandatory experience
+      - Spring version
+
+  JAVA_FULLSTACK:
+    display_name: "Java full stack"
+    role_families:
+      - Full Stack Java Developer
+    positive_titles:
+      - Full Stack Java Developer
+      - Java Full Stack Engineer
+      - Full Stack Engineer
+    technology_terms:
+      - Java
+      - Spring Boot
+      - React
+      - JavaScript
+      - TypeScript
+    negative_terms:
+      - manual testing only
+    transferable_evidence:
+      - Java
+      - Spring Boot
+      - React
+      - TypeScript
+    source_query_hints:
+      - "full stack java"
+      - "spring boot react"
+    detail_hydration_hints:
+      - frontend framework
+      - backend stack
+
+  REACT_FRONTEND:
+    display_name: "React / frontend"
+    role_families:
+      - Frontend Engineer
+      - UI Engineer
+    positive_titles:
+      - React Developer
+      - Frontend Engineer
+      - Frontend Developer
+      - UI Engineer
+      - UI Developer
+    technology_terms:
+      - React
+      - ReactJS
+      - JavaScript
+      - TypeScript
+      - React Router
+      - Axios
+      - React Hook Form
+      - HTML
+      - CSS
+      - responsive UI
+    negative_terms:
+      - manual testing only
+      - support only
+    transferable_evidence:
+      - React
+      - JavaScript
+      - TypeScript
+    # Frontend-only discovery must be possible WITHOUT Java terms.
+    source_query_hints:
+      - "react developer"
+      - "frontend engineer"
+    detail_hydration_hints:
+      - required framework
+      - state management
+
+  DOTNET:
+    display_name: ".NET / ASP.NET / C#"
+    role_families:
+      - .NET Developer
+    positive_titles:
+      - .NET Developer
+      - "C# Developer"
+      - ASP.NET Developer
+      - Dotnet Engineer
+    technology_terms:
+      - .NET
+      - .NET Core
+      - ASP.NET
+      - ASP.NET Core
+      - "C#"
+      - React + .NET
+    negative_terms:
+      - manual testing only
+    transferable_evidence:
+      - ASP.NET
+      - React
+    source_query_hints:
+      - "dotnet developer"
+      - "c# developer"
+      - "asp.net"
+    detail_hydration_hints:
+      - .NET version
+      - mandatory experience
+
+  ENTERPRISE_HR_PAYROLL_INTEGRATION:
+    display_name: "Enterprise applications / payroll / HR tech / integration"
+    role_families:
+      - Enterprise Applications Engineer
+      - Integration Engineer
+    positive_titles:
+      - Enterprise Applications Developer
+      - Integration Engineer
+      - Product Developer
+      - Payroll Software Engineer
+      - HR Technology Engineer
+    technology_terms:
+      - enterprise applications
+      - business applications
+      - payroll
+      - HR technology
+      - integration
+      - API integration
+      - web applications
+      - product development
+    negative_terms:
+      - functional consulting only
+      - support only
+    transferable_evidence:
+      - enterprise payroll and HR software
+      - Java Spring Boot MVC
+      - system integration
+    source_query_hints:
+      - "enterprise applications"
+      - "integration engineer"
+      - "payroll software"
+    detail_hydration_hints:
+      - integration surface
+      - domain

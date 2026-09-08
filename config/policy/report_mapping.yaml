@@ -1,0 +1,86 @@
+# Atlas Excel report mapping (build spec sections 20 + 17.G).
+# Excel is REPORT-ONLY. Workbook headers are NOT database field names.
+# Canonical internal fields map to human-facing columns here, resolving the
+# Official_Apply_URL/Official_URL and Verification_Status/Verification_Level
+# naming conflicts. The template Atlas_Jobs_TEMPLATE.xlsx is a private/local
+# fixture; only this schema mapping is public.
+schema_version: 1
+policy_version: "1B.1"
+source: "11_LIVE_CHANNEL_AND_EXCEL_OUTPUT_CONTRACT.md, 12_STEP3_VERIFICATION_HARDENING.md, Atlas_Jobs_TEMPLATE.xlsx"
+
+sheets:
+  All_Jobs:
+    columns:
+      - Company
+      - Role
+      - Job_ID
+      - Location
+      - Work_Mode
+      - Experience
+      - Search_Lane
+      - Company_Type
+      - Discovery_Source
+      - Source_URL
+      - Official_Apply_URL
+      - Posted_Date
+      - Freshness
+      - Verification_Status
+      - Live_Status
+      - Match_Score
+      - Requirements_Matched
+      - Missing_Requirements
+      - Why_It_Fits
+      - Application_Recommendation
+      - First_Seen
+      - Last_Verified
+      - Notes
+    # canonical internal field -> workbook column
+    field_map:
+      company: Company
+      role_title: Role
+      source_job_id: Job_ID
+      location: Location
+      work_mode: Work_Mode
+      experience_text: Experience
+      lane: Search_Lane
+      company_type: Company_Type
+      discovery_source: Discovery_Source
+      source_url: Source_URL
+      official_apply_url: Official_Apply_URL      # canonical: official_apply_url
+      posted_date: Posted_Date
+      freshness_band: Freshness
+      verification_level: Verification_Status      # canonical: verification_level
+      job_lifecycle_status: Live_Status            # canonical: job_lifecycle_status
+      match_score: Match_Score
+      requirements_matched: Requirements_Matched
+      missing_requirements: Missing_Requirements
+      why_it_fits: Why_It_Fits
+      recommendation: Application_Recommendation    # canonical: recommendation
+      first_seen: First_Seen
+      last_verified: Last_Verified
+      notes: Notes
+
+  New_Companies:
+    columns: [Company, Official_Domain, Careers_Domain, ATS, Company_Type, India_Locations, Source_Discovered_From, Reason_Added, Suggested_Tier, Next_Delta_Check, Next_Deep_Check]
+
+  Company_Coverage:
+    columns: [Company, Tier, Company_Type, Official_Careers_Domain, ATS, Check_Type, Checked_At, Result, Relevant_Jobs, New_Jobs, Known_Unchanged, Closed, Manual_Verification, Access_Status, Next_Delta_Check, Next_Deep_Check]
+
+  Source_Coverage:
+    columns: [Source, Attempted, Completed, Searches_Performed, Raw_Results, Relevant_Results, Verified_Official, Portal_Only, Manual_Verification, Closed, Access_Limited, Notes]
+    # Source_Coverage status vocabulary is strictly these four values.
+    status_values: [COMPLETED, PARTIAL, ACCESS_LIMITED, NOT_REACHED]
+
+  Closed_or_Rejected:
+    columns: [Company, Role, Job_ID, Location, Source, Reason, Verification_Status, Live_Status, Experience, Posted_Date, Notes]
+
+  Resume_Tailoring:
+    columns: [Company, Role, Job_ID, Match_Score, Summary_Changes, Skills_Order, Experience_Changes, Project_Changes, Supported_Keywords, Do_Not_Claim, Genuine_Gaps, Suggested_Resume_Filename]
+
+  Recruiter_Contacts:
+    columns: [Company, Role, Job_ID, Contact_Name, Contact_Title, Email, Profile_URL, Contact_Type, Source, Confidence, Safe_To_Contact, Usage_Restrictions, Notes]
+
+  Run_Summary:
+    columns: [Run_ID, Run_Date, Start_Time, End_Time, Runtime, Run_Status, Companies_Checked, New_Companies_Discovered, Official_Sites_Checked, ATS_Checked, Workday_Checked, LinkedIn_Checked, Naukri_Checked, Foundit_Checked, Indeed_Checked, Wellfound_Checked, Talent500_Checked, Specialist_Sources_Checked, Raw_Discoveries, Relevant_Discoveries, Duplicates_Suppressed, Verified_Official, Portal_Only, Manual_Verification, Closed, GitHub_Events_Written, GitHub_Readback, Remaining_Work]
+
+sheet_order: [All_Jobs, New_Companies, Company_Coverage, Source_Coverage, Closed_or_Rejected, Resume_Tailoring, Recruiter_Contacts, Run_Summary]

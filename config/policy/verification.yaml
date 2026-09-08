@@ -1,0 +1,57 @@
+# Atlas verification / freshness / closure policy (build spec section 18).
+# Implements the intent of 12_STEP3_VERIFICATION_HARDENING.md. A specific
+# current employer-controlled role page with aligned identity and no positive
+# closure evidence can be VERIFIED_OFFICIAL. Final Apply submission is NOT
+# required. Blocked/login/CAPTCHA/missing-date are NEVER closure evidence.
+schema_version: 1
+policy_version: "1B.1"
+source: "12_STEP3_VERIFICATION_HARDENING.md, 00_CURRENT_LIVE_AGENT_INSTRUCTIONS.md"
+
+levels:
+  - VERIFIED_OFFICIAL
+  - OFFICIAL_PAGE_FOUND_APPLY_PATH_UNCONFIRMED
+  - PORTAL_CURRENT_LEAD
+  - MANUAL_VERIFICATION
+  - SUSPICIOUS_REJECTED
+
+# CLOSED is a lifecycle fact (see status_aliases.yaml), not a verification level.
+require_final_apply_submission: false
+
+freshness_bands:
+  - "0-7 days"
+  - "8-14 days"
+  - "15-30 days"
+  - "31-45 days exceptional"
+  - "STALE"
+  - "LIVE_DATE_UNKNOWN"
+
+# Positive evidence required to mark a role CLOSED.
+closure_evidence_terms:
+  - "closed"
+  - "expired"
+  - "filled"
+  - "removed"
+  - "no longer accepting"
+  - "no longer available"
+  - "position filled"
+  - "applications closed"
+  - "deadline passed"
+
+# Conditions that must NEVER be treated as closure evidence.
+non_closure_conditions:
+  - "javascript failure"
+  - "anti-bot"
+  - "captcha"
+  - "login required"
+  - "missing date"
+  - "failed apply click"
+  - "rendering error"
+  - "access limited"
+
+# Date sources that must NEVER be used as the employer posting date.
+forbidden_posted_date_sources:
+  - "crawl date"
+  - "cache date"
+  - "search-index date"
+  - "discovery date"
+  - "first_seen"

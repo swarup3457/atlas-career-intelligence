@@ -1,0 +1,46 @@
+# Atlas source policy (build spec section 14).
+# The broad source universe preserved as POLICY, not implementation. Phase 1B
+# ships NO live adapters — every entry has live_adapter: false. Registry
+# identity is the family (adapter_key); many families share a category.
+schema_version: 1
+policy_version: "1B.1"
+source: "05_SOURCE_AND_ATS_REGISTRY_V5.md, 00_CURRENT_LIVE_AGENT_INSTRUCTIONS.md, 11_LIVE_CHANNEL_AND_EXCEL_OUTPUT_CONTRACT.md"
+
+sources:
+  # Official / company-owned
+  - {family: company_career, category: OFFICIAL, display_name: "Employer career pages", role: official, live_adapter: false}
+  # ATS families
+  - {family: workday,         category: ATS, display_name: "Workday",          role: ats, live_adapter: false}
+  - {family: greenhouse,      category: ATS, display_name: "Greenhouse",       role: ats, live_adapter: false}
+  - {family: lever,           category: ATS, display_name: "Lever",            role: ats, live_adapter: false}
+  - {family: ashby,           category: ATS, display_name: "Ashby",            role: ats, live_adapter: false}
+  - {family: smartrecruiters, category: ATS, display_name: "SmartRecruiters",  role: ats, live_adapter: false}
+  - {family: icims,           category: ATS, display_name: "iCIMS",            role: ats, live_adapter: false}
+  - {family: oracle,          category: ATS, display_name: "Oracle Recruiting",role: ats, live_adapter: false}
+  - {family: successfactors,  category: ATS, display_name: "SAP SuccessFactors", role: ats, live_adapter: false}
+  - {family: phenom,          category: ATS, display_name: "Phenom",           role: ats, live_adapter: false}
+  - {family: eightfold,       category: ATS, display_name: "Eightfold",        role: ats, live_adapter: false}
+  - {family: custom_ats,      category: ATS, display_name: "Custom employer ATS", role: ats, live_adapter: false}
+  # Major portals
+  - {family: linkedin, category: PORTAL, display_name: "LinkedIn", role: portal, live_adapter: false}
+  - {family: naukri,   category: PORTAL, display_name: "Naukri",   role: portal, live_adapter: false}
+  - {family: foundit,  category: PORTAL, display_name: "Foundit",  role: portal, live_adapter: false}
+  - {family: indeed,   category: PORTAL, display_name: "Indeed",   role: portal, live_adapter: false}
+  # Specialist / rotating sources
+  - {family: wellfound,      category: SPECIALIST, display_name: "Wellfound",           role: specialist, live_adapter: false}
+  - {family: talent500,      category: SPECIALIST, display_name: "Talent500",           role: specialist, live_adapter: false}
+  - {family: instahyre,      category: SPECIALIST, display_name: "Instahyre",           role: specialist, live_adapter: false}
+  - {family: cutshort,       category: SPECIALIST, display_name: "Cutshort",            role: specialist, live_adapter: false}
+  - {family: hirist,         category: SPECIALIST, display_name: "Hirist",              role: specialist, live_adapter: false}
+  - {family: weekday,        category: SPECIALIST, display_name: "Weekday",             role: specialist, live_adapter: false}
+  - {family: tophire,        category: SPECIALIST, display_name: "TopHire",             role: specialist, live_adapter: false}
+  - {family: yc,             category: SPECIALIST, display_name: "YC Work at a Startup",role: specialist, live_adapter: false}
+  - {family: builtin,        category: SPECIALIST, display_name: "Built In",            role: specialist, live_adapter: false}
+  - {family: remoteok,       category: SPECIALIST, display_name: "Remote OK",           role: specialist, live_adapter: false}
+  - {family: weworkremotely, category: SPECIALIST, display_name: "We Work Remotely",    role: specialist, live_adapter: false}
+  - {family: himalayas,      category: SPECIALIST, display_name: "Himalayas",           role: specialist, live_adapter: false}
+  - {family: jobgether,      category: SPECIALIST, display_name: "Jobgether",           role: specialist, live_adapter: false}
+  - {family: unstop,         category: SPECIALIST, display_name: "Unstop",              role: specialist, live_adapter: false}
+  - {family: freshersworld,  category: SPECIALIST, display_name: "Freshersworld",       role: specialist, live_adapter: false}
+  - {family: superset,       category: SPECIALIST, display_name: "Superset",            role: specialist, live_adapter: false}
+  - {family: internshala,    category: SPECIALIST, display_name: "Internshala",         role: specialist, live_adapter: false}

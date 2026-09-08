@@ -27,3 +27,16 @@ fixtures/real/
 fixtures/generated/
 backups/
 support_bundles/
+
+# Phase 1B private candidate evidence and Workspace imports — NEVER commit.
+# Real resumes, profile exports, populated candidate ledgers, PII, and the
+# raw C:\Atlas-Agent-Import package must stay local-only. Public Git may
+# contain only schemas, validators, synthetic fixtures, and public policy.
+config/private/
+private/
+imports/private/
+candidate_data/
+*.private.yaml
+*.private.json
+*.pdf
+docs/private/

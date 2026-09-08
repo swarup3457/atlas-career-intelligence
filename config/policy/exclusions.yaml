@@ -1,0 +1,52 @@
+# Atlas exclusion policy (build spec section 12).
+# Deterministic negative families. Do NOT over-filter legitimate development
+# roles that merely include production support, on-call, customer
+# collaboration, or debugging.
+schema_version: 1
+policy_version: "1B.1"
+source: "00_CURRENT_LIVE_AGENT_INSTRUCTIONS.md, 10_STEP3_HIGH_COVERAGE_INDIA_DISCOVERY.md"
+
+families:
+  manual_testing_only:
+    - "manual testing"
+    - "manual tester"
+    - "manual QA only"
+    - "test case execution only"
+  support_only:
+    - "technical support"
+    - "production support only"
+    - "helpdesk"
+    - "desktop support"
+    - "L1 support"
+  bpo_voice:
+    - "BPO"
+    - "voice process"
+    - "call center"
+    - "customer care executive"
+  sales:
+    - "sales executive"
+    - "business development"
+    - "inside sales"
+    - "account executive"
+  training_to_placement:
+    - "training to placement"
+    - "pay after placement"
+    - "job guarantee program"
+  functional_consulting_only:
+    - "functional consultant"
+    - "functional consulting only"
+    - "SAP functional"
+  unrelated_non_development:
+    - "data entry"
+    - "content writing"
+    - "graphic design only"
+    - "network administrator"
+
+# Terms that must NOT, by themselves, exclude a real development role.
+do_not_overfilter:
+  - "production support"
+  - "on-call"
+  - "customer collaboration"
+  - "debugging"
+  - "incident response"
+  - "code review"
