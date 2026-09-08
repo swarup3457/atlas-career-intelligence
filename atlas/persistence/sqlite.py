@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import enum
 import json
 import sqlite3
 from pathlib import Path
@@ -39,6 +40,21 @@ from typing import Any, Iterator, Optional
 class MigrationError(RuntimeError):
     """Raised when a schema migration fails; the failed migration's
     statements are rolled back and NOT recorded as applied."""
+
+
+class LeaseMutationResult(str, enum.Enum):
+    """Typed outcome of a fenced lease mutation (heartbeat/complete/release/
+    reopen). ``APPLIED`` = the fenced conditional matched and changed the row;
+    ``ALREADY_APPLIED_IDEMPOTENTLY`` = the SAME owner+token already effected an
+    equivalent terminal state (a harmless duplicate delivery);
+    ``STALE_TOKEN_REJECTED`` = a different owner/fencing token now holds the
+    lease, so the caller is a stale worker and the mutation is refused (and
+    audited); ``NOT_FOUND`` = no lease row exists for (run_id, coverage_id)."""
+
+    APPLIED = "APPLIED"
+    ALREADY_APPLIED_IDEMPOTENTLY = "ALREADY_APPLIED_IDEMPOTENTLY"
+    STALE_TOKEN_REJECTED = "STALE_TOKEN_REJECTED"
+    NOT_FOUND = "NOT_FOUND"
 
 
 # Ordered, versioned migrations. Each tuple is (version, description,
@@ -581,6 +597,106 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_cov_leases_expiry ON coverage_leases(run_id, lease_expires_at)",
             "CREATE INDEX IF NOT EXISTS idx_cov_lease_events_cov ON coverage_lease_events(coverage_id, at)",
             "CREATE INDEX IF NOT EXISTS idx_cov_lease_events_run ON coverage_lease_events(run_id, at)",
+        ],
+    ),
+    (
+        9,
+        "Phase 1C-A corrective (build spec 6/7/9/10): run-SCOPED coverage/lease "
+        "identity. Rebuild coverage_records and coverage_leases with a COMPOSITE "
+        "primary key (run_id, coverage_id) so the SAME logical coverage_id is "
+        "independently executable in two separate runs (a terminal lease in run-A "
+        "cannot block run-B). Additive/data-preserving: existing v1-v8 rows are "
+        "copied verbatim into the rebuilt tables. Adds coverage_page_state for "
+        "durable run-scoped pagination cursors (a child cannot become terminal "
+        "while a required next page/cursor remains).",
+        [
+            # --- coverage_records: rebuild with composite PK (run_id, coverage_id)
+            """
+            CREATE TABLE coverage_records_v9 (
+                coverage_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                company TEXT,
+                source_instance TEXT NOT NULL,
+                source_type TEXT,
+                lane TEXT,
+                query_key TEXT,
+                attempted INTEGER NOT NULL DEFAULT 0,
+                completed INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'NOT_ATTEMPTED',
+                jobs_found INTEGER NOT NULL DEFAULT 0,
+                new_jobs INTEGER NOT NULL DEFAULT 0,
+                changed_jobs INTEGER NOT NULL DEFAULT 0,
+                closed_jobs INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,
+                completed_at TEXT,
+                next_action TEXT NOT NULL DEFAULT 'NONE',
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, coverage_id)
+            )
+            """,
+            "INSERT INTO coverage_records_v9 (coverage_id, run_id, company, source_instance, "
+            "source_type, lane, query_key, attempted, completed, status, jobs_found, new_jobs, "
+            "changed_jobs, closed_jobs, started_at, completed_at, next_action, detail_json, "
+            "created_at, updated_at) SELECT coverage_id, run_id, company, source_instance, "
+            "source_type, lane, query_key, attempted, completed, status, jobs_found, new_jobs, "
+            "changed_jobs, closed_jobs, started_at, completed_at, next_action, detail_json, "
+            "created_at, updated_at FROM coverage_records",
+            "DROP TABLE coverage_records",
+            "ALTER TABLE coverage_records_v9 RENAME TO coverage_records",
+            "CREATE INDEX IF NOT EXISTS idx_coverage_run ON coverage_records(run_id)",
+            "CREATE INDEX IF NOT EXISTS idx_coverage_instance ON coverage_records(source_instance)",
+            # --- coverage_leases: rebuild with composite PK (run_id, coverage_id)
+            """
+            CREATE TABLE coverage_leases_v9 (
+                coverage_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                worker_id TEXT,
+                status TEXT NOT NULL DEFAULT 'AVAILABLE',
+                terminal INTEGER NOT NULL DEFAULT 0,
+                attempt INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 0,
+                lease_acquired_at TEXT,
+                lease_expires_at TEXT,
+                heartbeat_at TEXT,
+                company TEXT,
+                source_instance TEXT,
+                tenant TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, coverage_id)
+            )
+            """,
+            "INSERT INTO coverage_leases_v9 (coverage_id, run_id, worker_id, status, terminal, "
+            "attempt, version, lease_acquired_at, lease_expires_at, heartbeat_at, company, "
+            "source_instance, tenant, created_at, updated_at) SELECT coverage_id, run_id, worker_id, "
+            "status, terminal, attempt, version, lease_acquired_at, lease_expires_at, heartbeat_at, "
+            "company, source_instance, tenant, created_at, updated_at FROM coverage_leases",
+            "DROP TABLE coverage_leases",
+            "ALTER TABLE coverage_leases_v9 RENAME TO coverage_leases",
+            "CREATE INDEX IF NOT EXISTS idx_cov_leases_run ON coverage_leases(run_id, status, terminal)",
+            "CREATE INDEX IF NOT EXISTS idx_cov_leases_expiry ON coverage_leases(run_id, lease_expires_at)",
+            # --- durable run-scoped pagination cursor state (build spec 10) ----
+            """
+            CREATE TABLE IF NOT EXISTS coverage_page_state (
+                run_id TEXT NOT NULL,
+                coverage_id TEXT NOT NULL,
+                page_index INTEGER NOT NULL,
+                cursor TEXT,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                has_more INTEGER NOT NULL DEFAULT 0,
+                results_count INTEGER NOT NULL DEFAULT 0,
+                total_reported INTEGER,
+                request_fingerprint TEXT,
+                attempt_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, coverage_id, page_index)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_cov_page_run ON coverage_page_state(run_id, coverage_id)",
+            "CREATE INDEX IF NOT EXISTS idx_cov_page_status ON coverage_page_state(run_id, status)",
         ],
     ),
 ]
@@ -1180,7 +1296,7 @@ class StateStore:
                 "source_type, lane, query_key, attempted, completed, status, jobs_found, new_jobs, "
                 "changed_jobs, closed_jobs, started_at, completed_at, next_action, detail_json, "
                 "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(coverage_id) DO UPDATE SET company=excluded.company, "
+                "ON CONFLICT(run_id, coverage_id) DO UPDATE SET company=excluded.company, "
                 "source_type=excluded.source_type, lane=excluded.lane, query_key=excluded.query_key, "
                 "attempted=excluded.attempted, completed=excluded.completed, status=excluded.status, "
                 "jobs_found=excluded.jobs_found, new_jobs=excluded.new_jobs, changed_jobs=excluded.changed_jobs, "
@@ -1195,9 +1311,19 @@ class StateStore:
                 ),
             )
 
-    def get_coverage(self, coverage_id: str) -> Optional[sqlite3.Row]:
+    def get_coverage(self, coverage_id: str, run_id: Optional[str] = None) -> Optional[sqlite3.Row]:
+        """Fetch one coverage record. ``run_id`` disambiguates the same logical
+        ``coverage_id`` across runs (composite PK is ``(run_id, coverage_id)``);
+        it is optional only for legacy single-run callers, and when omitted the
+        first row in ``run_id`` order is returned deterministically."""
+        if run_id is not None:
+            return self._conn.execute(
+                "SELECT * FROM coverage_records WHERE run_id = ? AND coverage_id = ?",
+                (run_id, coverage_id),
+            ).fetchone()
         return self._conn.execute(
-            "SELECT * FROM coverage_records WHERE coverage_id = ?", (coverage_id,)
+            "SELECT * FROM coverage_records WHERE coverage_id = ? ORDER BY run_id LIMIT 1",
+            (coverage_id,),
         ).fetchone()
 
     def list_coverage(self, run_id: str) -> list[sqlite3.Row]:
@@ -1593,8 +1719,9 @@ class StateStore:
             version = int(row["version"]) + 1
             conn.execute(
                 "UPDATE coverage_leases SET status='LEASED', worker_id=?, attempt=?, version=?, "
-                "lease_acquired_at=?, lease_expires_at=?, heartbeat_at=?, updated_at=? WHERE coverage_id=?",
-                (worker_id, attempt, version, now, lease_expires_at, now, now, coverage_id),
+                "lease_acquired_at=?, lease_expires_at=?, heartbeat_at=?, updated_at=? "
+                "WHERE run_id=? AND coverage_id=?",
+                (worker_id, attempt, version, now, lease_expires_at, now, now, run_id, coverage_id),
             )
             self._append_lease_event(
                 conn, coverage_id, run_id, "ACQUIRE", worker_id=worker_id, attempt=attempt,
@@ -1636,8 +1763,9 @@ class StateStore:
             version = int(chosen["version"]) + 1
             conn.execute(
                 "UPDATE coverage_leases SET status='LEASED', worker_id=?, attempt=?, version=?, "
-                "lease_acquired_at=?, lease_expires_at=?, heartbeat_at=?, updated_at=? WHERE coverage_id=?",
-                (worker_id, attempt, version, now, lease_expires_at, now, now, chosen["coverage_id"]),
+                "lease_acquired_at=?, lease_expires_at=?, heartbeat_at=?, updated_at=? "
+                "WHERE run_id=? AND coverage_id=?",
+                (worker_id, attempt, version, now, lease_expires_at, now, now, run_id, chosen["coverage_id"]),
             )
             self._append_lease_event(
                 conn, chosen["coverage_id"], run_id, "ACQUIRE", worker_id=worker_id, attempt=attempt,
@@ -1647,75 +1775,195 @@ class StateStore:
                     "attempt": attempt, "version": version, "lease_expires_at": lease_expires_at}
 
     def heartbeat_coverage_lease(
-        self, coverage_id: str, run_id: str, worker_id: str, *, now: str, lease_expires_at: str
-    ) -> bool:
+        self, coverage_id: str, run_id: str, worker_id: str, *, version: Optional[int] = None,
+        now: str, lease_expires_at: str,
+    ) -> "LeaseMutationResult":
         """Extend a held lease's expiry (a long task proving it is still alive).
-        Succeeds only when ``worker_id`` still owns a non-terminal, unexpired
-        lease — a lease already reclaimed by another worker cannot be
-        heartbeat-extended."""
+        FENCED: succeeds only when ``worker_id`` (and, when supplied, the
+        ``version`` fencing token) still own a non-terminal, unexpired LEASED
+        row. A lease reclaimed by another worker (higher version / different
+        owner) or already expired cannot be heartbeat-extended — that attempt is
+        refused and audited as a stale rejection so a zombie worker can never
+        silently keep a reclaimed lease alive. ``version=None`` fences on the
+        owner only (legacy callers)."""
         with self.immediate_transaction() as conn:
             row = conn.execute(
-                "SELECT status, terminal, worker_id, lease_expires_at FROM coverage_leases "
-                "WHERE coverage_id=? AND run_id=?",
-                (coverage_id, run_id),
+                "SELECT status, terminal, worker_id, version, lease_expires_at FROM coverage_leases "
+                "WHERE run_id=? AND coverage_id=?",
+                (run_id, coverage_id),
             ).fetchone()
-            if row is None or int(row["terminal"]) == 1 or row["status"] != "LEASED":
-                return False
-            if row["worker_id"] != worker_id:
-                return False
-            if row["lease_expires_at"] is not None and row["lease_expires_at"] <= now:
-                return False  # already expired; must be re-acquired, not extended
-            conn.execute(
-                "UPDATE coverage_leases SET lease_expires_at=?, heartbeat_at=?, updated_at=? WHERE coverage_id=?",
-                (lease_expires_at, now, now, coverage_id),
+            if row is None:
+                return LeaseMutationResult.NOT_FOUND
+            version_ok = version is None or int(row["version"]) == int(version)
+            owns = (
+                row["worker_id"] == worker_id
+                and version_ok
+                and row["status"] == "LEASED"
+                and int(row["terminal"]) == 0
             )
+            unexpired = row["lease_expires_at"] is None or row["lease_expires_at"] > now
+            if owns and unexpired:
+                conn.execute(
+                    "UPDATE coverage_leases SET lease_expires_at=?, heartbeat_at=?, updated_at=? "
+                    "WHERE run_id=? AND coverage_id=? AND worker_id=? AND status='LEASED' AND terminal=0",
+                    (lease_expires_at, now, now, run_id, coverage_id, worker_id),
+                )
+                self._append_lease_event(
+                    conn, coverage_id, run_id, "HEARTBEAT", worker_id=worker_id,
+                    lease_expires_at=lease_expires_at, at=now,
+                )
+                return LeaseMutationResult.APPLIED
             self._append_lease_event(
-                conn, coverage_id, run_id, "HEARTBEAT", worker_id=worker_id,
-                lease_expires_at=lease_expires_at, at=now,
+                conn, coverage_id, run_id, "HEARTBEAT_REJECTED", worker_id=worker_id, at=now,
+                detail={"reason": "stale_token", "current_worker": row["worker_id"],
+                        "current_version": int(row["version"]), "expired": not unexpired},
             )
-            return True
+            return LeaseMutationResult.STALE_TOKEN_REJECTED
 
     def complete_coverage_lease(
-        self, coverage_id: str, run_id: str, *, worker_id: Optional[str] = None, now: str, terminal_status: str = "DONE"
-    ) -> None:
+        self, coverage_id: str, run_id: str, *, worker_id: Optional[str] = None,
+        version: Optional[int] = None, now: str, terminal_status: str = "DONE",
+    ) -> "LeaseMutationResult":
         """Mark a coverage child's lease terminal so it can never be leased
-        again (idempotent duplicate delivery is harmless)."""
-        with self._auto() as conn:
+        again. When ``worker_id``+``version`` are supplied this is FENCED: only
+        the current owner+token may complete an active lease; a stale owner is
+        refused (STALE_TOKEN_REJECTED, audited) and can never change a terminal
+        status; the same owner+token completing twice is a harmless idempotent
+        duplicate. Passing no token performs an administrative completion (e.g.
+        give-up / no-adapter) that never downgrades an already-terminal row."""
+        with self.immediate_transaction() as conn:
+            row = conn.execute(
+                "SELECT status, terminal, worker_id, version FROM coverage_leases "
+                "WHERE run_id=? AND coverage_id=?",
+                (run_id, coverage_id),
+            ).fetchone()
+            if row is None:
+                return LeaseMutationResult.NOT_FOUND
+            if worker_id is not None and version is not None:
+                same_owner = row["worker_id"] == worker_id and int(row["version"]) == int(version)
+                if int(row["terminal"]) == 0 and same_owner and row["status"] == "LEASED":
+                    conn.execute(
+                        "UPDATE coverage_leases SET status=?, terminal=1, heartbeat_at=?, updated_at=? "
+                        "WHERE run_id=? AND coverage_id=? AND worker_id=? AND version=? AND status='LEASED' AND terminal=0",
+                        (terminal_status, now, now, run_id, coverage_id, worker_id, version),
+                    )
+                    self._append_lease_event(
+                        conn, coverage_id, run_id, "COMPLETE", worker_id=worker_id, at=now,
+                        detail={"terminal_status": terminal_status},
+                    )
+                    return LeaseMutationResult.APPLIED
+                if int(row["terminal"]) == 1 and same_owner:
+                    return LeaseMutationResult.ALREADY_APPLIED_IDEMPOTENTLY
+                self._append_lease_event(
+                    conn, coverage_id, run_id, "COMPLETE_REJECTED", worker_id=worker_id, at=now,
+                    detail={"reason": "stale_token", "current_worker": row["worker_id"],
+                            "current_version": int(row["version"]), "terminal": int(row["terminal"])},
+                )
+                return LeaseMutationResult.STALE_TOKEN_REJECTED
+            # Administrative (unfenced) completion.
+            if int(row["terminal"]) == 1:
+                return LeaseMutationResult.ALREADY_APPLIED_IDEMPOTENTLY
             conn.execute(
-                "UPDATE coverage_leases SET status=?, terminal=1, heartbeat_at=?, updated_at=? WHERE coverage_id=?",
-                (terminal_status, now, now, coverage_id),
+                "UPDATE coverage_leases SET status=?, terminal=1, heartbeat_at=?, updated_at=? "
+                "WHERE run_id=? AND coverage_id=?",
+                (terminal_status, now, now, run_id, coverage_id),
             )
             self._append_lease_event(
                 conn, coverage_id, run_id, "COMPLETE", worker_id=worker_id, at=now,
                 detail={"terminal_status": terminal_status},
             )
+            return LeaseMutationResult.APPLIED
 
     def release_coverage_lease(
-        self, coverage_id: str, run_id: str, *, worker_id: Optional[str] = None, now: str, requeue: bool = True
-    ) -> None:
-        """Release a held (non-terminal) lease. With ``requeue`` the child
-        returns to ``AVAILABLE`` for another worker; a terminal child is never
-        reopened."""
-        with self._auto() as conn:
+        self, coverage_id: str, run_id: str, *, worker_id: Optional[str] = None,
+        version: Optional[int] = None, now: str, requeue: bool = True,
+    ) -> "LeaseMutationResult":
+        """Release a held (non-terminal) lease. FENCED when ``worker_id``+
+        ``version`` are supplied: only the current owner+token may release; a
+        stale owner is refused and audited. A terminal child is never reopened.
+        With ``requeue`` the child returns to ``AVAILABLE`` for another worker."""
+        with self.immediate_transaction() as conn:
             row = conn.execute(
-                "SELECT terminal FROM coverage_leases WHERE coverage_id=? AND run_id=?",
-                (coverage_id, run_id),
+                "SELECT status, terminal, worker_id, version FROM coverage_leases "
+                "WHERE run_id=? AND coverage_id=?",
+                (run_id, coverage_id),
             ).fetchone()
-            if row is None or int(row["terminal"]) == 1:
-                return
+            if row is None:
+                return LeaseMutationResult.NOT_FOUND
+            if int(row["terminal"]) == 1:
+                return LeaseMutationResult.ALREADY_APPLIED_IDEMPOTENTLY  # terminal is never reopened
             new_status = "AVAILABLE" if requeue else "HELD_RELEASED"
+            if worker_id is not None and version is not None:
+                same_owner = row["worker_id"] == worker_id and int(row["version"]) == int(version)
+                if same_owner and row["status"] == "LEASED":
+                    conn.execute(
+                        "UPDATE coverage_leases SET status=?, worker_id=NULL, lease_expires_at=NULL, updated_at=? "
+                        "WHERE run_id=? AND coverage_id=? AND worker_id=? AND version=? AND status='LEASED' AND terminal=0",
+                        (new_status, now, run_id, coverage_id, worker_id, version),
+                    )
+                    self._append_lease_event(
+                        conn, coverage_id, run_id, "RELEASE", worker_id=worker_id, at=now, detail={"requeue": requeue},
+                    )
+                    return LeaseMutationResult.APPLIED
+                self._append_lease_event(
+                    conn, coverage_id, run_id, "RELEASE_REJECTED", worker_id=worker_id, at=now,
+                    detail={"reason": "stale_token", "current_worker": row["worker_id"],
+                            "current_version": int(row["version"])},
+                )
+                return LeaseMutationResult.STALE_TOKEN_REJECTED
             conn.execute(
                 "UPDATE coverage_leases SET status=?, worker_id=NULL, lease_expires_at=NULL, updated_at=? "
-                "WHERE coverage_id=?",
-                (new_status, now, coverage_id),
+                "WHERE run_id=? AND coverage_id=?",
+                (new_status, now, run_id, coverage_id),
             )
             self._append_lease_event(
                 conn, coverage_id, run_id, "RELEASE", worker_id=worker_id, at=now, detail={"requeue": requeue},
             )
+            return LeaseMutationResult.APPLIED
 
-    def get_coverage_lease(self, coverage_id: str) -> Optional[sqlite3.Row]:
+    def reopen_human_coverage_lease(
+        self, coverage_id: str, run_id: str, *, now: str, reason: str = "", reference: Optional[str] = None,
+    ) -> "LeaseMutationResult":
+        """Explicit, authorized reopen of a BLOCKED_HUMAN child (build spec 9).
+
+        Resets the lease to AVAILABLE, clears owner/expiry/heartbeat, INCREMENTS
+        the version (fencing any old token), and appends a HUMAN_REOPEN audit
+        event with the resolution reason/reference. ONLY a child whose lease is
+        human-blocked may be reopened — a normally-completed/terminal child is
+        never reopened, and ordinary retry/resume must not call this."""
+        with self.immediate_transaction() as conn:
+            row = conn.execute(
+                "SELECT status, terminal, version FROM coverage_leases WHERE run_id=? AND coverage_id=?",
+                (run_id, coverage_id),
+            ).fetchone()
+            if row is None:
+                return LeaseMutationResult.NOT_FOUND
+            if row["status"] != "BLOCKED_HUMAN":
+                # Not human-blocked: refuse to reopen (a normal terminal child).
+                return LeaseMutationResult.STALE_TOKEN_REJECTED
+            version = int(row["version"]) + 1
+            conn.execute(
+                "UPDATE coverage_leases SET status='AVAILABLE', terminal=0, worker_id=NULL, "
+                "lease_expires_at=NULL, heartbeat_at=NULL, version=?, updated_at=? "
+                "WHERE run_id=? AND coverage_id=?",
+                (version, now, run_id, coverage_id),
+            )
+            self._append_lease_event(
+                conn, coverage_id, run_id, "HUMAN_REOPEN", worker_id=None, at=now,
+                detail={"reason": reason, "reference": reference, "new_version": version},
+            )
+            return LeaseMutationResult.APPLIED
+
+    def get_coverage_lease(self, coverage_id: str, run_id: Optional[str] = None) -> Optional[sqlite3.Row]:
+        """Fetch one lease row. ``run_id`` disambiguates the same logical
+        ``coverage_id`` across runs (composite PK ``(run_id, coverage_id)``)."""
+        if run_id is not None:
+            return self._conn.execute(
+                "SELECT * FROM coverage_leases WHERE run_id = ? AND coverage_id = ?",
+                (run_id, coverage_id),
+            ).fetchone()
         return self._conn.execute(
-            "SELECT * FROM coverage_leases WHERE coverage_id = ?", (coverage_id,)
+            "SELECT * FROM coverage_leases WHERE coverage_id = ? ORDER BY run_id LIMIT 1", (coverage_id,)
         ).fetchone()
 
     def list_coverage_leases(self, run_id: str) -> list[sqlite3.Row]:
@@ -1746,6 +1994,67 @@ class StateStore:
         return self._conn.execute(
             "SELECT * FROM coverage_lease_events ORDER BY at, rowid"
         ).fetchall()
+
+    # ------------------------------------------------------------------
+    # Phase 1C-A corrective — durable run-scoped pagination cursors (spec 10)
+    # ------------------------------------------------------------------
+    def upsert_coverage_page(
+        self,
+        run_id: str,
+        coverage_id: str,
+        page_index: int,
+        *,
+        status: str,
+        cursor: Optional[str] = None,
+        has_more: bool = False,
+        results_count: int = 0,
+        total_reported: Optional[int] = None,
+        request_fingerprint: Optional[str] = None,
+        attempt_id: Optional[str] = None,
+    ) -> None:
+        """Record/advance the durable state of ONE page of a coverage child
+        (idempotent on ``(run_id, coverage_id, page_index)``). A child cannot be
+        declared terminal-COMPLETE while any of its page rows remains non-DONE or
+        a DONE page still reports ``has_more`` with an unfulfilled continuation
+        (build spec 10)."""
+        now = _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO coverage_page_state (run_id, coverage_id, page_index, cursor, status, "
+                "has_more, results_count, total_reported, request_fingerprint, attempt_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(run_id, coverage_id, page_index) DO UPDATE SET cursor=excluded.cursor, "
+                "status=excluded.status, has_more=excluded.has_more, results_count=excluded.results_count, "
+                "total_reported=excluded.total_reported, request_fingerprint=excluded.request_fingerprint, "
+                "attempt_id=excluded.attempt_id, updated_at=excluded.updated_at",
+                (run_id, coverage_id, int(page_index), cursor, status, 1 if has_more else 0,
+                 int(results_count), total_reported, request_fingerprint, attempt_id, now, now),
+            )
+
+    def list_coverage_pages(self, run_id: str, coverage_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM coverage_page_state WHERE run_id=? AND coverage_id=? ORDER BY page_index",
+            (run_id, coverage_id),
+        ).fetchall()
+
+    def get_coverage_page(self, run_id: str, coverage_id: str, page_index: int) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM coverage_page_state WHERE run_id=? AND coverage_id=? AND page_index=?",
+            (run_id, coverage_id, int(page_index)),
+        ).fetchone()
+
+    def coverage_pages_outstanding(self, run_id: str, coverage_id: str) -> bool:
+        """True when a required next page/cursor remains for this child: either a
+        page row is not DONE, or the last DONE page still reports has_more (its
+        continuation was never created). Used to forbid a false terminal COMPLETE."""
+        rows = self.list_coverage_pages(run_id, coverage_id)
+        if not rows:
+            return False
+        for r in rows:
+            if r["status"] != "DONE":
+                return True
+        last = rows[-1]
+        return bool(last["has_more"])
 
     # ------------------------------------------------------------------
     # Phase 1B — coverage plan lifecycle (build spec 7.8)

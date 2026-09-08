@@ -38,7 +38,14 @@ from atlas.runtime.fixture_pipeline import PipelineResult, TaskExecutionResult
 from atlas.sources.child_executor import ChildExecutionOutcome, CoverageChildExecutor, CrashInjection
 from atlas.sources.coverage import CoverageManifest, CoverageStatus, CoverageTask
 from atlas.sources.executor import RateLimitedExecutor
-from atlas.sources.leasing import ClockFn, LeaseManager, system_utc_clock
+from atlas.sources.leasing import (
+    ClockFn,
+    Lease,
+    LeaseHeartbeat,
+    LeaseManager,
+    LeaseMutationResult,
+    system_utc_clock,
+)
 from atlas.sources.models import SourceInstance
 from atlas.sources.rate_limit import RateLimiter, RatePolicy
 from atlas.sources.registry import SourceRegistry
@@ -78,10 +85,15 @@ class ParallelExecutionPipeline:
         rate_limiter: Optional[RateLimiter] = None,
         max_reclaims: int = 3,
         child_crash_hook: Optional[Callable[[CoverageTask, int], None]] = None,
-        heartbeat_hook: Optional[Callable[[LeaseManager, str, str], None]] = None,
+        enable_heartbeat: bool = True,
+        heartbeat_interval_seconds: Optional[float] = None,
     ):
         if workers < 1:
             raise ValueError("workers must be >= 1")
+        if report_writers != 1:
+            # Reports are ALWAYS written by the single governor, never by a
+            # worker; more (or zero) report writers is a contradiction.
+            raise ValueError("report_writers must be exactly 1 (the governor writes the one report)")
         for name, cap in (("max_per_company", max_per_company), ("max_per_instance", max_per_instance),
                           ("max_per_tenant", max_per_tenant)):
             if cap < 1:
@@ -106,7 +118,8 @@ class ParallelExecutionPipeline:
         self._executor = RateLimitedExecutor(rate_limiter or RateLimiter(RatePolicy()))
         self.max_reclaims = max_reclaims
         self.child_crash_hook = child_crash_hook
-        self.heartbeat_hook = heartbeat_hook
+        self.enable_heartbeat = enable_heartbeat
+        self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self._worker_seq = itertools.count(1)
         self._cap_lock = threading.Lock()
 
@@ -208,7 +221,7 @@ class ParallelExecutionPipeline:
                         active_company[company] += 1
                         active_instance[task.source_instance] += 1
                         active_tenant[tenant] += 1
-                    fut = pool.submit(self._run_child, task, worker_id)
+                    fut = pool.submit(self._run_child, task, lease)
                     futures[fut] = (cid, company, tenant, task.source_instance)
 
                 if not futures:
@@ -261,9 +274,14 @@ class ParallelExecutionPipeline:
         )
         lease_mgr.complete(task.coverage_id, terminal_status="FAILED")
 
-    def _run_child(self, task: CoverageTask, worker_id: str) -> _WorkerResult:
-        """Runs on a pool thread with its OWN StateStore connection."""
+    def _run_child(self, task: CoverageTask, lease: Lease) -> _WorkerResult:
+        """Runs on a pool thread with its OWN StateStore connection. The lease
+        token fences every mutation; a periodic heartbeat keeps a long child's
+        lease unreclaimable; ANY unexpected exception releases the owned lease in
+        ``finally`` so it is reclaimable and NOTHING partial is persisted."""
+        worker_id = lease.worker_id
         store = self.store_factory()
+        heartbeat: Optional[LeaseHeartbeat] = None
         try:
             lease_mgr = LeaseManager(store, self.run_id, ttl_seconds=self.ttl_seconds, clock=self.lease_clock)
             child = CoverageChildExecutor(
@@ -271,16 +289,35 @@ class ParallelExecutionPipeline:
                 policy_version=self.policy_version, retry_budget=self.retry_budget, limit=self.limit,
                 crash_hook=self.child_crash_hook,
             )
+            if self.enable_heartbeat:
+                heartbeat = LeaseHeartbeat(
+                    self.store_factory, self.run_id, lease, ttl_seconds=self.ttl_seconds,
+                    clock=self.lease_clock, interval_seconds=self.heartbeat_interval_seconds,
+                )
+                heartbeat.start()
             try:
                 outcome = child.execute(task)
             except CrashInjection:
                 # Simulated crash between HTTP response and status persistence:
-                # release the lease so it is reclaimable; persist NOTHING.
-                lease_mgr.release(task.coverage_id, worker_id=worker_id, requeue=True)
+                # release the (fenced) lease so it is reclaimable; persist NOTHING.
+                if heartbeat is not None:
+                    heartbeat.stop(); heartbeat = None
+                lease_mgr.release(lease, requeue=True)
                 return _WorkerResult(task.coverage_id, crashed=True, outcome=None)
-            # Optional heartbeat hook (tests prove a long task extends its lease).
-            if self.heartbeat_hook is not None:
-                self.heartbeat_hook(lease_mgr, task.coverage_id, worker_id)
+            except Exception:  # noqa: BLE001 - any unexpected worker fault
+                # Build spec 8: an unexpected ValueError/AdapterError/persistence
+                # exception must never strand an owned lease. Release it (fenced)
+                # so it is reclaimable; persist nothing partial.
+                if heartbeat is not None:
+                    heartbeat.stop(); heartbeat = None
+                try:
+                    lease_mgr.release(lease, requeue=True)
+                except Exception:  # noqa: BLE001
+                    pass
+                return _WorkerResult(task.coverage_id, crashed=True, outcome=None)
+            finally:
+                if heartbeat is not None:
+                    heartbeat.stop(); heartbeat = None
             store.upsert_coverage(
                 task.coverage_id, self.run_id, task.source_instance, company=task.company,
                 source_type=task.source_type, lane=task.lane, query_key=task.query_key,
@@ -289,11 +326,15 @@ class ParallelExecutionPipeline:
                 started_at=outcome.started_at, completed_at=outcome.completed_at,
                 next_action=outcome.next_action, detail=outcome.detail,
             )
-            # Mirror coverage terminality onto the lease so it is never re-leased
-            # in this run (a human-blocked child likewise awaits human action).
-            lease_mgr.complete(task.coverage_id, worker_id=worker_id, terminal_status=outcome.status.value)
+            # Mirror coverage terminality onto the lease (FENCED) so it is never
+            # re-leased in this run (a human-blocked child likewise awaits human
+            # action). A stale-token rejection here means another worker already
+            # reclaimed+finished it — harmless, our terminal write was superseded.
+            lease_mgr.complete(lease, terminal_status=outcome.status.value)
             return _WorkerResult(task.coverage_id, crashed=False, outcome=outcome)
         finally:
+            if heartbeat is not None:
+                heartbeat.stop()
             store.close()
 
 

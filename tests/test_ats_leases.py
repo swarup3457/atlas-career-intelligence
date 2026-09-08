@@ -7,7 +7,7 @@ import threading
 import pytest
 
 from atlas.persistence.sqlite import StateStore
-from atlas.sources.leasing import LeaseManager, ManualUTCClock
+from atlas.sources.leasing import LeaseManager, LeaseMutationResult, ManualUTCClock
 
 pytestmark = pytest.mark.integration
 
@@ -75,12 +75,12 @@ def test_heartbeat_extends_lease(tmp_path):
     lm.ensure("c1", source_instance="i1")
     lm.acquire("c1", "w1")
     clock.advance(20)
-    assert lm.heartbeat("c1", "w1") is True
+    assert lm.heartbeat("c1", "w1") == LeaseMutationResult.APPLIED
     # After heartbeat, the lease is fresh again — still not reclaimable at t=40.
     clock.advance(20)
     assert lm.acquire("c1", "w2") is None
     # A non-owner cannot heartbeat.
-    assert lm.heartbeat("c1", "w2") is False
+    assert lm.heartbeat("c1", "w2") == LeaseMutationResult.STALE_TOKEN_REJECTED
     store.close()
 
 
