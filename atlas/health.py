@@ -324,6 +324,27 @@ def _check_source_framework(report: HealthReport, settings: Settings) -> None:
     except Exception as exc:  # noqa: BLE001
         report.add("Sources: adapter contract harness", FAIL, str(exc))
 
+    # Phase 1C-A: the four official ATS adapters are importable and register
+    # into an explicit registry with NO import-time network and NO enabled
+    # instances (doctor stays fully offline).
+    try:
+        from atlas.sources.ats import ATS_FAMILIES, build_ats_registry, describe_ats_adapters
+
+        registry = build_ats_registry()
+        descriptors = describe_ats_adapters()
+        families = registry.registered_families()
+        if len(descriptors) == 4 and len(families) == 4 and len(ATS_FAMILIES) == 4:
+            report.add(
+                "Sources: official ATS adapters",
+                PASS,
+                "4 registered (greenhouse/lever/ashby/workday), read-only, disabled unless configured",
+            )
+        else:
+            report.add("Sources: official ATS adapters", FAIL,
+                       f"expected 4 ATS adapters, found {len(descriptors)}")
+    except Exception as exc:  # noqa: BLE001
+        report.add("Sources: official ATS adapters", FAIL, str(exc))
+
 
 def _check_company_registry(report: HealthReport, settings: Settings) -> None:
     """Phase 1A.5 company/source registry integrity checks (all offline):
