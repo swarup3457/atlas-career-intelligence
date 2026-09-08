@@ -87,6 +87,10 @@ class ParallelExecutionPipeline:
         child_crash_hook: Optional[Callable[[CoverageTask, int], None]] = None,
         enable_heartbeat: bool = True,
         heartbeat_interval_seconds: Optional[float] = None,
+        query_compiler=None,
+        geography=None,
+        snapshot_cache=None,
+        max_pages: int = 50,
     ):
         if workers < 1:
             raise ValueError("workers must be >= 1")
@@ -120,6 +124,12 @@ class ParallelExecutionPipeline:
         self.child_crash_hook = child_crash_hook
         self.enable_heartbeat = enable_heartbeat
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
+        # Query compilation + a SHARED, thread-safe board-snapshot cache so a
+        # list-only board is fetched once and reused across every lane worker.
+        self.query_compiler = query_compiler
+        self.geography = geography
+        self.snapshot_cache = snapshot_cache
+        self.max_pages = max_pages
         self._worker_seq = itertools.count(1)
         self._cap_lock = threading.Lock()
 
@@ -287,7 +297,8 @@ class ParallelExecutionPipeline:
             child = CoverageChildExecutor(
                 store, self.registry, self.instances, executor=self._executor, run_id=self.run_id,
                 policy_version=self.policy_version, retry_budget=self.retry_budget, limit=self.limit,
-                crash_hook=self.child_crash_hook,
+                crash_hook=self.child_crash_hook, query_compiler=self.query_compiler,
+                geography=self.geography, snapshot_cache=self.snapshot_cache, max_pages=self.max_pages,
             )
             if self.enable_heartbeat:
                 heartbeat = LeaseHeartbeat(

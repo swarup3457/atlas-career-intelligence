@@ -117,6 +117,13 @@ class SourceSearchWorker(BaseWorker):
             "company": task.company,
             "result_count": result.count,
             "parse_findings": list(result.parse_findings),
+            # Pagination metadata must survive to the child executor so a child
+            # cannot become terminal while a required next page/cursor remains
+            # (build spec 10).
+            "has_more": bool(result.has_more),
+            "next_cursor": result.next_cursor,
+            "total_reported": result.total_reported,
+            "page": result.page,
         }
 
         if result.count > 0:

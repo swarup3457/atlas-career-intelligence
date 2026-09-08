@@ -168,17 +168,32 @@ class GreenhouseAdapter(HttpAtsAdapter):
                                 parse_findings=("greenhouse: response missing 'jobs' array",))
         raw_jobs = data["jobs"]
         parsed = parse_isolated(raw_jobs, lambda r: self._parse_job(r, detail=False))
-        results = tuple(parsed.results[: request.limit])
+        all_results = tuple(parsed.results)  # whole board — NEVER silently sliced
         total = data.get("meta", {}).get("total") if isinstance(data.get("meta"), dict) else len(raw_jobs)
 
-        if results:
+        # The board API returns EVERY post in one response; expose it via
+        # deterministic LOCAL offset pagination so a caller can page through the
+        # whole board (request.limit is a per-page size) with accurate has_more —
+        # results beyond request.limit are never discarded (build spec 10).
+        if request.cursor is not None:
+            try:
+                offset = max(0, int(request.cursor))
+            except (TypeError, ValueError):
+                offset = 0
+        else:
+            offset = max(0, (max(1, request.page) - 1) * request.limit)
+        page_results = all_results[offset:offset + request.limit]
+        has_more = (offset + request.limit) < len(all_results)
+        next_cursor = str(offset + request.limit) if has_more else None
+
+        if page_results:
             return SearchResult(
-                results=results, page=request.page, total_reported=total,
-                zero_result_kind=ZeroResultKind.NOT_APPLICABLE,
+                results=page_results, page=request.page, has_more=has_more, next_cursor=next_cursor,
+                total_reported=total, zero_result_kind=ZeroResultKind.NOT_APPLICABLE,
                 parse_findings=tuple(parsed.finding_reasons()),
             )
-        # Zero results.
-        if parsed.findings and not parsed.results and len(raw_jobs) > 0:
+        # Zero results for this page (only reachable when the board itself is empty).
+        if parsed.findings and not all_results and len(raw_jobs) > 0:
             kind = ZeroResultKind.EXTRACTION_UNRESOLVED
         else:
             kind = ZeroResultKind.TRUSTED_ZERO  # a reachable board with no live posts

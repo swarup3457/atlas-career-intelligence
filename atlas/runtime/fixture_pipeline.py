@@ -76,6 +76,10 @@ class FixtureExecutionPipeline:
         policy_version: str = "unversioned",
         retry_budget: int = 2,
         limit: int = 25,
+        query_compiler=None,
+        geography=None,
+        snapshot_cache=None,
+        max_pages: int = 50,
     ):
         self.store = store
         self.registry = registry
@@ -88,6 +92,8 @@ class FixtureExecutionPipeline:
         self._child = CoverageChildExecutor(
             store, registry, instances, executor=self.executor, run_id=run_id,
             policy_version=policy_version, retry_budget=retry_budget, limit=limit,
+            query_compiler=query_compiler, geography=geography, snapshot_cache=snapshot_cache,
+            max_pages=max_pages,
         )
 
     # -- execution ----------------------------------------------------------

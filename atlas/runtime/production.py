@@ -60,12 +60,14 @@ from atlas.persistence.remote_audit import (
 )
 from atlas.persistence.sqlite import StateStore
 from atlas.planning import CoveragePlanner, PlanInput, PlannedCompany
+from atlas.planning.query_compiler import SearchQueryCompiler
 from atlas.policy import load_policy
 from atlas.policy.rules import VerificationInput, classify_verification
 from atlas.reporting.mapping import load_report_mapping, validate_report, write_report
 from atlas.runtime.canonicalize import canonicalize_run
 from atlas.runtime.fixture_pipeline import FixtureExecutionPipeline
 from atlas.runtime.parallel_pipeline import ParallelExecutionPipeline
+from atlas.sources.child_executor import BoardSnapshotCache
 from atlas.sources.coverage import (
     CoverageManifest,
     CoveragePlanState,
@@ -231,6 +233,15 @@ class ProductionSearchRuntime:
         if self.policy is None:
             self.policy = load_policy(self.policy_dir)
 
+    def _query_compiler(self) -> Optional[SearchQueryCompiler]:
+        """Build (once) the deterministic query compiler from the loaded policy
+        so DISCOVER sends REAL compiled lane/geography terms, never enum labels."""
+        if getattr(self, "_compiler", None) is None and self.policy is not None:
+            self._compiler = SearchQueryCompiler(
+                self.policy.lanes, self.policy.geography, policy_version=self.policy.short_fingerprint,
+            )
+        return getattr(self, "_compiler", None)
+
     def _ensure_ledger(self, state: ProductionState) -> None:
         if self.ledger is not None:
             return
@@ -334,6 +345,10 @@ class ProductionSearchRuntime:
             state["terminal_state"] = ProductionTerminalState.FAILED.value
             state.setdefault("notes", []).append("no sealed plan to execute")
             return state
+        compiler = self._query_compiler()
+        geography = self.policy.geography if self.policy is not None else None
+        if getattr(self, "_snapshot_cache", None) is None:
+            self._snapshot_cache = BoardSnapshotCache()
         with StateStore(self.settings.state_db) as store:
             # Reload from durable state so a fresh process sees persisted statuses.
             manifest = CoverageManifest.load(store, self.run_id)
@@ -352,6 +367,7 @@ class ProductionSearchRuntime:
                     retry_budget=self.retry_budget, workers=self.parallel_workers,
                     max_per_company=self.max_per_company, max_per_instance=self.max_per_instance,
                     max_per_tenant=self.max_per_tenant, rate_limiter=self.rate_limiter,
+                    query_compiler=compiler, geography=geography, snapshot_cache=self._snapshot_cache,
                 )
                 result = parallel.execute(manifest, pending, max_children=self.discover_batch)
                 # Workers persisted every child; reload to reflect true statuses
@@ -362,7 +378,8 @@ class ProductionSearchRuntime:
                 pipeline = FixtureExecutionPipeline(
                     store, self.registry, self.instances, executor=self.executor,
                     run_id=self.run_id, policy_version=state.get("policy_fingerprint", "unversioned"),
-                    retry_budget=self.retry_budget,
+                    retry_budget=self.retry_budget, query_compiler=compiler, geography=geography,
+                    snapshot_cache=self._snapshot_cache,
                 )
                 result = pipeline.execute(manifest, pending, max_children=self.discover_batch)
                 manifest.persist(store, policy_fingerprint=state.get("policy_fingerprint", ""))

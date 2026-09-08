@@ -72,6 +72,11 @@ class CoverageStatus(str, enum.Enum):
     RATE_LIMITED = "RATE_LIMITED"
     SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
     FAILED = "FAILED"
+    # Terminal, but HONESTLY partial: a configured hard page/cursor budget was
+    # reached with more results still available. This is NOT full-board coverage
+    # and must never be presented as a COMPLETED_WITH_RESULTS proof (build spec
+    # 10/20). It is terminal so a bounded canary plan can still complete.
+    PARTIAL_BUDGET = "PARTIAL_BUDGET"
     # Blocked awaiting a human (non-terminal for coverage).
     BLOCKED_HUMAN = "BLOCKED_HUMAN"
 
@@ -85,6 +90,7 @@ TERMINAL_COVERAGE_STATUSES: frozenset[CoverageStatus] = frozenset(
         CoverageStatus.RATE_LIMITED,
         CoverageStatus.SOURCE_UNAVAILABLE,
         CoverageStatus.FAILED,
+        CoverageStatus.PARTIAL_BUDGET,
     }
 )
 

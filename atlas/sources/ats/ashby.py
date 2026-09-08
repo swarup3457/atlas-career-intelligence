@@ -166,18 +166,30 @@ class AshbyAdapter(HttpAtsAdapter):
                                 parse_findings=("ashby: response missing 'jobs' array",))
         raw_jobs = data["jobs"]
         parsed = parse_isolated(raw_jobs, self._parse_job)
-        results = tuple(parsed.results[: request.limit])
-        if results:
+        all_results = tuple(parsed.results)  # whole board — NEVER silently sliced
+        total = len(all_results)
+        # Deterministic LOCAL offset pagination over the whole board (build spec 10).
+        if request.cursor is not None:
+            try:
+                offset = max(0, int(request.cursor))
+            except (TypeError, ValueError):
+                offset = 0
+        else:
+            offset = max(0, (max(1, request.page) - 1) * request.limit)
+        page_results = all_results[offset:offset + request.limit]
+        has_more = (offset + request.limit) < total
+        next_cursor = str(offset + request.limit) if has_more else None
+        if page_results:
             return SearchResult(
-                results=results, page=request.page, total_reported=len(parsed.results),
-                zero_result_kind=ZeroResultKind.NOT_APPLICABLE,
+                results=page_results, page=request.page, has_more=has_more, next_cursor=next_cursor,
+                total_reported=total, zero_result_kind=ZeroResultKind.NOT_APPLICABLE,
                 parse_findings=tuple(parsed.finding_reasons()),
             )
-        if parsed.findings and not parsed.results and len(raw_jobs) > 0:
+        if parsed.findings and not all_results and len(raw_jobs) > 0:
             kind = ZeroResultKind.EXTRACTION_UNRESOLVED
         else:
             kind = ZeroResultKind.TRUSTED_ZERO
-        return SearchResult(results=(), page=request.page, zero_result_kind=kind,
+        return SearchResult(results=(), page=request.page, total_reported=total, zero_result_kind=kind,
                             parse_findings=tuple(parsed.finding_reasons()))
 
 
