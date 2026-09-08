@@ -345,6 +345,32 @@ def _check_source_framework(report: HealthReport, settings: Settings) -> None:
     except Exception as exc:  # noqa: BLE001
         report.add("Sources: official ATS adapters", FAIL, str(exc))
 
+    # Phase 1C-B: the two generic official-career adapters (HTTP + browser) are
+    # importable and register alongside the four ATS adapters in one careers
+    # registry, with NO import-time network/browser and NO enabled instances.
+    try:
+        from atlas.sources.generic import (
+            GENERIC_CAREER_FAMILIES,
+            build_careers_registry,
+            describe_generic_career_adapters,
+        )
+
+        registry = build_careers_registry()
+        generic = describe_generic_career_adapters()
+        families = registry.registered_families()
+        if len(generic) == 2 and len(GENERIC_CAREER_FAMILIES) == 2 and len(families) == 6:
+            report.add(
+                "Sources: generic career adapters",
+                PASS,
+                "2 registered (company_career HTTP + company_career_browser), read-only, "
+                "6 total families in careers registry",
+            )
+        else:
+            report.add("Sources: generic career adapters", FAIL,
+                       f"expected 2 generic + 6 total families, found {len(generic)}/{len(families)}")
+    except Exception as exc:  # noqa: BLE001
+        report.add("Sources: generic career adapters", FAIL, str(exc))
+
 
 def _check_company_registry(report: HealthReport, settings: Settings) -> None:
     """Phase 1A.5 company/source registry integrity checks (all offline):

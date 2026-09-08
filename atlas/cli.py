@@ -548,6 +548,176 @@ def _cmd_production_canary(args: argparse.Namespace) -> int:
     return 0 if result.terminal_state in ("COMPLETE", "PARTIAL", "WAITING_FOR_HUMAN") else 1
 
 
+def _cmd_careers(args: argparse.Namespace) -> int:
+    """Official career-site discovery / routing inspection / controlled pilot.
+
+    Default commands are OFFLINE/dry-run; live network access requires --live.
+    """
+    import json as _json
+
+    sub = getattr(args, "careers_command", None)
+
+    if sub == "discover":
+        from atlas.careers.discovery import CareerSourceDiscoveryService
+
+        live = bool(getattr(args, "live", False))
+        client = None
+        if live:
+            from atlas.sources.http_client import ReadOnlyHttpClient
+
+            client = ReadOnlyHttpClient(request_budget=int(getattr(args, "budget", 20)),
+                                        accept="text/html,application/xhtml+xml,*/*;q=0.8")
+        svc = CareerSourceDiscoveryService(http_client=client)
+        if not live:
+            print("NOTE: discover is OFFLINE by default (no homepage/robots fetch). Pass --live to fetch.")
+        outcome = svc.discover(
+            args.domain, company_id=getattr(args, "company", None) or args.domain,
+            name=getattr(args, "company", "") or "", known_careers_url=getattr(args, "known_url", None),
+            fetch=live,
+        )
+        print(f"DOMAIN={outcome.official_domain} STATUS={outcome.status}")
+        for e in outcome.trusted_entry_points:
+            print(f"  [TRUSTED {e.trust_kind} {e.confidence:.2f}] {e.discovery_method}: {e.url}")
+        for e in outcome.rejected:
+            print(f"  [REJECTED {e.trust_kind}] {e.url}")
+        if getattr(args, "json", False):
+            print("\n" + _json.dumps(outcome.to_dict()))
+        return 0 if outcome.trusted_entry_points else 0
+
+    if sub == "inspect":
+        from atlas.careers.router import CareerSourceRouter
+        from atlas.careers.trust import OfficialUrlTrustPolicy
+
+        live = bool(getattr(args, "live", False))
+        url = args.url
+        html = None
+        status = 200
+        challenge = login = False
+        final_url = url
+        if live:
+            from atlas.models import ErrorCategory
+            from atlas.sources.ats.base import detect_challenge
+            from atlas.sources.http_client import HttpError, HttpRequest, ReadOnlyHttpClient
+
+            client = ReadOnlyHttpClient(request_budget=int(getattr(args, "budget", 5)),
+                                        accept="text/html,application/xhtml+xml,*/*;q=0.8")
+            try:
+                resp = client.fetch(HttpRequest(url, headers={"Accept": "text/html,*/*;q=0.8"}))
+                status = resp.status
+                final_url = resp.url
+                html = resp.text() if status == 200 else None
+                cat = detect_challenge(resp)
+                challenge = cat == ErrorCategory.ANTI_BOT
+                login = cat == ErrorCategory.LOGIN_WALL
+            except HttpError as exc:
+                print(f"FETCH_ERROR {exc.category.value}: {exc.message}")
+                return 1
+        else:
+            print("NOTE: inspect is OFFLINE by default (URL-only fingerprint). Pass --live to fetch + classify.")
+        if getattr(args, "domain", None):
+            trust = OfficialUrlTrustPolicy(args.domain)
+            td = trust.classify(url)
+            print(f"TRUST={td.kind.value} trusted={td.trusted} reason={td.reason}")
+        decision = CareerSourceRouter().route(
+            url, company_id=getattr(args, "company", None), html=html, status=status,
+            final_url=final_url, challenge=challenge, login_wall=login,
+        )
+        print(f"ROUTE={decision.route_kind.value} confidence={decision.confidence:.2f} reason={decision.reason}")
+        if decision.source_instance is not None:
+            print(f"  FAMILY={decision.source_instance.adapter_key.value} "
+                  f"INSTANCE={decision.source_instance.instance_id}")
+        if getattr(args, "json", False):
+            print("\n" + _json.dumps(decision.to_dict()))
+        return 0
+
+    if sub == "pilot":
+        from atlas.careers.pilot import CareerPilot, load_pilot_config
+
+        settings = load_settings()
+        settings.ensure_directories()
+        config = load_pilot_config(Path(args.config))
+        live = bool(getattr(args, "live", False))
+        if not live:
+            print("NOTE: pilot is DRY-RUN by default (routing preview only). Pass --live to execute.")
+        pilot = CareerPilot(settings, config)
+        result = pilot.run(live=live)
+        print(f"PILOT_RUN_ID={result.run_id}")
+        print(f"CONFIG_HASH={result.config_hash[:16]}")
+        print(f"PILOT_STATUS={result.status}")
+        print(f"RUNTIME_TERMINAL={result.runtime_terminal}")
+        print(f"SUMMARY={result.summary}")
+        for c in result.companies:
+            print(f"  [{c.execution}/{c.route_kind}] {c.name} ({c.official_domain}) "
+                  f"term={c.terminal_status} extracted={c.extracted} reported={c.reported} "
+                  f"pages={c.pages} health={c.health}"
+                  + (f" limitation={c.limitation}" if c.limitation else ""))
+        if result.report_path:
+            print(f"REPORT={result.report_path} VALID={result.report_valid}")
+        if getattr(args, "json", False):
+            print("\n" + _json.dumps(result.to_dict()))
+        return 0 if result.status in ("PASS", "PARTIAL", "DRY_RUN", "WAITING_FOR_HUMAN") else 1
+
+    if sub == "pilot-status":
+        from atlas.persistence.sqlite import StateStore
+
+        settings = load_settings()
+        run_id = args.run_id
+        with StateStore(settings.state_db) as store:
+            row = store.get_career_pilot_run(run_id)
+            summary = store.coverage_summary(run_id)
+            raw = store.count_raw_observations(run_id)
+        if row is None:
+            print(f"PILOT_RUN {run_id} NOT_FOUND")
+            return 1
+        print(f"PILOT_RUN_ID={run_id}")
+        print(f"CONFIG_HASH={row['config_hash'][:16]}")
+        print(f"STATUS={row['status']}")
+        print(f"COVERAGE_PLANNED={summary.get('_planned', 0)} COVERAGE_TERMINAL={summary.get('_completed', 0)}")
+        print(f"RAW_OBSERVATIONS={raw}")
+        if getattr(args, "json", False):
+            print("\n" + _json.dumps({"run_id": run_id, "status": row["status"],
+                                      "config_hash": row["config_hash"],
+                                      "results": _json.loads(row["results_json"] or "{}")}))
+        return 0
+
+    if sub == "resume":
+        from atlas.careers.pilot import CareerPilot, load_pilot_config
+
+        settings = load_settings()
+        settings.ensure_directories()
+        live = bool(getattr(args, "live", False))
+        if not live:
+            print("NOTE: careers resume requires --live to re-attempt pending children.")
+            return 2
+        config = load_pilot_config(Path(args.config))
+        from atlas.runtime.production import ProductionSearchRuntime
+        from atlas.sources.generic import build_careers_registry
+
+        pilot = CareerPilot(settings, config)
+        prepared = pilot.prepare(live=True)
+        instances = {}
+        companies = []
+        from atlas.planning import PlannedCompany
+
+        for company, decision in prepared.routable:
+            inst = decision.source_instance
+            instances[inst.instance_id] = inst
+            companies.append(PlannedCompany(
+                company_id=company.company_id, name=company.name, tier=company.tier,
+                mode=company.mode, source_instances=(inst.instance_id,), geography_group=company.geography_group))
+        runtime = ProductionSearchRuntime(
+            settings, config.run_id, fixture_mode=True, companies=companies, instances=instances,
+            registry=build_careers_registry(), parallel_workers=1, lane_override=list(config.lanes),
+            max_per_company=1, max_per_instance=1, max_per_tenant=1)
+        result = runtime.resume()
+        print(f"RUN_ID={result.run_id} STATUS={result.terminal_state}")
+        print(f"PLANNED={result.planned_tasks} TERMINAL={result.terminal_tasks}")
+        return 0 if result.terminal_state in ("COMPLETE", "PARTIAL", "WAITING_FOR_HUMAN") else 1
+
+    print("ERROR: unknown careers subcommand")
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="atlas", description="Atlas Career Intelligence platform CLI (foundation build).")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -709,6 +879,48 @@ def build_parser() -> argparse.ArgumentParser:
     p_cn_status.add_argument("--run-id", default=None)
     p_cn_status.add_argument("--json", action="store_true")
     p_cn_status.set_defaults(func=_cmd_production_canary)
+
+    # -- careers: official career-site discovery / routing / controlled pilot --
+    p_careers = subparsers.add_parser(
+        "careers",
+        help="Official career-site discovery, routing inspection, and the controlled pilot (offline/dry-run by default).",
+    )
+    careers_sub = p_careers.add_subparsers(dest="careers_command", required=True)
+
+    p_ca_disc = careers_sub.add_parser("discover", help="Discover trusted career entry points for a company domain.")
+    p_ca_disc.add_argument("--domain", required=True, help="Verified official domain (e.g. acme.com).")
+    p_ca_disc.add_argument("--company", default=None, help="Company id/name (optional).")
+    p_ca_disc.add_argument("--known-url", dest="known_url", default=None, help="A known careers URL (optional).")
+    p_ca_disc.add_argument("--budget", type=int, default=20, help="Max HTTP requests when --live.")
+    p_ca_disc.add_argument("--live", action="store_true", help="Fetch homepage/robots/sitemap (network).")
+    p_ca_disc.add_argument("--json", action="store_true")
+    p_ca_disc.set_defaults(func=_cmd_careers)
+
+    p_ca_insp = careers_sub.add_parser("inspect", help="Classify the execution route for a career URL.")
+    p_ca_insp.add_argument("--url", required=True, help="A trusted official career URL.")
+    p_ca_insp.add_argument("--domain", default=None, help="Official domain for trust classification (optional).")
+    p_ca_insp.add_argument("--company", default=None)
+    p_ca_insp.add_argument("--budget", type=int, default=5)
+    p_ca_insp.add_argument("--live", action="store_true", help="Fetch + classify (network).")
+    p_ca_insp.add_argument("--json", action="store_true")
+    p_ca_insp.set_defaults(func=_cmd_careers)
+
+    p_ca_pilot = careers_sub.add_parser("pilot", help="Run the sealed controlled pilot (DRY-RUN unless --live).")
+    p_ca_pilot.add_argument("--config", required=True, help="Pilot config file (YAML/JSON).")
+    p_ca_pilot.add_argument("--live", action="store_true", help="Execute the pilot against real official sites.")
+    p_ca_pilot.add_argument("--json", action="store_true")
+    p_ca_pilot.set_defaults(func=_cmd_careers)
+
+    p_ca_pstat = careers_sub.add_parser("pilot-status", help="Show a sealed pilot run's status/coverage.")
+    p_ca_pstat.add_argument("--run-id", required=True)
+    p_ca_pstat.add_argument("--json", action="store_true")
+    p_ca_pstat.set_defaults(func=_cmd_careers)
+
+    p_ca_resume = careers_sub.add_parser("resume", help="Resume a PARTIAL pilot's pending children (requires --live).")
+    p_ca_resume.add_argument("--config", required=True, help="The same sealed pilot config file.")
+    p_ca_resume.add_argument("--live", action="store_true")
+    p_ca_resume.add_argument("--json", action="store_true")
+    p_ca_resume.set_defaults(func=_cmd_careers)
 
     return parser
 

@@ -1,0 +1,85 @@
+# Atlas Phase 1C-B — SEALED controlled live-pilot configuration.
+#
+# Public official career entry points only. READ-ONLY: bounded HTTP GET / a
+# bounded headless render; NO login, NO applications, NO CAPTCHA/anti-bot
+# bypass, NO private candidate profile. The config is hashed and sealed BEFORE
+# execution; failed companies are recorded truthfully, never silently replaced.
+#
+# Composition (verified by a pre-seal candidate probe on 2026-09-08):
+#   - 3 companies route to the EXISTING ATS adapters (Lever, Greenhouse x2)
+#   - 3 non-ATS official sites route to the GENERIC HTTP adapter
+#   - 4 non-ATS official sites route to the GENERIC BROWSER adapter
+#   - 1 source (Ashby board) is truthfully ACCESS_LIMITED (anti-bot on fetch)
+# Lanes: JAVA_BACKEND + GENERAL_SOFTWARE only. Geography: PRIMARY (Bengaluru/Hyderabad).
+
+run_id: phase1c_b_pilot
+lanes: [JAVA_BACKEND, GENERAL_SOFTWARE]
+geography_groups: [PRIMARY]
+max_pages: 2
+max_jobs_per_company: 20
+request_budget: 40
+max_load_cycles: 2
+
+companies:
+  # --- ATS routes (use the existing structured adapters) ---
+  - company_id: leverdemo
+    name: "Lever Demo"
+    official_domain: lever.co
+    known_careers_url: https://jobs.lever.co/leverdemo
+    expected_route: ATS
+  - company_id: gitlab
+    name: "GitLab"
+    official_domain: gitlab.com
+    known_careers_url: https://boards.greenhouse.io/gitlab
+    expected_route: ATS
+  - company_id: groww
+    name: "Groww"
+    official_domain: groww.in
+    known_careers_url: https://boards.greenhouse.io/groww
+    expected_route: ATS
+
+  # --- Generic HTTP (structured / server-rendered official pages) ---
+  - company_id: stripe
+    name: "Stripe"
+    official_domain: stripe.com
+    known_careers_url: https://stripe.com/jobs/search
+    expected_route: GENERIC_HTTP
+  - company_id: thoughtworks
+    name: "Thoughtworks"
+    official_domain: thoughtworks.com
+    known_careers_url: https://www.thoughtworks.com/careers/jobs
+    expected_route: GENERIC_HTTP
+  - company_id: freshworks
+    name: "Freshworks"
+    official_domain: freshworks.com
+    known_careers_url: https://www.freshworks.com/company/careers/
+    expected_route: GENERIC_HTTP
+
+  # --- Generic browser (JS/SPA official pages) ---
+  - company_id: postman
+    name: "Postman"
+    official_domain: postman.com
+    known_careers_url: https://www.postman.com/company/careers/open-positions/
+    expected_route: GENERIC_BROWSER
+  - company_id: razorpay
+    name: "Razorpay"
+    official_domain: razorpay.com
+    known_careers_url: https://razorpay.com/jobs/
+    expected_route: GENERIC_BROWSER
+  - company_id: zoho
+    name: "Zoho"
+    official_domain: zohocorp.com
+    known_careers_url: https://careers.zohocorp.com/jobs/Careers
+    expected_route: GENERIC_BROWSER
+  - company_id: swiggy
+    name: "Swiggy"
+    official_domain: swiggy.com
+    known_careers_url: https://careers.swiggy.com/
+    expected_route: GENERIC_BROWSER
+
+  # --- Truthful access-limitation (anti-bot on the fetched entry page) ---
+  - company_id: ashby
+    name: "Ashby"
+    official_domain: ashbyhq.com
+    known_careers_url: https://jobs.ashbyhq.com/Ashby
+    expected_route: ACCESS_LIMITED
