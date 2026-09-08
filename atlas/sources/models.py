@@ -249,10 +249,13 @@ class ActiveState(str, enum.Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class VerificationLevel(str, enum.Enum):
-    """Strength of evidence that a discovered posting is real/live. The
-    final candidate-facing vocabulary is deferred to the Workspace import;
-    this generic ladder is enough for the discovery engine."""
+class SourceEvidenceLevel(str, enum.Enum):
+    """Strength of evidence that a discovered posting is real/live, as observed
+    by a SOURCE ADAPTER. This is the generic discovery-engine ladder and is
+    DISTINCT from the business :class:`atlas.policy.status.VerificationLevel`
+    (the candidate-facing verification decision). It was renamed from
+    ``VerificationLevel`` in Phase 1B.1 (build spec 19 / P1-8) to remove that
+    ambiguity; ``VerificationLevel`` remains a backward-compatible alias."""
 
     OFFICIAL_DETAIL_LIVE = "OFFICIAL_DETAIL_LIVE"
     OFFICIAL_SEARCH_LIVE = "OFFICIAL_SEARCH_LIVE"
@@ -263,6 +266,11 @@ class VerificationLevel(str, enum.Enum):
     CLOSED_BANNER = "CLOSED_BANNER"
     DEADLINE_EXPIRED = "DEADLINE_EXPIRED"
     UNKNOWN = "UNKNOWN"
+
+
+# Backward-compatible alias. Prefer ``SourceEvidenceLevel`` in new code; this
+# name is retained so existing adapters/tests keep working after the rename.
+VerificationLevel = SourceEvidenceLevel
 
 
 class Capability(str, enum.Enum):
@@ -603,6 +611,7 @@ __all__ = [
     "category_for_source_type",
     "WorkMode",
     "ActiveState",
+    "SourceEvidenceLevel",
     "VerificationLevel",
     "Capability",
     "ConcurrencyClass",

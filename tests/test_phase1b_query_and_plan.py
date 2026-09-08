@@ -162,3 +162,53 @@ def test_batch_size_is_not_completion():
         man.mark(f"c{i}", CoverageStatus.ATTEMPTED_ZERO)
     assert man.is_complete() is False
     assert man.terminal_state() == TerminalPlanState.IN_PROGRESS
+
+
+def test_sealed_plan_round_trips_through_sqlite(tmp_path):
+    """P1-1: a persist->load round-trip restores CoveragePlanState, no_work_due,
+    failure_reason, the sealed + policy fingerprints, and every child identity
+    and status — not a fresh BUILDING plan."""
+    from atlas.persistence.sqlite import StateStore
+
+    db = tmp_path / "s.sqlite"
+    man = CoverageManifest("run-rt")
+    man.plan(CoverageTask(coverage_id="c1", source_instance="a", lane="JAVA_BACKEND"))
+    man.plan(CoverageTask(coverage_id="c2", source_instance="b", lane="REACT_FRONTEND"))
+    fp = man.seal()
+    man.mark("c1", CoverageStatus.COMPLETED_WITH_RESULTS, jobs_found=3)
+    with StateStore(db) as store:
+        store.create_run("run-rt", controller="none")
+        man.persist(store, policy_fingerprint="pol-fp-123")
+
+    with StateStore(db) as store:
+        loaded = CoverageManifest.load(store, "run-rt")
+    assert loaded.state == CoveragePlanState.SEALED
+    assert loaded.sealed_fingerprint == fp
+    assert loaded.policy_fingerprint == "pol-fp-123"
+    assert loaded.no_work_due is False
+    assert loaded.get("c1").status == CoverageStatus.COMPLETED_WITH_RESULTS
+    assert loaded.get("c1").jobs_found == 3
+    assert loaded.get("c2").status == CoverageStatus.NOT_ATTEMPTED
+    assert loaded.terminal_state() == TerminalPlanState.IN_PROGRESS
+    # The reloaded sealed plan requires no re-seal and rejects new tasks.
+    loaded.require_sealed()
+
+
+def test_no_work_due_and_failure_reason_round_trip(tmp_path):
+    from atlas.persistence.sqlite import StateStore
+
+    db = tmp_path / "s2.sqlite"
+    empty = CoverageManifest("run-empty")
+    empty.seal(allow_empty=True)
+    failed = CoverageManifest("run-failed")
+    failed.mark_failed("planner exploded")
+    with StateStore(db) as store:
+        store.create_run("run-empty", controller="none")
+        store.create_run("run-failed", controller="none")
+        empty.persist(store)
+        failed.persist(store)
+    with StateStore(db) as store:
+        le = CoverageManifest.load(store, "run-empty")
+        lf = CoverageManifest.load(store, "run-failed")
+    assert le.state == CoveragePlanState.SEALED and le.no_work_due is True
+    assert lf.state == CoveragePlanState.FAILED and lf.failure_reason == "planner exploded"

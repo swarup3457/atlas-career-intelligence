@@ -191,9 +191,31 @@ def test_portal_lead_is_not_official_verification():
     assert classify_verification(vi) == VerificationLevel.PORTAL_CURRENT_LEAD
 
 
-def test_apply_path_unconfirmed_when_not_confirmable():
-    vi = VerificationInput(page_kind="specific_role_page", identity_aligned=True, current_content=True, apply_path_confirmable=False)
-    assert classify_verification(vi) == VerificationLevel.OFFICIAL_PAGE_FOUND_APPLY_PATH_UNCONFIRMED
+def test_apply_path_is_corroboration_not_required_for_verified_official():
+    # P0-9 regression: a specific, aligned, CURRENT official role page is
+    # VERIFIED_OFFICIAL even when the Apply route cannot be confirmed. The old
+    # Atlas failure downgraded these to APPLY_PATH_UNCONFIRMED — that is fixed.
+    vi = VerificationInput(
+        page_kind="specific_role_page", identity_aligned=True,
+        current_content=True, apply_path_confirmable=False,
+    )
+    assert classify_verification(vi) == VerificationLevel.VERIFIED_OFFICIAL
+
+
+def test_apply_path_unconfirmed_only_on_genuine_currentness_uncertainty():
+    # The unconfirmed level applies ONLY when currentness is not directly
+    # visible AND the Apply route cannot corroborate it.
+    uncertain = VerificationInput(
+        page_kind="specific_role_page", identity_aligned=True,
+        current_content=False, apply_path_confirmable=False,
+    )
+    assert classify_verification(uncertain) == VerificationLevel.OFFICIAL_PAGE_FOUND_APPLY_PATH_UNCONFIRMED
+    # A confirmable Apply route corroborates currentness -> VERIFIED_OFFICIAL.
+    corroborated = VerificationInput(
+        page_kind="specific_role_page", identity_aligned=True,
+        current_content=False, apply_path_confirmable=True,
+    )
+    assert classify_verification(corroborated) == VerificationLevel.VERIFIED_OFFICIAL
 
 
 def test_blocked_login_captcha_is_not_closed(bundle):
@@ -206,9 +228,77 @@ def test_positive_closure_evidence_closes(bundle):
     assert is_closed("No longer accepting applications", bundle.verification) is True
 
 
-def test_missing_date_is_not_stale():
+def test_positive_closure_dominates_access_block(bundle):
+    # Blocked/login + an explicit closed banner is still CLOSED (build spec 18).
+    from atlas.policy.rules import classify_closure
+
+    assert is_closed("Login required. This position has been filled.", bundle.verification) is True
+    verdict = classify_closure(
+        bundle.verification,
+        evidence_texts=["Login required, CAPTCHA challenge", "No longer accepting applications"],
+    )
+    assert verdict.closed is True
+    assert verdict.access_blocked is True  # both observations retained
+
+
+def test_access_block_alone_never_closes(bundle):
+    from atlas.policy.rules import classify_closure
+
+    verdict = classify_closure(bundle.verification, evidence_texts=["Login required, CAPTCHA challenge"])
+    assert verdict.closed is False
+    assert verdict.access_blocked is True
+
+
+def test_expired_employer_deadline_closes(bundle):
+    from atlas.policy.rules import classify_closure
+
+    today = datetime.date(2026, 6, 1)
+    expired = classify_closure(bundle.verification, deadline=datetime.date(2026, 5, 1), today=today)
+    assert expired.closed is True
+    future = classify_closure(bundle.verification, deadline=datetime.date(2026, 7, 1), today=today)
+    assert future.closed is False
+
+
+def test_experience_range_uses_explicit_alternation():
+    ex = extract_experience("3 to 5 years experience")
+    assert (ex.min_years, ex.max_years) == (3, 5)
+    ex2 = extract_experience("3-5 years")
+    assert (ex2.min_years, ex2.max_years) == (3, 5)
+
+
+def test_preferred_and_maximum_are_not_hard_minimums(bundle):
+    pref = extract_experience("5 years preferred")
+    assert pref.min_years is None and pref.preferred_years == 5
+    assert experience_eligible(pref, bundle.experience).eligible is True
+
+    up_to = extract_experience("up to 6 years")
+    assert up_to.min_years is None and up_to.max_years == 6
+    assert experience_eligible(up_to, bundle.experience).eligible is True
+
+    both = extract_experience("Minimum 4 years; 6 years preferred")
+    assert both.min_years == 4 and both.preferred_years == 6
+    assert experience_eligible(both, bundle.experience).eligible is False
+
+
+def test_negated_sponsorship_is_not_eligibility(bundle):
+    g = bundle.geography
+    assert international_eligibility("No visa sponsorship; US applicants only", g) == NOT_ELIGIBLE
+    assert international_eligibility("Employer does not provide visa sponsorship", g) != ELIGIBLE_WITH_EVIDENCE
+    # A domestic India role survives a general no-sponsorship clause.
+    assert international_eligibility("Bengaluru, India. No sponsorship provided.", g) == ELIGIBLE_FROM_INDIA
+
+
+def test_missing_date_is_not_stale_and_unverified_is_not_live():
+    # P0-10 regression: a confirmed live page with no reliable date is
+    # LIVE_DATE_UNKNOWN, but an UNVERIFIED lead with no date is only
+    # DATE_UNKNOWN — it must never be labeled live.
     assert freshness_band(None, has_live_official_page=True) == "LIVE_DATE_UNKNOWN"
-    assert freshness_band(None, has_live_official_page=False) == "LIVE_DATE_UNKNOWN"
+    assert freshness_band(None, has_live_official_page=False) == "DATE_UNKNOWN"
+
+
+def test_future_posted_date_is_a_data_conflict():
+    today = datetime.date(2026, 1, 31)
+    assert freshness_band(datetime.date(2026, 3, 1), today=today) == "DATA_CONFLICT"
 
 
 def test_freshness_bands():
@@ -222,11 +312,24 @@ def test_freshness_bands():
 # --- status axes -----------------------------------------------------------
 def test_status_axes_separated_and_aliased():
     assert normalize_verification("Verified Official") == VerificationLevel.VERIFIED_OFFICIAL
-    assert normalize_verification("PORTAL_ONLY_UNVERIFIED") == VerificationLevel.PORTAL_CURRENT_LEAD
+    # P1-5 regression: portal-only-unverified must NOT upgrade to a current lead.
+    assert normalize_verification("PORTAL_ONLY_UNVERIFIED") == VerificationLevel.MANUAL_VERIFICATION
+    # P1-5 regression: a recruiter authorization claim is not VERIFIED_OFFICIAL.
+    assert normalize_verification("Verified Authorized Recruiter") == VerificationLevel.MANUAL_VERIFICATION
+    # P1-6 regression: a freshness label is not a verification alias.
+    assert normalize_verification("Live — Date Unknown") is None
     assert normalize_lifecycle("Expired") == JobLifecycleStatus.CLOSED
     assert normalize_recommendation("Apply Now") == RecommendationStatus.PRIORITY_APPLY
-    # CLOSED is lifecycle, not verification: no CLOSED member on VerificationLevel
+    # CLOSED is lifecycle, not verification or recommendation (build spec 19).
     assert not hasattr(VerificationLevel, "CLOSED")
+    assert not hasattr(RecommendationStatus, "CLOSED")
+
+
+def test_recommendation_display_derives_closed_from_lifecycle():
+    from atlas.policy.status import recommendation_display
+
+    assert recommendation_display(RecommendationStatus.STRONG_APPLY, JobLifecycleStatus.CLOSED) == "CLOSED"
+    assert recommendation_display(RecommendationStatus.STRONG_APPLY, JobLifecycleStatus.ACTIVE) == "STRONG_APPLY"
 
 
 def test_combined_verification_display_derives_closed():

@@ -26,6 +26,16 @@ def _result(**kw) -> DiscoveryResult:
     return DiscoveryResult(**base)
 
 
+def test_source_evidence_level_rename_keeps_backward_alias():
+    # Build spec 19 / P1-8: the generic source ladder was renamed to
+    # SourceEvidenceLevel to disambiguate it from the business VerificationLevel;
+    # the old name remains a backward-compatible alias to the same enum.
+    from atlas.sources.models import SourceEvidenceLevel, VerificationLevel
+
+    assert VerificationLevel is SourceEvidenceLevel
+    assert SourceEvidenceLevel.PORTAL_LIVE.value == "PORTAL_LIVE"
+
+
 def test_content_hash_excludes_observational_fields():
     a = _result(discovered_at="2026-01-01T00:00:00Z", confidence=0.5)
     b = _result(discovered_at="2026-09-09T00:00:00Z", confidence=0.9)

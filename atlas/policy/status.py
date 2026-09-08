@@ -52,6 +52,9 @@ class VerificationLevel(str, enum.Enum):
 
 
 # --- D. RecommendationStatus: the candidate action after fit analysis ------
+# CLOSED is intentionally ABSENT here (build spec 19 / P1-7): closure is a
+# lifecycle fact. A user-facing "CLOSED" display is DERIVED from lifecycle via
+# ``combined_verification_display`` / ``recommendation_display``.
 class RecommendationStatus(str, enum.Enum):
     PRIORITY_APPLY = "PRIORITY_APPLY"
     STRONG_APPLY = "STRONG_APPLY"
@@ -60,7 +63,6 @@ class RecommendationStatus(str, enum.Enum):
     MANUAL_REVIEW = "MANUAL_REVIEW"
     MONITOR = "MONITOR"
     REJECT = "REJECT"
-    CLOSED = "CLOSED"
 
 
 # ---------------------------------------------------------------------------
@@ -76,16 +78,22 @@ _VERIFICATION_ALIASES: dict[str, VerificationLevel] = {
     _norm("VERIFIED_OFFICIAL"): VerificationLevel.VERIFIED_OFFICIAL,
     _norm("Verified Official"): VerificationLevel.VERIFIED_OFFICIAL,
     _norm("VERIFIED_LIVE"): VerificationLevel.VERIFIED_OFFICIAL,
-    _norm("Verified Authorized Recruiter"): VerificationLevel.VERIFIED_OFFICIAL,
+    # "Verified Authorized Recruiter" is a RECRUITER claim, not an employer-
+    # controlled official page — it is weak evidence and must NOT upgrade to
+    # VERIFIED_OFFICIAL (build spec 19 / P1-5). It requires manual verification.
+    _norm("Verified Authorized Recruiter"): VerificationLevel.MANUAL_VERIFICATION,
     _norm("OFFICIAL_PAGE_FOUND_APPLY_PATH_UNCONFIRMED"): VerificationLevel.OFFICIAL_PAGE_FOUND_APPLY_PATH_UNCONFIRMED,
     _norm("Official Page Found Apply Path Unconfirmed"): VerificationLevel.OFFICIAL_PAGE_FOUND_APPLY_PATH_UNCONFIRMED,
     _norm("PORTAL_CURRENT_LEAD"): VerificationLevel.PORTAL_CURRENT_LEAD,
     _norm("Portal Current Lead"): VerificationLevel.PORTAL_CURRENT_LEAD,
-    _norm("PORTAL_ONLY_UNVERIFIED"): VerificationLevel.PORTAL_CURRENT_LEAD,
-    _norm("Portal-Only Unverified"): VerificationLevel.PORTAL_CURRENT_LEAD,
+    # "Portal-only unverified" must NOT become a current/official lead without
+    # fresh evidence (build spec 19 / P1-5); it needs manual verification.
+    _norm("PORTAL_ONLY_UNVERIFIED"): VerificationLevel.MANUAL_VERIFICATION,
+    _norm("Portal-Only Unverified"): VerificationLevel.MANUAL_VERIFICATION,
     _norm("MANUAL_VERIFICATION"): VerificationLevel.MANUAL_VERIFICATION,
     _norm("Manual Verification"): VerificationLevel.MANUAL_VERIFICATION,
-    _norm("Live — Date Unknown"): VerificationLevel.MANUAL_VERIFICATION,
+    # NOTE: "Live — Date Unknown" is a FRESHNESS concept, not a verification
+    # level (build spec 19 / P1-6); it is intentionally NOT aliased here.
     _norm("SUSPICIOUS_REJECTED"): VerificationLevel.SUSPICIOUS_REJECTED,
     _norm("Suspicious"): VerificationLevel.SUSPICIOUS_REJECTED,
     _norm("SUSPICIOUS"): VerificationLevel.SUSPICIOUS_REJECTED,
@@ -122,8 +130,7 @@ _RECOMMENDATION_ALIASES: dict[str, RecommendationStatus] = {
     _norm("Monitor"): RecommendationStatus.MONITOR,
     _norm("REJECT"): RecommendationStatus.REJECT,
     _norm("Reject"): RecommendationStatus.REJECT,
-    _norm("CLOSED"): RecommendationStatus.CLOSED,
-    _norm("Closed"): RecommendationStatus.CLOSED,
+    # "Closed" is a lifecycle-derived display, NOT a recommendation value.
 }
 
 
@@ -153,6 +160,16 @@ def combined_verification_display(
     return verification.value
 
 
+def recommendation_display(
+    recommendation: RecommendationStatus, lifecycle: JobLifecycleStatus
+) -> str:
+    """User-facing recommendation label. CLOSED is DERIVED from lifecycle
+    (build spec 19 / P1-7), never stored as an independent recommendation."""
+    if lifecycle == JobLifecycleStatus.CLOSED:
+        return "CLOSED"
+    return recommendation.value
+
+
 __all__ = [
     "DiscoveryStatus",
     "JobLifecycleStatus",
@@ -166,4 +183,5 @@ __all__ = [
     "normalize_lifecycle",
     "normalize_recommendation",
     "combined_verification_display",
+    "recommendation_display",
 ]

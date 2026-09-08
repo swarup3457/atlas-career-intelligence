@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from atlas.config import load_settings
@@ -136,6 +138,63 @@ def test_remote_audit_sanitizes_pii():
     clean = sanitize_event(event)
     assert "email" not in clean and "candidate" not in clean
     assert clean["counters"] == {"discovered": 3}
+
+
+def test_remote_audit_allowlist_drops_unexpected_nested_fields():
+    # P1-9: an explicit allowlist drops any unexpected nested structure, raw
+    # URLs, notes, contacts, and validates lists/mappings recursively.
+    event = {
+        "schema_version": 1,
+        "run_id": "r1",
+        "terminal_status": "COMPLETE",
+        "policy_fingerprint": "abc123",
+        "counters": {"discovered": 5, "leaked_note": "secret", "nested": {"x": 1}},
+        "error_categories": ["HTTP_429", "TIMEOUT", {"evil": "obj"}, "x" * 500],
+        "raw_url": "https://x.invalid/?token=abcdef",
+        "notes": ["free-form note with PII"],
+        "candidate": {"resume": "text"},
+    }
+    clean = sanitize_event(event)
+    assert set(clean) == {"schema_version", "run_id", "terminal_status", "policy_fingerprint",
+                          "counters", "error_categories"}
+    # count map keeps string->number only
+    assert clean["counters"] == {"discovered": 5}
+    # code list keeps short strings only (drops the nested object)
+    assert clean["error_categories"][:2] == ["HTTP_429", "TIMEOUT"]
+    assert all(isinstance(x, str) and len(x) <= 128 for x in clean["error_categories"])
+    assert "raw_url" not in clean and "notes" not in clean and "candidate" not in clean
+
+
+def test_build_run_audit_event_is_allowlisted():
+    from atlas.persistence.remote_audit import build_run_audit_event
+
+    ev = build_run_audit_event(
+        run_id="r", terminal_status="COMPLETE", policy_fingerprint="p", plan_fingerprint="q",
+        counters={"discovered": 3}, error_categories=["HTTP_5XX"],
+    )
+    assert ev["run_id"] == "r" and ev["terminal_status"] == "COMPLETE"
+    assert ev["counters"] == {"discovered": 3}
+    assert ev["error_categories"] == ["HTTP_5XX"]
+
+
+def test_production_report_uses_atomic_writer_with_locked_fallback(tmp_path):
+    # P0-18: production report path uses the atomic writer. A locked final
+    # destination falls back to a deterministic alternate instead of losing output.
+    mapping = load_report_mapping()
+    out = tmp_path / "locked_report.xlsx"
+    data = {s: [] for s in REQUIRED_SHEETS}
+    # Hold the destination open to simulate an Excel lock (Windows sharing).
+    out.write_bytes(b"placeholder")
+    handle = open(out, "r+b")
+    try:
+        result = write_report(mapping, out, data)
+    finally:
+        handle.close()
+    # Either it replaced atomically, or (if the OS locked it) wrote a
+    # deterministic .locked alternate — never silently lost.
+    assert Path(result.written_path).exists()
+    if result.locked:
+        assert ".locked" in Path(result.written_path).name
 
 
 # --- partial + resume ------------------------------------------------------

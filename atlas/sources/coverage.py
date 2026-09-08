@@ -197,6 +197,7 @@ class CoverageManifest:
         self.no_work_due: bool = False
         self.failure_reason: Optional[str] = None
         self._sealed_fingerprint: Optional[str] = None
+        self.policy_fingerprint: Optional[str] = None
 
     def plan(self, task: CoverageTask) -> CoverageTask:
         existing = self._tasks.get(task.coverage_id)
@@ -349,7 +350,21 @@ class CoverageManifest:
         return counts
 
     # -- persistence --------------------------------------------------------
-    def persist(self, store) -> None:
+    def persist(self, store, *, policy_fingerprint: Optional[str] = None) -> None:
+        """Persist BOTH the plan lifecycle row (state/no_work_due/failure_
+        reason/sealed+policy fingerprints) AND every child task identity/status,
+        so a fresh process can round-trip the full sealed plan (build spec 7 /
+        P1-1). Call this BEFORE discovery so a sealed plan is durable."""
+        if policy_fingerprint is not None:
+            self.policy_fingerprint = policy_fingerprint
+        store.upsert_coverage_plan(
+            self.run_id,
+            self.state.value,
+            no_work_due=self.no_work_due,
+            fingerprint=self._sealed_fingerprint,
+            policy_fingerprint=self.policy_fingerprint,
+            failure_reason=self.failure_reason,
+        )
         for t in self.tasks():
             store.upsert_coverage(
                 t.coverage_id,
@@ -400,6 +415,19 @@ class CoverageManifest:
                     next_action=row["next_action"],
                 )
             )
+        # Restore the plan lifecycle (state/no_work_due/failure_reason/sealed +
+        # policy fingerprints) so a resumed plan is byte-for-byte the same sealed
+        # plan — not a fresh BUILDING plan (build spec 7 / P1-1).
+        plan_row = store.get_coverage_plan(run_id)
+        if plan_row is not None:
+            try:
+                manifest.state = CoveragePlanState(plan_row["state"])
+            except (ValueError, KeyError):
+                manifest.state = CoveragePlanState.BUILDING
+            manifest.no_work_due = bool(plan_row["no_work_due"])
+            manifest.failure_reason = plan_row["failure_reason"]
+            manifest._sealed_fingerprint = plan_row["fingerprint"]
+            manifest.policy_fingerprint = plan_row["policy_fingerprint"]
         return manifest
 
 

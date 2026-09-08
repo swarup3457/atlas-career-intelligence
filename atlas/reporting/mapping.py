@@ -120,9 +120,15 @@ def write_report(
     mapping: ReportMapping,
     output_path: Path,
     data: Mapping[str, Sequence[Mapping[str, Any]]],
-) -> Path:
-    """Build and save the eight-sheet report workbook from canonical data.
-    ``data`` maps sheet name -> canonical records. Report-only."""
+) -> "WriteResult":
+    """Build and ATOMICALLY save the eight-sheet report workbook from canonical
+    data, returning the :class:`WriteResult` (actual written path, locked-file
+    fallback, recovered stale temps). ``data`` maps sheet name -> canonical
+    records. Report-only (build spec 20/21, P0-18): production reports use the
+    proven temp-save + reopen-validate + atomic-replace writer, never a bare
+    ``wb.save()``."""
+    from atlas.data_integrity.report_writer import write_workbook_atomic
+
     reporter = ExcelReporter()
     sheets: list[tuple[str, Sequence[str], Sequence[Mapping[str, Any]]]] = []
     for sheet_name in mapping.sheet_order:
@@ -132,8 +138,7 @@ def write_report(
     wb = reporter.build_workbook(sheets)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(str(output_path))
-    return output_path
+    return write_workbook_atomic(output_path, wb, expected_sheets=REQUIRED_SHEETS)
 
 
 def validate_report(mapping: ReportMapping, path: Path) -> ReportValidation:
