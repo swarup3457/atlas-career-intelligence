@@ -57,6 +57,12 @@ _RULES: tuple[tuple[SourceType, tuple[str, ...], tuple[str, ...], tuple[str, ...
         ("lever-",),
     ),
     (
+        SourceType.ATS_ASHBY,
+        ("ashbyhq.com",),
+        ("jobs.ashbyhq.com/",),
+        ("ashby", "ashbyhq"),
+    ),
+    (
         SourceType.ATS_SMARTRECRUITERS,
         ("smartrecruiters.com",),
         ("/careers-api/",),

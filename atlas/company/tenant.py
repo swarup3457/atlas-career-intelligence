@@ -25,6 +25,7 @@ def _host(url: str) -> str:
 
 
 _WORKDAY_HOST_RE = re.compile(r"^(?P<tenant>[a-z0-9-]+)\.(?:wd\d+)\.myworkdayjobs\.com$", re.IGNORECASE)
+_LOCALE_RE = re.compile(r"^[a-z]{2}([-_][A-Za-z]{2})?$")
 
 
 def _extract_workday(url: str) -> Optional[str]:
@@ -37,6 +38,37 @@ def _extract_workday(url: str) -> Optional[str]:
         label = host[: -len(".myworkdayjobs.com")].split(".")[0]
         return label.lower() or None
     return None
+
+
+def _extract_workday_site(url: str) -> Optional[str]:
+    """Workday needs BOTH a tenant host AND a site path segment to address a
+    CXS/search endpoint (build spec 7.5): e.g.
+    ``https://<tenant>.wd5.myworkdayjobs.com/en-US/<site>/...`` or a CXS path
+    ``/wday/cxs/<tenant>/<site>/jobs``. The site is NOT derivable from the
+    tenant host alone. Returns the site identifier or ``None``."""
+    segs = _path_segments(url)
+    if not segs:
+        return None
+    # /wday/cxs/<tenant>/<site>/...
+    if "cxs" in segs:
+        i = segs.index("cxs")
+        if len(segs) >= i + 3:
+            return segs[i + 2].lower() or None
+        return None
+    # /<locale>/<site>/... where locale looks like en-US / en_US.
+    first = segs[0]
+    if _LOCALE_RE.match(first) and len(segs) >= 2:
+        return segs[1].lower() or None
+    # /<site>/... (no locale prefix)
+    if not _LOCALE_RE.match(first):
+        return first.lower() or None
+    return None
+
+
+def _extract_ashby(url: str) -> Optional[str]:
+    # jobs.ashbyhq.com/<org>
+    segs = _path_segments(url)
+    return segs[0].lower() if segs else None
 
 
 def _extract_greenhouse(url: str) -> Optional[str]:
@@ -67,7 +99,12 @@ _EXTRACTORS = {
     SourceType.ATS_WORKDAY: _extract_workday,
     SourceType.ATS_GREENHOUSE: _extract_greenhouse,
     SourceType.ATS_LEVER: _extract_lever,
+    SourceType.ATS_ASHBY: _extract_ashby,
     SourceType.ATS_SMARTRECRUITERS: _extract_smartrecruiters,
+}
+
+_SITE_EXTRACTORS = {
+    SourceType.ATS_WORKDAY: _extract_workday_site,
 }
 
 
@@ -85,4 +122,19 @@ def extract_tenant(source_type: Optional[SourceType], url: Optional[str]) -> Opt
         return None
 
 
-__all__ = ["extract_tenant"]
+def extract_site(source_type: Optional[SourceType], url: Optional[str]) -> Optional[str]:
+    """Extract the site identifier for families (currently Workday) whose
+    tenant host alone does not identify the CXS/search endpoint. ``None``
+    when the family has no distinct site or the URL lacks one."""
+    if source_type is None or not url:
+        return None
+    extractor = _SITE_EXTRACTORS.get(source_type)
+    if extractor is None:
+        return None
+    try:
+        return extractor(url)
+    except (ValueError, IndexError):
+        return None
+
+
+__all__ = ["extract_tenant", "extract_site"]

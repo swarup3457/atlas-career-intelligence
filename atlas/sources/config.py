@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 from urllib.parse import urlparse
 
-from atlas.sources.models import Capability, SourceInstance, SourceType
+from atlas.sources.models import Capability, SourceFamily, SourceInstance, SourceType
 from atlas.sources.rate_limit import RatePolicy, RateLimitConfigError
 from atlas.sources.registry import SourceRegistry
 
@@ -167,6 +167,16 @@ def load_source_config(
                     f"{where}: no adapter registered for source_type {source_type.value}"
                 )
 
+        # Optional explicit source_family (adapter_key) — required to let two
+        # portals share a broad category (e.g. linkedin vs naukri).
+        source_family: Optional[SourceFamily] = None
+        family_raw = entry.get("source_family")
+        if family_raw is not None:
+            try:
+                source_family = SourceFamily(str(family_raw))
+            except ValueError:
+                problems.append(f"{where}: unknown source_family {family_raw!r}")
+
         # base_url.
         base_url = entry.get("base_url")
         if base_url is not None and not _valid_url(str(base_url)):
@@ -183,7 +193,7 @@ def load_source_config(
                     "reference (e.g. an environment variable name)"
                 )
 
-        # Capability overrides.
+        # Capability overrides (additions).
         overrides_raw = entry.get("capability_overrides", []) or []
         overrides: set[Capability] = set()
         if not isinstance(overrides_raw, (list, tuple)):
@@ -194,6 +204,18 @@ def load_source_config(
                     overrides.add(Capability(str(cap)))
                 except ValueError:
                     problems.append(f"{where}: unsupported capability override {cap!r}")
+
+        # Capability removals (explicit subtractions — build spec 7.6).
+        removals_raw = entry.get("capability_removals", []) or []
+        removals: set[Capability] = set()
+        if not isinstance(removals_raw, (list, tuple)):
+            problems.append(f"{where}: capability_removals must be a list")
+        else:
+            for cap in removals_raw:
+                try:
+                    removals.add(Capability(str(cap)))
+                except ValueError:
+                    problems.append(f"{where}: unsupported capability removal {cap!r}")
 
         # Rate policy.
         rate_raw = entry.get("rate_policy")
@@ -212,12 +234,16 @@ def load_source_config(
                 SourceInstance(
                     instance_id=instance_id,
                     source_type=source_type,
+                    source_family=source_family,
                     display_name=str(entry.get("display_name", "")),
                     base_url=str(base_url) if base_url is not None else None,
                     tenant=str(entry["tenant"]) if entry.get("tenant") is not None else None,
+                    site=str(entry["site"]) if entry.get("site") is not None else None,
                     company_id=str(entry["company_id"]) if entry.get("company_id") is not None else None,
                     enabled=bool(enabled),
+                    lifecycle_state=str(entry.get("lifecycle_state", "ACTIVE")),
                     capability_overrides=frozenset(overrides),
+                    capability_removals=frozenset(removals),
                     rate_policy=str(entry["rate_policy_ref"]) if entry.get("rate_policy_ref") else None,
                     auth_ref=str(auth_ref) if auth_ref is not None else None,
                     metadata=dict(entry.get("metadata", {})),

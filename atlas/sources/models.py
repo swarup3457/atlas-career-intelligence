@@ -46,6 +46,7 @@ class SourceType(str, enum.Enum):
     ATS_WORKDAY = "ATS_WORKDAY"
     ATS_GREENHOUSE = "ATS_GREENHOUSE"
     ATS_LEVER = "ATS_LEVER"
+    ATS_ASHBY = "ATS_ASHBY"
     ATS_SMARTRECRUITERS = "ATS_SMARTRECRUITERS"
     ATS_ORACLE = "ATS_ORACLE"
     ATS_SUCCESSFACTORS = "ATS_SUCCESSFACTORS"
@@ -69,6 +70,166 @@ class SourceType(str, enum.Enum):
 ATS_SOURCE_TYPES: frozenset[SourceType] = frozenset(
     t for t in SourceType if t.value.startswith("ATS_")
 )
+
+
+# ---------------------------------------------------------------------------
+# Source taxonomy correction (Phase 1B, build spec 7.1)
+#
+# The legacy ``SourceType`` conflated a broad *category* (e.g. PORTAL_LARGE)
+# with a concrete *adapter family* — so LinkedIn and Naukri could not both be
+# registered under PORTAL_LARGE. Phase 1B separates THREE concepts:
+#
+#   * SourceCategory : the broad role a source plays (OFFICIAL/ATS/PORTAL/...)
+#   * SourceFamily   : the adapter key (workday, linkedin, naukri, ...). One
+#                      adapter class per family; MANY families may share a
+#                      category. Registry identity is the family, never the
+#                      category.
+#   * SourceInstance : a configured tenant/deployment/market (data, below).
+#
+# ``SourceType`` is retained as a backward-compatible alias and every value
+# maps deterministically to a (category, family) pair.
+# ---------------------------------------------------------------------------
+class SourceCategory(str, enum.Enum):
+    OFFICIAL = "OFFICIAL"
+    ATS = "ATS"
+    PORTAL = "PORTAL"
+    SPECIALIST = "SPECIALIST"
+    AGGREGATOR = "AGGREGATOR"
+    FALLBACK = "FALLBACK"
+    MANUAL = "MANUAL"
+    TEST = "TEST"
+
+
+class SourceFamily(str, enum.Enum):
+    """Adapter key. One adapter *class* serves one family; a family may have
+    many configured :class:`SourceInstance` objects."""
+
+    # Official / company-owned
+    COMPANY_CAREER = "company_career"
+    # ATS families
+    WORKDAY = "workday"
+    GREENHOUSE = "greenhouse"
+    LEVER = "lever"
+    ASHBY = "ashby"
+    SMARTRECRUITERS = "smartrecruiters"
+    ORACLE = "oracle"
+    SUCCESSFACTORS = "successfactors"
+    ICIMS = "icims"
+    PHENOM = "phenom"
+    EIGHTFOLD = "eightfold"
+    CUSTOM_ATS = "custom_ats"
+    # Large portals
+    LINKEDIN = "linkedin"
+    NAUKRI = "naukri"
+    FOUNDIT = "foundit"
+    INDEED = "indeed"
+    # Specialist / rotating sources
+    WELLFOUND = "wellfound"
+    TALENT500 = "talent500"
+    INSTAHYRE = "instahyre"
+    CUTSHORT = "cutshort"
+    HIRIST = "hirist"
+    WEEKDAY = "weekday"
+    TOPHIRE = "tophire"
+    YC = "yc"
+    BUILTIN = "builtin"
+    REMOTEOK = "remoteok"
+    WEWORKREMOTELY = "weworkremotely"
+    HIMALAYAS = "himalayas"
+    JOBGETHER = "jobgether"
+    UNSTOP = "unstop"
+    FRESHERSWORLD = "freshersworld"
+    SUPERSET = "superset"
+    INTERNSHALA = "internshala"
+    # Generic buckets (used only when an instance does not name a family)
+    PORTAL_GENERIC = "portal_generic"
+    SPECIALIST_GENERIC = "specialist_generic"
+    AGGREGATOR = "aggregator"
+    SEARCH_FALLBACK = "search_fallback"
+    MANUAL = "manual"
+    # Test doubles
+    FAKE = "fake"
+    FIXTURE = "fixture"
+
+
+# Deterministic legacy alias: every SourceType resolves to one default family.
+SOURCE_TYPE_TO_FAMILY: dict[SourceType, SourceFamily] = {
+    SourceType.COMPANY_CAREER: SourceFamily.COMPANY_CAREER,
+    SourceType.ATS_WORKDAY: SourceFamily.WORKDAY,
+    SourceType.ATS_GREENHOUSE: SourceFamily.GREENHOUSE,
+    SourceType.ATS_LEVER: SourceFamily.LEVER,
+    SourceType.ATS_ASHBY: SourceFamily.ASHBY,
+    SourceType.ATS_SMARTRECRUITERS: SourceFamily.SMARTRECRUITERS,
+    SourceType.ATS_ORACLE: SourceFamily.ORACLE,
+    SourceType.ATS_SUCCESSFACTORS: SourceFamily.SUCCESSFACTORS,
+    SourceType.ATS_ICIMS: SourceFamily.ICIMS,
+    SourceType.ATS_PHENOM: SourceFamily.PHENOM,
+    SourceType.ATS_EIGHTFOLD: SourceFamily.EIGHTFOLD,
+    SourceType.ATS_CUSTOM: SourceFamily.CUSTOM_ATS,
+    SourceType.PORTAL_LARGE: SourceFamily.PORTAL_GENERIC,
+    SourceType.PORTAL_SPECIALIST: SourceFamily.SPECIALIST_GENERIC,
+    SourceType.AGGREGATOR_API: SourceFamily.AGGREGATOR,
+    SourceType.SEARCH_FALLBACK: SourceFamily.SEARCH_FALLBACK,
+    SourceType.MANUAL_VERIFICATION: SourceFamily.MANUAL,
+    SourceType.FAKE: SourceFamily.FAKE,
+    SourceType.FIXTURE: SourceFamily.FIXTURE,
+}
+
+SOURCE_FAMILY_TO_CATEGORY: dict[SourceFamily, SourceCategory] = {
+    SourceFamily.COMPANY_CAREER: SourceCategory.OFFICIAL,
+    SourceFamily.WORKDAY: SourceCategory.ATS,
+    SourceFamily.GREENHOUSE: SourceCategory.ATS,
+    SourceFamily.LEVER: SourceCategory.ATS,
+    SourceFamily.ASHBY: SourceCategory.ATS,
+    SourceFamily.SMARTRECRUITERS: SourceCategory.ATS,
+    SourceFamily.ORACLE: SourceCategory.ATS,
+    SourceFamily.SUCCESSFACTORS: SourceCategory.ATS,
+    SourceFamily.ICIMS: SourceCategory.ATS,
+    SourceFamily.PHENOM: SourceCategory.ATS,
+    SourceFamily.EIGHTFOLD: SourceCategory.ATS,
+    SourceFamily.CUSTOM_ATS: SourceCategory.ATS,
+    SourceFamily.LINKEDIN: SourceCategory.PORTAL,
+    SourceFamily.NAUKRI: SourceCategory.PORTAL,
+    SourceFamily.FOUNDIT: SourceCategory.PORTAL,
+    SourceFamily.INDEED: SourceCategory.PORTAL,
+    SourceFamily.PORTAL_GENERIC: SourceCategory.PORTAL,
+    SourceFamily.WELLFOUND: SourceCategory.SPECIALIST,
+    SourceFamily.TALENT500: SourceCategory.SPECIALIST,
+    SourceFamily.INSTAHYRE: SourceCategory.SPECIALIST,
+    SourceFamily.CUTSHORT: SourceCategory.SPECIALIST,
+    SourceFamily.HIRIST: SourceCategory.SPECIALIST,
+    SourceFamily.WEEKDAY: SourceCategory.SPECIALIST,
+    SourceFamily.TOPHIRE: SourceCategory.SPECIALIST,
+    SourceFamily.YC: SourceCategory.SPECIALIST,
+    SourceFamily.BUILTIN: SourceCategory.SPECIALIST,
+    SourceFamily.REMOTEOK: SourceCategory.SPECIALIST,
+    SourceFamily.WEWORKREMOTELY: SourceCategory.SPECIALIST,
+    SourceFamily.HIMALAYAS: SourceCategory.SPECIALIST,
+    SourceFamily.JOBGETHER: SourceCategory.SPECIALIST,
+    SourceFamily.UNSTOP: SourceCategory.SPECIALIST,
+    SourceFamily.FRESHERSWORLD: SourceCategory.SPECIALIST,
+    SourceFamily.SUPERSET: SourceCategory.SPECIALIST,
+    SourceFamily.INTERNSHALA: SourceCategory.SPECIALIST,
+    SourceFamily.SPECIALIST_GENERIC: SourceCategory.SPECIALIST,
+    SourceFamily.AGGREGATOR: SourceCategory.AGGREGATOR,
+    SourceFamily.SEARCH_FALLBACK: SourceCategory.FALLBACK,
+    SourceFamily.MANUAL: SourceCategory.MANUAL,
+    SourceFamily.FAKE: SourceCategory.TEST,
+    SourceFamily.FIXTURE: SourceCategory.TEST,
+}
+
+
+def family_for_source_type(source_type: SourceType) -> SourceFamily:
+    """Backward-compatible default family for a legacy ``SourceType``."""
+    return SOURCE_TYPE_TO_FAMILY[source_type]
+
+
+def category_for_family(family: SourceFamily) -> SourceCategory:
+    return SOURCE_FAMILY_TO_CATEGORY[family]
+
+
+def category_for_source_type(source_type: SourceType) -> SourceCategory:
+    return category_for_family(family_for_source_type(source_type))
 
 
 class WorkMode(str, enum.Enum):
@@ -108,6 +269,7 @@ class Capability(str, enum.Enum):
     """A declared capability of an adapter. Planning/orchestration branches
     on capabilities, NEVER on hard-coded source names."""
 
+    DISCOVER = "DISCOVER"
     SEARCH = "SEARCH"
     DETAIL = "DETAIL"
     PAGINATION = "PAGINATION"
@@ -152,23 +314,42 @@ class SourceInstance:
     display_name: str = ""
     base_url: Optional[str] = None
     tenant: Optional[str] = None
+    site: Optional[str] = None
     company_id: Optional[str] = None
     enabled: bool = True
+    source_family: Optional[SourceFamily] = None
     capability_overrides: frozenset[Capability] = field(default_factory=frozenset)
+    capability_removals: frozenset[Capability] = field(default_factory=frozenset)
     rate_policy: Optional[str] = None
     auth_ref: Optional[str] = None
+    lifecycle_state: str = "ACTIVE"
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def adapter_key(self) -> SourceFamily:
+        """Registry identity: the explicit ``source_family`` when configured,
+        otherwise the deterministic default family for the ``source_type``."""
+        return self.source_family or family_for_source_type(self.source_type)
+
+    @property
+    def category(self) -> SourceCategory:
+        return category_for_family(self.adapter_key)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "instance_id": self.instance_id,
             "source_type": self.source_type.value,
+            "source_family": self.adapter_key.value,
+            "category": self.category.value,
             "display_name": self.display_name,
             "base_url": self.base_url,
             "tenant": self.tenant,
+            "site": self.site,
             "company_id": self.company_id,
             "enabled": self.enabled,
+            "lifecycle_state": self.lifecycle_state,
             "capability_overrides": sorted(c.value for c in self.capability_overrides),
+            "capability_removals": sorted(c.value for c in self.capability_removals),
             "rate_policy": self.rate_policy,
             "auth_ref": self.auth_ref,
             "metadata": dict(self.metadata),
@@ -413,6 +594,13 @@ class DetailRequest:
 __all__ = [
     "SourceType",
     "ATS_SOURCE_TYPES",
+    "SourceCategory",
+    "SourceFamily",
+    "SOURCE_TYPE_TO_FAMILY",
+    "SOURCE_FAMILY_TO_CATEGORY",
+    "family_for_source_type",
+    "category_for_family",
+    "category_for_source_type",
     "WorkMode",
     "ActiveState",
     "VerificationLevel",

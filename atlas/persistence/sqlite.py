@@ -419,6 +419,80 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_sdo_company ON source_discovery_observations(company_id)",
         ],
     ),
+    (
+        6,
+        "Phase 1B: first-class source_instances persistence (adapter_key/category/"
+        "tenant+site/lifecycle/capabilities), query-signature-keyed source health "
+        "history, append-only coverage_attempts (immutable diagnostics), and "
+        "coverage_plans lifecycle (BUILDING/SEALED/FAILED + fingerprint).",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS source_instances (
+                instance_id TEXT PRIMARY KEY,
+                adapter_key TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                category TEXT NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                base_url TEXT,
+                tenant TEXT,
+                site TEXT,
+                company_id TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                lifecycle_state TEXT NOT NULL DEFAULT 'ACTIVE',
+                capability_additions_json TEXT NOT NULL DEFAULT '[]',
+                capability_removals_json TEXT NOT NULL DEFAULT '[]',
+                rate_policy_ref TEXT,
+                auth_ref TEXT,
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            # Query-signature granularity for health/yield history (P0-6/7.7).
+            "ALTER TABLE source_health_history ADD COLUMN query_signature TEXT",
+            "ALTER TABLE source_health_history ADD COLUMN lane TEXT",
+            "ALTER TABLE source_health_history ADD COLUMN geography_group TEXT",
+            "ALTER TABLE source_health_history ADD COLUMN search_mode TEXT",
+            # Append-only immutable coverage attempt history (7.9) — never
+            # upserted, so diagnostics are not lost to the resolved-state upsert.
+            """
+            CREATE TABLE IF NOT EXISTS coverage_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                coverage_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                source_instance TEXT NOT NULL,
+                query_signature TEXT,
+                status TEXT NOT NULL,
+                jobs_found INTEGER NOT NULL DEFAULT 0,
+                new_jobs INTEGER NOT NULL DEFAULT 0,
+                changed_jobs INTEGER NOT NULL DEFAULT 0,
+                closed_jobs INTEGER NOT NULL DEFAULT 0,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                observed_at TEXT NOT NULL
+            )
+            """,
+            # Coverage plan lifecycle so an unsealed/empty plan cannot
+            # silently look complete and a failure differs from NO_WORK_DUE.
+            """
+            CREATE TABLE IF NOT EXISTS coverage_plans (
+                run_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL DEFAULT 'BUILDING',
+                no_work_due INTEGER NOT NULL DEFAULT 0,
+                fingerprint TEXT,
+                policy_fingerprint TEXT,
+                failure_reason TEXT,
+                sealed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_source_instances_family ON source_instances(adapter_key)",
+            "CREATE INDEX IF NOT EXISTS idx_source_instances_company ON source_instances(company_id)",
+            "CREATE INDEX IF NOT EXISTS idx_cov_attempts_coverage ON coverage_attempts(coverage_id, observed_at)",
+            "CREATE INDEX IF NOT EXISTS idx_cov_attempts_run ON coverage_attempts(run_id)",
+            "CREATE INDEX IF NOT EXISTS idx_health_hist_signature ON source_health_history(query_signature, observed_at)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)
@@ -1076,19 +1150,27 @@ class StateStore:
         reason: str = "",
         observed_at: Optional[str] = None,
         evidence: Optional[dict] = None,
+        query_signature: Optional[str] = None,
+        lane: Optional[str] = None,
+        geography_group: Optional[str] = None,
+        search_mode: Optional[str] = None,
     ) -> bool:
         """Append a source health/yield observation (idempotent on
         ``history_id``). Enough deterministic history to detect a future
-        false zero (recent yields 42,38,47 then 0)."""
+        false zero (recent yields 42,38,47 then 0). Phase 1B keys the
+        observation by ``query_signature`` so a zero for one lane/geo/mode
+        is never compared against unrelated searches (build spec 7.7)."""
         esp = None if expected_structure_present is None else (1 if expected_structure_present else 0)
         with self._auto() as conn:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO source_health_history (history_id, source_instance, source_type, "
-                "state, result_count, expected_structure_present, reason, observed_at, evidence_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "state, result_count, expected_structure_present, reason, observed_at, evidence_json, "
+                "query_signature, lane, geography_group, search_mode) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     history_id, source_instance, source_type, state, result_count, esp, reason,
                     observed_at or _utcnow(), json.dumps(evidence or {}, sort_keys=True),
+                    query_signature, lane, geography_group, search_mode,
                 ),
             )
         return bool(cur.rowcount)
@@ -1102,13 +1184,176 @@ class StateStore:
 
     def recent_yields(self, source_instance: str, limit: int = 5) -> list[int]:
         """Most-recent non-null result counts (newest first) for false-zero
-        detection."""
+        detection. NOTE: this is the coarse per-instance view retained for
+        backward compatibility; prefer :meth:`recent_yields_for_signature`."""
         rows = self._conn.execute(
             "SELECT result_count FROM source_health_history WHERE source_instance = ? "
             "AND result_count IS NOT NULL ORDER BY observed_at DESC, history_id DESC LIMIT ?",
             (source_instance, int(limit)),
         ).fetchall()
         return [int(r["result_count"]) for r in rows]
+
+    def recent_yields_for_signature(self, query_signature: str, limit: int = 5) -> list[int]:
+        """Most-recent non-null yields for one query signature (newest first).
+        A zero here is compared only against the SAME lane/geo/mode/keyword
+        bundle, preventing a false selector-drift verdict."""
+        rows = self._conn.execute(
+            "SELECT result_count FROM source_health_history WHERE query_signature = ? "
+            "AND result_count IS NOT NULL ORDER BY observed_at DESC, history_id DESC LIMIT ?",
+            (query_signature, int(limit)),
+        ).fetchall()
+        return [int(r["result_count"]) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Phase 1B — first-class source instance persistence (build spec 7.4)
+    # ------------------------------------------------------------------
+    def upsert_source_instance(
+        self,
+        instance_id: str,
+        adapter_key: str,
+        source_type: str,
+        category: str,
+        *,
+        display_name: str = "",
+        base_url: Optional[str] = None,
+        tenant: Optional[str] = None,
+        site: Optional[str] = None,
+        company_id: Optional[str] = None,
+        enabled: bool = True,
+        lifecycle_state: str = "ACTIVE",
+        capability_additions: Optional[list] = None,
+        capability_removals: Optional[list] = None,
+        rate_policy_ref: Optional[str] = None,
+        auth_ref: Optional[str] = None,
+        provenance: Optional[dict] = None,
+    ) -> None:
+        """Insert or update one normalized source instance (idempotent on
+        ``instance_id``). ``auth_ref`` is a reference NAME only — never a
+        secret value. Company↔source coverage is connected through these
+        stable instance IDs."""
+        now = _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO source_instances (instance_id, adapter_key, source_type, category, "
+                "display_name, base_url, tenant, site, company_id, enabled, lifecycle_state, "
+                "capability_additions_json, capability_removals_json, rate_policy_ref, auth_ref, "
+                "provenance_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(instance_id) DO UPDATE SET adapter_key=excluded.adapter_key, "
+                "source_type=excluded.source_type, category=excluded.category, "
+                "display_name=excluded.display_name, base_url=excluded.base_url, "
+                "tenant=excluded.tenant, site=excluded.site, company_id=excluded.company_id, "
+                "enabled=excluded.enabled, lifecycle_state=excluded.lifecycle_state, "
+                "capability_additions_json=excluded.capability_additions_json, "
+                "capability_removals_json=excluded.capability_removals_json, "
+                "rate_policy_ref=excluded.rate_policy_ref, auth_ref=excluded.auth_ref, "
+                "provenance_json=excluded.provenance_json, updated_at=excluded.updated_at",
+                (
+                    instance_id, adapter_key, source_type, category, display_name, base_url,
+                    tenant, site, company_id, 1 if enabled else 0, lifecycle_state,
+                    json.dumps(sorted(capability_additions or []), sort_keys=True),
+                    json.dumps(sorted(capability_removals or []), sort_keys=True),
+                    rate_policy_ref, auth_ref, json.dumps(provenance or {}, sort_keys=True),
+                    now, now,
+                ),
+            )
+
+    def get_source_instance(self, instance_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM source_instances WHERE instance_id = ?", (instance_id,)
+        ).fetchone()
+
+    def list_source_instances(
+        self, *, company_id: Optional[str] = None, include_disabled: bool = True
+    ) -> list[sqlite3.Row]:
+        clauses = []
+        params: list = []
+        if company_id is not None:
+            clauses.append("company_id = ?")
+            params.append(company_id)
+        if not include_disabled:
+            clauses.append("enabled = 1")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        return self._conn.execute(
+            f"SELECT * FROM source_instances{where} ORDER BY instance_id", tuple(params)
+        ).fetchall()
+
+    # ------------------------------------------------------------------
+    # Phase 1B — append-only immutable coverage attempts (build spec 7.9)
+    # ------------------------------------------------------------------
+    def append_coverage_attempt(
+        self,
+        attempt_id: str,
+        coverage_id: str,
+        run_id: str,
+        source_instance: str,
+        status: str,
+        *,
+        query_signature: Optional[str] = None,
+        jobs_found: int = 0,
+        new_jobs: int = 0,
+        changed_jobs: int = 0,
+        closed_jobs: int = 0,
+        detail: Optional[dict] = None,
+        observed_at: Optional[str] = None,
+    ) -> bool:
+        """Append an immutable coverage attempt (idempotent on ``attempt_id``,
+        never updated). Keeps a full diagnostic trail even though the resolved
+        ``coverage_records`` row is upserted."""
+        with self._auto() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO coverage_attempts (attempt_id, coverage_id, run_id, "
+                "source_instance, query_signature, status, jobs_found, new_jobs, changed_jobs, "
+                "closed_jobs, detail_json, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    attempt_id, coverage_id, run_id, source_instance, query_signature, status,
+                    int(jobs_found), int(new_jobs), int(changed_jobs), int(closed_jobs),
+                    json.dumps(detail or {}, sort_keys=True), observed_at or _utcnow(),
+                ),
+            )
+        return bool(cur.rowcount)
+
+    def list_coverage_attempts(self, coverage_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM coverage_attempts WHERE coverage_id = ? ORDER BY observed_at, attempt_id",
+            (coverage_id,),
+        ).fetchall()
+
+    # ------------------------------------------------------------------
+    # Phase 1B — coverage plan lifecycle (build spec 7.8)
+    # ------------------------------------------------------------------
+    def upsert_coverage_plan(
+        self,
+        run_id: str,
+        state: str,
+        *,
+        no_work_due: bool = False,
+        fingerprint: Optional[str] = None,
+        policy_fingerprint: Optional[str] = None,
+        failure_reason: Optional[str] = None,
+        sealed_at: Optional[str] = None,
+    ) -> None:
+        now = _utcnow()
+        with self._auto() as conn:
+            conn.execute(
+                "INSERT INTO coverage_plans (run_id, state, no_work_due, fingerprint, "
+                "policy_fingerprint, failure_reason, sealed_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET state=excluded.state, "
+                "no_work_due=excluded.no_work_due, fingerprint=excluded.fingerprint, "
+                "policy_fingerprint=excluded.policy_fingerprint, "
+                "failure_reason=excluded.failure_reason, sealed_at=excluded.sealed_at, "
+                "updated_at=excluded.updated_at",
+                (
+                    run_id, state, 1 if no_work_due else 0, fingerprint, policy_fingerprint,
+                    failure_reason, sealed_at, now, now,
+                ),
+            )
+
+    def get_coverage_plan(self, run_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM coverage_plans WHERE run_id = ?", (run_id,)
+        ).fetchone()
 
     # ------------------------------------------------------------------
     # Phase 1A.5 — persistent company identity registry

@@ -24,6 +24,42 @@ from atlas.models import TaskStatus
 from atlas.sources.models import ZeroResultKind
 
 
+class CoveragePlanState(str, enum.Enum):
+    """Lifecycle of a coverage plan (build spec 7.8). A plan is not
+    production-executable until it is SEALED; a FAILED plan is explicitly
+    distinct from a legitimately empty ``NO_WORK_DUE`` plan."""
+
+    BUILDING = "BUILDING"
+    SEALED = "SEALED"
+    FAILED = "FAILED"
+
+
+class EmptyPlanError(RuntimeError):
+    """Raised when sealing an empty plan without explicitly allowing it —
+    an empty plan must never silently look like successful completion."""
+
+
+class DuplicateCoverageError(ValueError):
+    """Raised when a coverage_id is re-planned with a DIFFERENT plan identity
+    (a silent overwrite of a different task). Idempotent re-planning of the
+    same identity is allowed."""
+
+
+class PlanNotSealedError(RuntimeError):
+    """Raised when an unsealed/failed plan is used where a sealed production
+    plan is required."""
+
+
+class TerminalPlanState(str, enum.Enum):
+    """Truthful terminal classification of a whole plan."""
+
+    BUILDING = "BUILDING"          # not sealed yet — never 'complete'
+    FAILED = "FAILED"              # planning failed
+    NO_WORK_DUE = "NO_WORK_DUE"    # sealed, legitimately empty
+    IN_PROGRESS = "IN_PROGRESS"    # sealed, some tasks not terminal
+    COMPLETE = "COMPLETE"          # sealed, has tasks, all terminal
+
+
 class CoverageStatus(str, enum.Enum):
     # Not yet run.
     NOT_ATTEMPTED = "NOT_ATTEMPTED"
@@ -111,6 +147,19 @@ class CoverageTask:
     def is_terminal(self) -> bool:
         return self.status in TERMINAL_COVERAGE_STATUSES
 
+    @property
+    def plan_key(self) -> tuple:
+        """The stable *planned identity* of this task (what it covers), used
+        to detect a conflicting silent overwrite of a different task under
+        the same coverage_id. Runtime fields (status, counts) are excluded."""
+        return (
+            self.source_instance,
+            self.company,
+            self.source_type,
+            self.lane,
+            self.query_key,
+        )
+
     def to_dict(self) -> dict:
         return {
             "coverage_id": self.coverage_id,
@@ -134,13 +183,32 @@ class CoverageTask:
 
 
 class CoverageManifest:
-    """A run's planned coverage. Deterministic ordering by coverage_id."""
+    """A run's planned coverage. Deterministic ordering by coverage_id.
+
+    Phase 1B (build spec 7.8) adds a plan lifecycle so a plan cannot
+    silently empty-complete, a planning failure is distinct from
+    ``NO_WORK_DUE``, and a conflicting duplicate coverage_id is rejected.
+    """
 
     def __init__(self, run_id: str):
         self.run_id = run_id
         self._tasks: dict[str, CoverageTask] = {}
+        self.state: CoveragePlanState = CoveragePlanState.BUILDING
+        self.no_work_due: bool = False
+        self.failure_reason: Optional[str] = None
+        self._sealed_fingerprint: Optional[str] = None
 
     def plan(self, task: CoverageTask) -> CoverageTask:
+        existing = self._tasks.get(task.coverage_id)
+        if existing is not None and existing.plan_key != task.plan_key:
+            raise DuplicateCoverageError(
+                f"coverage_id {task.coverage_id!r} already planned with a different "
+                f"identity {existing.plan_key} != {task.plan_key}"
+            )
+        if self.state == CoveragePlanState.SEALED and existing is None:
+            raise PlanNotSealedError(
+                f"cannot add new task {task.coverage_id!r} to a SEALED plan"
+            )
         self._tasks[task.coverage_id] = task
         return task
 
@@ -189,7 +257,88 @@ class CoverageManifest:
         return [t for t in self.tasks() if not t.is_terminal]
 
     def is_complete(self) -> bool:
-        return all(t.is_terminal for t in self._tasks.values()) if self._tasks else True
+        """A plan is complete only when it actually has tasks and all are
+        terminal, OR it was explicitly sealed as ``NO_WORK_DUE``. An empty,
+        unsealed plan is NEVER complete (fixes the silent empty-complete
+        bug, build spec 7.8)."""
+        if self.state == CoveragePlanState.FAILED:
+            return False
+        if not self._tasks:
+            return self.state == CoveragePlanState.SEALED and self.no_work_due
+        return all(t.is_terminal for t in self._tasks.values())
+
+    # -- plan lifecycle (build spec 7.8) -----------------------------------
+    def fingerprint(self) -> str:
+        """Deterministic sha256 over the sorted planned identities. Stable
+        across runs given the same plan; changes if the plan changes."""
+        import hashlib
+        import json
+
+        payload = [
+            {
+                "coverage_id": t.coverage_id,
+                "source_instance": t.source_instance,
+                "company": t.company,
+                "source_type": t.source_type,
+                "lane": t.lane,
+                "query_key": t.query_key,
+            }
+            for t in self.tasks()
+        ]
+        blob = json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+    def seal(self, *, allow_empty: bool = False) -> str:
+        """Freeze the plan for execution. Returns the plan fingerprint.
+
+        An empty plan may only be sealed with ``allow_empty=True`` and is
+        then marked ``NO_WORK_DUE`` — never silently 'complete'."""
+        if self.state == CoveragePlanState.FAILED:
+            raise PlanNotSealedError("cannot seal a FAILED plan")
+        if not self._tasks:
+            if not allow_empty:
+                raise EmptyPlanError(
+                    "refusing to seal an empty plan; pass allow_empty=True to record NO_WORK_DUE"
+                )
+            self.no_work_due = True
+        self.state = CoveragePlanState.SEALED
+        self._sealed_fingerprint = self.fingerprint()
+        return self._sealed_fingerprint
+
+    def mark_failed(self, reason: str) -> None:
+        """Record a planning failure — explicitly distinct from NO_WORK_DUE."""
+        self.state = CoveragePlanState.FAILED
+        self.failure_reason = reason
+
+    @property
+    def is_sealed(self) -> bool:
+        return self.state == CoveragePlanState.SEALED
+
+    @property
+    def sealed_fingerprint(self) -> Optional[str]:
+        return self._sealed_fingerprint
+
+    def is_executable(self) -> bool:
+        """Only a SEALED plan may execute as production."""
+        return self.state == CoveragePlanState.SEALED
+
+    def require_sealed(self) -> None:
+        if self.state != CoveragePlanState.SEALED:
+            raise PlanNotSealedError(
+                f"plan {self.run_id!r} is {self.state.value}, not SEALED; cannot execute as production"
+            )
+
+    def terminal_state(self) -> TerminalPlanState:
+        """Truthful terminal classification of the whole plan."""
+        if self.state == CoveragePlanState.FAILED:
+            return TerminalPlanState.FAILED
+        if self.state != CoveragePlanState.SEALED:
+            return TerminalPlanState.BUILDING
+        if not self._tasks:
+            return TerminalPlanState.NO_WORK_DUE
+        if all(t.is_terminal for t in self._tasks.values()):
+            return TerminalPlanState.COMPLETE
+        return TerminalPlanState.IN_PROGRESS
 
     def summary(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -260,4 +409,9 @@ __all__ = [
     "coverage_status_for",
     "CoverageTask",
     "CoverageManifest",
+    "CoveragePlanState",
+    "TerminalPlanState",
+    "EmptyPlanError",
+    "DuplicateCoverageError",
+    "PlanNotSealedError",
 ]
