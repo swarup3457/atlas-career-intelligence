@@ -39,4 +39,5 @@ candidate_data/
 *.private.yaml
 *.private.json
 *.pdf
+*.docx
 docs/private/
