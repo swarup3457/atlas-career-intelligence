@@ -35,7 +35,16 @@ import yaml
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.DOTALL)
 
 REQUIRED_FIELDS = ("name", "description")
-VALID_STATUSES = {"PROVEN", "IMPLEMENTED", "SCAFFOLDED", "NOT_YET_BUILT"}
+VALID_STATUSES = {
+    "PROVEN",
+    "IMPLEMENTED",
+    "SCAFFOLDED",
+    "NOT_YET_BUILT",
+    # Phase 1B thin-pointer agent/skill statuses.
+    "THIN_POINTER",
+    "THIN_METHODOLOGY",
+    "BLOCKED_PENDING_POLICY",
+}
 
 
 class SpecValidationError(ValueError):

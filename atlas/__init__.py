@@ -1,15 +1,18 @@
-"""Atlas Career Intelligence — local platform foundation.
+"""Atlas Career Intelligence — local career-intelligence platform.
 
 This package hosts the deterministic orchestration/runtime foundation for
-Atlas. It intentionally does NOT contain final job-search business logic
-(search lanes, company universe, ATS rules, candidate profile, Excel
-schema, etc.) — that specification will be imported later from the
-existing ChatGPT Workspace Atlas Agent.
+Atlas together with the Phase 1B business-policy layer imported from the
+Workspace Agent specification: typed search policy (six lanes, India
+geography, experience, exclusions, cadence, source policy, 108-company
+seed, verification), separated status axes, a private candidate evidence
+ledger, a sealed coverage planner, and an explicit multi-phase production
+search graph/runtime.
 
-Today's scope is the PLATFORM: configuration, controller abstraction,
-LangGraph orchestration primitives, a reusable Playwright BrowserManager,
-durable SQLite state, structured logging, and scaffolding for GitHub
-persistence / Excel reporting.
+The platform spine remains: configuration, controller abstraction,
+LangGraph orchestration, a reusable Playwright BrowserManager, durable
+SQLite state, structured logging, source/company registries, and
+report-only Excel generation. NO live source adapter and NO live web
+search exist yet — those are deferred to Phase 1C.
 """
 
-__version__ = "0.1.0-foundation"
+__version__ = "0.2.0"

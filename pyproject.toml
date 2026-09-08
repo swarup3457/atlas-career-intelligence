@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlas-career-intelligence"
-version = "0.1.0"
-description = "Atlas Career Intelligence — local deterministic orchestration platform (Phase 0/0.5 foundation, no business logic yet)."
+version = "0.2.0"
+description = "Atlas Career Intelligence — local deterministic career-intelligence platform: orchestration spine + Phase 1B typed search policy, candidate evidence ledger, sealed coverage planner, and multi-phase production search graph (no live adapters / no live web search yet)."
 requires-python = ">=3.12"
 readme = "README.md"
 dependencies = [

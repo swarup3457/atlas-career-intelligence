@@ -388,6 +388,51 @@ def _check_company_registry(report: HealthReport, settings: Settings) -> None:
         report.add("Company: ATS fingerprint framework", FAIL, str(exc))
 
 
+def _check_policy_and_production(report: HealthReport) -> None:
+    """Phase 1B: validate the typed policy bundle, the report mapping, and
+    that the production runtime imports (no live adapters claimed)."""
+    try:
+        from atlas.policy import load_policy
+
+        bundle = load_policy()
+        report.add(
+            "Policy: bundle loads and validates",
+            PASS,
+            f"{len(bundle.lanes)} lanes, {len(bundle.company_seed.companies)} seed companies, "
+            f"fp={bundle.short_fingerprint}",
+        )
+        if any(e.live_adapter for e in bundle.source_policy.entries):
+            report.add("Policy: no live source adapters", FAIL, "a source declares a live adapter")
+        else:
+            report.add("Policy: no live source adapters", PASS, "Phase 1B ships no live adapters")
+    except Exception as exc:  # noqa: BLE001
+        report.add("Policy: bundle loads and validates", FAIL, str(exc))
+
+    try:
+        from atlas.reporting.mapping import REQUIRED_SHEETS, load_report_mapping
+
+        mapping = load_report_mapping()
+        missing = [s for s in REQUIRED_SHEETS if s not in mapping.sheets]
+        if missing:
+            report.add("Report: 8-sheet mapping", FAIL, f"missing sheets: {missing}")
+        else:
+            report.add("Report: 8-sheet mapping", PASS, f"{len(mapping.sheets)} sheets mapped (report-only)")
+    except Exception as exc:  # noqa: BLE001
+        report.add("Report: 8-sheet mapping", FAIL, str(exc))
+
+    try:
+        from atlas.orchestration.production_state import PRODUCTION_PHASE_ORDER
+        from atlas.runtime.production import ProductionSearchRuntime  # noqa: F401
+
+        report.add(
+            "Production: multi-phase graph importable",
+            PASS,
+            f"{len(PRODUCTION_PHASE_ORDER)} phases (search-first isolation)",
+        )
+    except Exception as exc:  # noqa: BLE001
+        report.add("Production: multi-phase graph importable", FAIL, str(exc))
+
+
 def run_doctor(check_network: bool = False) -> HealthReport:
     """Run the full offline health check. `check_network` is accepted for
     forward-compatibility but is NOT used to browse external websites in
@@ -409,4 +454,5 @@ def run_doctor(check_network: bool = False) -> HealthReport:
         _check_runtime_shell(report, settings)
         _check_source_framework(report, settings)
         _check_company_registry(report, settings)
+        _check_policy_and_production(report)
     return report

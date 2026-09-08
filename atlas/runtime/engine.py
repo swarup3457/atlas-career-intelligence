@@ -14,6 +14,7 @@ real job-search source exists yet (see docs/RUNTIME.md).
 
 from __future__ import annotations
 
+import datetime
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -242,11 +243,20 @@ class AtlasRuntime:
                 store.complete_run(self.run_id, status=run_state.value)
                 progress = compute_progress(self.run_id, run_state, state)
 
+                # A completed run's manifest MUST carry a populated,
+                # timezone-aware UTC completed_at; a WAITING_FOR_HUMAN run is
+                # NOT complete, so it deliberately leaves completed_at unset
+                # (build spec 7.16).
+                completed_at = (
+                    datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    if run_state == RunState.COMPLETE
+                    else None
+                )
                 manifest = RunManifest(
                     run_id=self.run_id,
                     created_at=existing_run["started_at"],
                     started_at=existing_run["started_at"],
-                    completed_at=None,
+                    completed_at=completed_at,
                     status=run_state.value,
                     config_fingerprint=compute_config_fingerprint(self.settings),
                     controller=self.settings.controller,

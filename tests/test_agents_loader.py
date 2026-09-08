@@ -13,12 +13,15 @@ pytestmark = pytest.mark.unit
 EXPECTED_AGENT_NAMES = {
     "ORCHESTRATOR", "COMPANY_DISCOVERY", "CAREER_SEARCH", "ATS_SEARCH",
     "PORTAL_SEARCH", "VERIFICATION", "DEDUPLICATION", "CANDIDATE_MATCH", "REPORTING",
+    # Phase 1B recommended reasoning agents (build spec section 21).
+    "QUERY_STRATEGIST", "VERIFICATION_REVIEWER", "MATCH_ANALYST",
+    "INTERNATIONAL_ELIGIBILITY_REVIEWER", "APPLICATION_BRIEF_WRITER", "TREND_ANALYST",
 }
 
 
 def test_load_agents_returns_expected_specs(project_root):
     agents = load_agents(project_root / "agents")
-    assert len(agents) == 9
+    assert len(agents) == 15
     assert {a.name for a in agents} == EXPECTED_AGENT_NAMES
 
 
