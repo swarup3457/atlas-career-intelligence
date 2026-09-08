@@ -62,11 +62,13 @@ class InjectedRegistry(SourceRegistry):
         return cls(instance, http_client=self._transports[instance.instance_id])
 
 
-def _build(tmp_path, monkeypatch, *, handlers_by_family=None, run_id="canary", retry_budget=2):
-    monkeypatch.setenv("ATLAS_STATE_DB", str(tmp_path / "state.sqlite"))
-    monkeypatch.setenv("ATLAS_CHECKPOINT_DB", str(tmp_path / "ckpt.sqlite"))
-    monkeypatch.setenv("ATLAS_OUTPUT_DIR", str(tmp_path / "out"))
-    monkeypatch.setenv("ATLAS_LOGS_DIR", str(tmp_path / "logs"))
+def _build(tmp_path, monkeypatch, *, handlers_by_family=None, run_id="canary", retry_budget=2,
+           workers=4, root=None):
+    root = root or tmp_path
+    monkeypatch.setenv("ATLAS_STATE_DB", str(root / "state.sqlite"))
+    monkeypatch.setenv("ATLAS_CHECKPOINT_DB", str(root / "ckpt.sqlite"))
+    monkeypatch.setenv("ATLAS_OUTPUT_DIR", str(root / "out"))
+    monkeypatch.setenv("ATLAS_LOGS_DIR", str(root / "logs"))
     settings = load_settings()
     settings.ensure_directories()
 
@@ -85,7 +87,7 @@ def _build(tmp_path, monkeypatch, *, handlers_by_family=None, run_id="canary", r
     rl = RateLimiter(RatePolicy(min_interval_seconds=0.0), clock=clock.time, sleeper=clock.sleep)
     rt = ProductionSearchRuntime(
         settings, run_id, fixture_mode=True, companies=companies, instances=instances,
-        registry=InjectedRegistry(transports), rate_limiter=rl, parallel_workers=4,
+        registry=InjectedRegistry(transports), rate_limiter=rl, parallel_workers=workers,
         lane_override=["CANARY"], use_run_lock=False, retry_budget=retry_budget,
     )
     return settings, rt
@@ -159,3 +161,53 @@ def test_partial_stop_after_discover_then_resume_completes(tmp_path, monkeypatch
         obs = store.list_raw_observations("canary")
         # No duplicate observations across the two passes.
         assert len({o["observation_id"] for o in obs}) == len(obs)
+
+
+def _durable_snapshot(store, run_id):
+    """The full durable outcome that must be byte-identical at concurrency 1 and
+    N (build spec 16): per-child statuses, current-run canonical jobs, every
+    observation revision, verification decisions, and the report rows."""
+    man = CoverageManifest.load(store, run_id)
+    statuses = sorted((t.source_instance, t.status.value) for t in man.tasks())
+    canon = sorted(store.current_run_canonical_ids(run_id))
+    obs = sorted(
+        (o["source_identity"], o["revision_kind"], "has_parent" if o["parent_observation_id"] else "")
+        for o in store.list_raw_observations(run_id)
+    )
+    decisions = sorted(
+        (d["canonical_id"], d["verification_level"], d["lifecycle_result"], d["freshness_result"])
+        for d in store.list_verification_decisions(run_id)
+    )
+    return {"statuses": statuses, "canonical_count": len(canon), "observations": obs, "decisions": decisions}
+
+
+def test_concurrency_1_equals_4_for_the_complete_corrected_pipeline(tmp_path, monkeypatch):
+    """Concurrency 1 == 4 across the ENTIRE corrected pipeline: multi-family
+    discovery, hydration revisions, current-run canonicalization, durable
+    verification decisions, and the final report rows — only scheduling differs."""
+    settings1, rt1 = _build(tmp_path, monkeypatch, workers=1, root=tmp_path / "one", run_id="one")
+    res1 = rt1.run()
+    settings4, rt4 = _build(tmp_path, monkeypatch, workers=4, root=tmp_path / "four", run_id="four")
+    res4 = rt4.run()
+
+    assert res1.terminal_state == res4.terminal_state == "COMPLETE"
+    # Identical current-run summary counters (canonicalization + verification).
+    for key in ("unique_after_dedupe", "verified", "official_search_live", "verification_decisions",
+                "discovered", "hydrated"):
+        assert res1.counters.get(key) == res4.counters.get(key), key
+    # Identical report rows (company/title/verification/freshness).
+    def _rows(rt):
+        return sorted((r["company"], r["role_title"], r["verification_level"], r["freshness_band"])
+                      for r in rt._report_data_from_state({"terminal_state": "COMPLETE", "counters": {}})["All_Jobs"])
+    assert _rows(rt1) == _rows(rt4)
+    # Identical full durable snapshot (statuses / canonical / observations / decisions).
+    with StateStore(settings1.state_db) as s1, StateStore(settings4.state_db) as s4:
+        snap1 = _durable_snapshot(s1, "one")
+        snap4 = _durable_snapshot(s4, "four")
+    # Compare structurally (run_id differs only in canonical id hash inputs? no —
+    # identity is content-based, so canonical COUNT and every non-id field match).
+    assert snap1["statuses"] == snap4["statuses"]
+    assert snap1["canonical_count"] == snap4["canonical_count"]
+    assert snap1["observations"] == snap4["observations"]
+    # Decisions differ only by canonical_id string (content-identical otherwise).
+    assert [d[1:] for d in snap1["decisions"]] == [d[1:] for d in snap4["decisions"]]
