@@ -185,6 +185,8 @@ class LeaseHeartbeat:
         clock: ClockFn = system_utc_clock,
         interval_seconds: Optional[float] = None,
         on_stale: Optional[Callable[[LeaseMutationResult], None]] = None,
+        on_health_lost: Optional[Callable[[BaseException], None]] = None,
+        max_consecutive_failures: int = 3,
     ):
         self._store_factory = store_factory
         self.run_id = run_id
@@ -195,10 +197,19 @@ class LeaseHeartbeat:
             float(interval_seconds) if interval_seconds is not None else max(self.ttl_seconds / 3.0, 0.001)
         )
         self._on_stale = on_stale
+        self._on_health_lost = on_health_lost
+        self.max_consecutive_failures = max(1, int(max_consecutive_failures))
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.beats = 0
         self.stale = False
+        # A background heartbeat must NEVER swallow repeated DB failures forever
+        # (build spec 8). After ``max_consecutive_failures`` consecutive failures
+        # the lease's health is UNKNOWN, the owner is notified, and the worker
+        # must abort before any durable business commit.
+        self.health_unknown = False
+        self._consecutive_failures = 0
+        self.last_error: Optional[BaseException] = None
         self._store = None
         self._mgr: Optional[LeaseManager] = None
 
@@ -208,9 +219,29 @@ class LeaseHeartbeat:
             self._mgr = LeaseManager(self._store, self.run_id, ttl_seconds=self.ttl_seconds, clock=self.clock)
         return self._mgr
 
+    @property
+    def lease_health_ok(self) -> bool:
+        """True only when the lease is neither reclaimed (stale) nor of unknown
+        health (repeated heartbeat failures). A worker MUST check this before its
+        final durable commit."""
+        return not (self.stale or self.health_unknown)
+
     def beat_once(self) -> LeaseMutationResult:
-        mgr = self._ensure_mgr()
-        res = mgr.heartbeat(self.lease)
+        try:
+            mgr = self._ensure_mgr()
+            res = mgr.heartbeat(self.lease)
+        except Exception as exc:  # noqa: BLE001 - a heartbeat DB failure is counted, never swallowed
+            self.last_error = exc
+            self._consecutive_failures += 1
+            # Drop the (possibly broken) connection so the next beat reconnects.
+            self._store = None
+            self._mgr = None
+            if self._consecutive_failures >= self.max_consecutive_failures and not self.health_unknown:
+                self.health_unknown = True
+                if self._on_health_lost is not None:
+                    self._on_health_lost(exc)
+            raise
+        self._consecutive_failures = 0
         if res == LeaseMutationResult.APPLIED:
             self.beats += 1
         elif res in (LeaseMutationResult.STALE_TOKEN_REJECTED, LeaseMutationResult.NOT_FOUND):
@@ -223,9 +254,9 @@ class LeaseHeartbeat:
         while not self._stop.wait(self.interval_seconds):
             try:
                 self.beat_once()
-            except Exception:  # noqa: BLE001 - a heartbeat error must never crash the worker
+            except Exception:  # noqa: BLE001 - a heartbeat error is counted in beat_once, never crashes the worker
                 pass
-            if self.stale:
+            if self.stale or self.health_unknown:
                 break
 
     def start(self) -> "LeaseHeartbeat":

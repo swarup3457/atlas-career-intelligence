@@ -29,6 +29,7 @@ Phase 0.5 hardening (see docs/STATE_MODEL.md "Migration safety" and
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import datetime
 import enum
 import json
@@ -55,6 +56,25 @@ class LeaseMutationResult(str, enum.Enum):
     ALREADY_APPLIED_IDEMPOTENTLY = "ALREADY_APPLIED_IDEMPOTENTLY"
     STALE_TOKEN_REJECTED = "STALE_TOKEN_REJECTED"
     NOT_FOUND = "NOT_FOUND"
+
+
+@dataclasses.dataclass(frozen=True)
+class ChildCommitResult:
+    """Outcome of an atomic fenced page commit (build spec 3 + 5): ``result``
+    is the typed fence outcome and ``staged`` is the number of genuinely-new
+    observations inserted (0 when the commit was refused as stale)."""
+
+    result: LeaseMutationResult
+    staged: int = 0
+
+    @property
+    def applied(self) -> bool:
+        return self.result == LeaseMutationResult.APPLIED
+
+    @property
+    def rejected(self) -> bool:
+        return self.result == LeaseMutationResult.STALE_TOKEN_REJECTED
+
 
 
 # Ordered, versioned migrations. Each tuple is (version, description,
@@ -699,6 +719,43 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_cov_page_status ON coverage_page_state(run_id, status)",
         ],
     ),
+    (
+        10,
+        "Phase 1C-A FINAL stabilization (build spec 6/10): (a) an explicit "
+        "observation-revision link on raw_discovery_observations "
+        "(parent_observation_id + revision_kind) so a hydrated DETAIL revision "
+        "references its source SEARCH observation WITHOUT misusing canonical_id "
+        "to store an observation id; and (b) an append-only verification_decisions "
+        "table so every per-job verification decision (selected evidence "
+        "revisions, level, lifecycle, freshness, closure, classifier + policy "
+        "version) is DURABLE and the report is derived from the persisted "
+        "decision, never re-derived from an adapter label. Additive/data-"
+        "preserving: existing rows default parent_observation_id NULL / "
+        "revision_kind 'SEARCH'.",
+        [
+            "ALTER TABLE raw_discovery_observations ADD COLUMN parent_observation_id TEXT",
+            "ALTER TABLE raw_discovery_observations ADD COLUMN revision_kind TEXT NOT NULL DEFAULT 'SEARCH'",
+            "CREATE INDEX IF NOT EXISTS idx_raw_obs_parent ON raw_discovery_observations(parent_observation_id)",
+            """
+            CREATE TABLE IF NOT EXISTS verification_decisions (
+                decision_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                canonical_id TEXT,
+                evidence_revision_ids TEXT NOT NULL DEFAULT '[]',
+                verification_level TEXT NOT NULL,
+                lifecycle_result TEXT,
+                freshness_result TEXT,
+                closure_evidence TEXT,
+                classifier_version TEXT NOT NULL DEFAULT '',
+                policy_fingerprint TEXT NOT NULL DEFAULT '',
+                reasoning_ref TEXT,
+                decided_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_verif_dec_run ON verification_decisions(run_id)",
+            "CREATE INDEX IF NOT EXISTS idx_verif_dec_canonical ON verification_decisions(run_id, canonical_id)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)
@@ -1291,25 +1348,41 @@ class StateStore:
         planned source/company/lane rather than stopping after N jobs."""
         now = _utcnow()
         with self._auto() as conn:
-            conn.execute(
-                "INSERT INTO coverage_records (coverage_id, run_id, company, source_instance, "
-                "source_type, lane, query_key, attempted, completed, status, jobs_found, new_jobs, "
-                "changed_jobs, closed_jobs, started_at, completed_at, next_action, detail_json, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(run_id, coverage_id) DO UPDATE SET company=excluded.company, "
-                "source_type=excluded.source_type, lane=excluded.lane, query_key=excluded.query_key, "
-                "attempted=excluded.attempted, completed=excluded.completed, status=excluded.status, "
-                "jobs_found=excluded.jobs_found, new_jobs=excluded.new_jobs, changed_jobs=excluded.changed_jobs, "
-                "closed_jobs=excluded.closed_jobs, started_at=excluded.started_at, "
-                "completed_at=excluded.completed_at, next_action=excluded.next_action, "
-                "detail_json=excluded.detail_json, updated_at=excluded.updated_at",
-                (
-                    coverage_id, run_id, company, source_instance, source_type, lane, query_key,
-                    1 if attempted else 0, 1 if completed else 0, status, int(jobs_found),
-                    int(new_jobs), int(changed_jobs), int(closed_jobs), started_at, completed_at,
-                    next_action, json.dumps(detail or {}, sort_keys=True), now, now,
-                ),
+            self._upsert_coverage(
+                conn, coverage_id, run_id, source_instance, company=company, source_type=source_type,
+                lane=lane, query_key=query_key, attempted=attempted, completed=completed, status=status,
+                jobs_found=jobs_found, new_jobs=new_jobs, changed_jobs=changed_jobs, closed_jobs=closed_jobs,
+                started_at=started_at, completed_at=completed_at, next_action=next_action, detail=detail, now=now,
             )
+
+    def _upsert_coverage(
+        self, conn, coverage_id, run_id, source_instance, *, company=None, source_type=None,
+        lane=None, query_key=None, attempted=False, completed=False, status="NOT_ATTEMPTED",
+        jobs_found=0, new_jobs=0, changed_jobs=0, closed_jobs=0, started_at=None, completed_at=None,
+        next_action="NONE", detail=None, now=None,
+    ):
+        """Conn-scoped coverage upsert shared by the standalone call and the
+        atomic fenced child-completion commit."""
+        now = now or _utcnow()
+        conn.execute(
+            "INSERT INTO coverage_records (coverage_id, run_id, company, source_instance, "
+            "source_type, lane, query_key, attempted, completed, status, jobs_found, new_jobs, "
+            "changed_jobs, closed_jobs, started_at, completed_at, next_action, detail_json, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(run_id, coverage_id) DO UPDATE SET company=excluded.company, "
+            "source_type=excluded.source_type, lane=excluded.lane, query_key=excluded.query_key, "
+            "attempted=excluded.attempted, completed=excluded.completed, status=excluded.status, "
+            "jobs_found=excluded.jobs_found, new_jobs=excluded.new_jobs, changed_jobs=excluded.changed_jobs, "
+            "closed_jobs=excluded.closed_jobs, started_at=excluded.started_at, "
+            "completed_at=excluded.completed_at, next_action=excluded.next_action, "
+            "detail_json=excluded.detail_json, updated_at=excluded.updated_at",
+            (
+                coverage_id, run_id, company, source_instance, source_type, lane, query_key,
+                1 if attempted else 0, 1 if completed else 0, status, int(jobs_found),
+                int(new_jobs), int(changed_jobs), int(closed_jobs), started_at, completed_at,
+                next_action, json.dumps(detail or {}, sort_keys=True), now, now,
+            ),
+        )
 
     def get_coverage(self, coverage_id: str, run_id: Optional[str] = None) -> Optional[sqlite3.Row]:
         """Fetch one coverage record. ``run_id`` disambiguates the same logical
@@ -1378,18 +1451,34 @@ class StateStore:
         is never compared against unrelated searches (build spec 7.7)."""
         esp = None if expected_structure_present is None else (1 if expected_structure_present else 0)
         with self._auto() as conn:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO source_health_history (history_id, source_instance, source_type, "
-                "state, result_count, expected_structure_present, reason, observed_at, evidence_json, "
-                "query_signature, lane, geography_group, search_mode) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    history_id, source_instance, source_type, state, result_count, esp, reason,
-                    observed_at or _utcnow(), json.dumps(evidence or {}, sort_keys=True),
-                    query_signature, lane, geography_group, search_mode,
-                ),
+            cur = self._insert_source_health(
+                conn, history_id, source_instance, state, source_type=source_type,
+                result_count=result_count, expected_structure_present=esp, reason=reason,
+                observed_at=observed_at, evidence=evidence, query_signature=query_signature,
+                lane=lane, geography_group=geography_group, search_mode=search_mode,
             )
         return bool(cur.rowcount)
+
+    def _insert_source_health(
+        self, conn, history_id, source_instance, state, *, source_type=None, result_count=None,
+        expected_structure_present=None, reason="", observed_at=None, evidence=None,
+        query_signature=None, lane=None, geography_group=None, search_mode=None,
+    ):
+        """Conn-scoped health insert shared by the standalone record and the
+        atomic fenced page commit. ``expected_structure_present`` is pre-encoded
+        (0/1/None) by the caller."""
+        return conn.execute(
+            "INSERT OR IGNORE INTO source_health_history (history_id, source_instance, source_type, "
+            "state, result_count, expected_structure_present, reason, observed_at, evidence_json, "
+            "query_signature, lane, geography_group, search_mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                history_id, source_instance, source_type, state, result_count,
+                expected_structure_present, reason, observed_at or _utcnow(),
+                json.dumps(evidence or {}, sort_keys=True),
+                query_signature, lane, geography_group, search_mode,
+            ),
+        )
 
     def list_source_health(self, source_instance: str, limit: int = 20) -> list[sqlite3.Row]:
         return self._conn.execute(
@@ -1517,17 +1606,30 @@ class StateStore:
         never updated). Keeps a full diagnostic trail even though the resolved
         ``coverage_records`` row is upserted."""
         with self._auto() as conn:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO coverage_attempts (attempt_id, coverage_id, run_id, "
-                "source_instance, query_signature, status, jobs_found, new_jobs, changed_jobs, "
-                "closed_jobs, detail_json, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    attempt_id, coverage_id, run_id, source_instance, query_signature, status,
-                    int(jobs_found), int(new_jobs), int(changed_jobs), int(closed_jobs),
-                    json.dumps(detail or {}, sort_keys=True), observed_at or _utcnow(),
-                ),
+            cur = self._insert_coverage_attempt(
+                conn, attempt_id, coverage_id, run_id, source_instance, status,
+                query_signature=query_signature, jobs_found=jobs_found, new_jobs=new_jobs,
+                changed_jobs=changed_jobs, closed_jobs=closed_jobs, detail=detail, observed_at=observed_at,
             )
         return bool(cur.rowcount)
+
+    def _insert_coverage_attempt(
+        self, conn, attempt_id, coverage_id, run_id, source_instance, status, *,
+        query_signature=None, jobs_found=0, new_jobs=0, changed_jobs=0, closed_jobs=0,
+        detail=None, observed_at=None,
+    ):
+        """Conn-scoped attempt insert shared by the standalone append and the
+        atomic fenced page commit (so both write the exact same row)."""
+        return conn.execute(
+            "INSERT OR IGNORE INTO coverage_attempts (attempt_id, coverage_id, run_id, "
+            "source_instance, query_signature, status, jobs_found, new_jobs, changed_jobs, "
+            "closed_jobs, detail_json, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                attempt_id, coverage_id, run_id, source_instance, query_signature, status,
+                int(jobs_found), int(new_jobs), int(changed_jobs), int(closed_jobs),
+                json.dumps(detail or {}, sort_keys=True), observed_at or _utcnow(),
+            ),
+        )
 
     def list_coverage_attempts(self, coverage_id: str) -> list[sqlite3.Row]:
         return self._conn.execute(
@@ -1564,29 +1666,59 @@ class StateStore:
         parser_version: str = "",
         observed_at: Optional[str] = None,
         detail: Optional[dict] = None,
+        parent_observation_id: Optional[str] = None,
+        revision_kind: str = "SEARCH",
+        processing_status: str = "STAGED",
     ) -> bool:
         """Append a raw normalized source observation to the staging table
         (idempotent on ``observation_id``, NEVER updated once staged). This is
         written during DISCOVER; canonicalization happens later in DEDUPE, so
         raw discoveries never become canonical jobs directly (P0-15). Returns
-        True if a new row was inserted."""
+        True if a new row was inserted.
+
+        ``parent_observation_id`` links a DETAIL revision to its source SEARCH
+        observation (build spec 6); ``revision_kind`` is 'SEARCH' for an original
+        discovery or 'DETAIL' for a hydrated revision. ``canonical_id`` is NEVER
+        used to hold a parent observation id."""
         with self._auto() as conn:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO raw_discovery_observations (observation_id, run_id, coverage_id, "
-                "attempt_id, query_signature, source_instance, source_family, source_job_id, source_url, "
-                "canonical_url, company, title, location, lane, posted_at, is_active, content_hash, "
-                "source_identity, raw_evidence_ref, adapter_version, parser_version, processing_status, "
-                "canonical_id, observed_at, detail_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'STAGED', NULL, ?, ?)",
-                (
-                    observation_id, run_id, coverage_id, attempt_id, query_signature, source_instance,
-                    source_family, source_job_id, source_url, canonical_url, company, title, location,
-                    lane, posted_at, is_active, content_hash, source_identity, raw_evidence_ref,
-                    adapter_version, parser_version, observed_at or _utcnow(),
-                    json.dumps(detail or {}, sort_keys=True),
-                ),
+            cur = self._insert_raw_observation(
+                conn, observation_id, run_id, source_instance, content_hash,
+                coverage_id=coverage_id, attempt_id=attempt_id, query_signature=query_signature,
+                source_family=source_family, source_job_id=source_job_id, source_url=source_url,
+                canonical_url=canonical_url, company=company, title=title, location=location,
+                lane=lane, posted_at=posted_at, is_active=is_active, source_identity=source_identity,
+                raw_evidence_ref=raw_evidence_ref, adapter_version=adapter_version,
+                parser_version=parser_version, observed_at=observed_at, detail=detail,
+                parent_observation_id=parent_observation_id, revision_kind=revision_kind,
+                processing_status=processing_status,
             )
         return bool(cur.rowcount)
+
+    def _insert_raw_observation(
+        self, conn, observation_id, run_id, source_instance, content_hash, *,
+        coverage_id=None, attempt_id=None, query_signature=None, source_family=None,
+        source_job_id=None, source_url=None, canonical_url=None, company=None, title=None,
+        location=None, lane=None, posted_at=None, is_active=None, source_identity=None,
+        raw_evidence_ref=None, adapter_version="", parser_version="", observed_at=None,
+        detail=None, parent_observation_id=None, revision_kind="SEARCH", processing_status="STAGED",
+    ):
+        """Conn-scoped observation insert shared by the standalone staging call
+        and the atomic fenced page commit."""
+        return conn.execute(
+            "INSERT OR IGNORE INTO raw_discovery_observations (observation_id, run_id, coverage_id, "
+            "attempt_id, query_signature, source_instance, source_family, source_job_id, source_url, "
+            "canonical_url, company, title, location, lane, posted_at, is_active, content_hash, "
+            "source_identity, raw_evidence_ref, adapter_version, parser_version, processing_status, "
+            "canonical_id, observed_at, detail_json, parent_observation_id, revision_kind) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)",
+            (
+                observation_id, run_id, coverage_id, attempt_id, query_signature, source_instance,
+                source_family, source_job_id, source_url, canonical_url, company, title, location,
+                lane, posted_at, is_active, content_hash, source_identity, raw_evidence_ref,
+                adapter_version, parser_version, processing_status, observed_at or _utcnow(),
+                json.dumps(detail or {}, sort_keys=True), parent_observation_id, revision_kind,
+            ),
+        )
 
     def list_raw_observations(
         self, run_id: str, *, processing_status: Optional[str] = None
@@ -1926,6 +2058,220 @@ class StateStore:
             )
             return LeaseMutationResult.APPLIED
 
+    # ------------------------------------------------------------------
+    # Phase 1C-A FINAL — FENCED business commits (build spec 3 + 5)
+    # ------------------------------------------------------------------
+    def _fence_current(
+        self, conn, run_id: str, coverage_id: str, worker_id: Optional[str], version: Optional[int]
+    ) -> bool:
+        """True when ``(run_id, coverage_id, worker_id, version)`` still owns a
+        non-terminal LEASED row. ``worker_id``/``version`` None means the caller
+        holds no lease (the single-threaded sequential path) and is treated as
+        current — there is no other worker to race. A different owner or a higher
+        fencing version (a reclaim) makes this False so a stale worker's business
+        commit is refused."""
+        if worker_id is None or version is None:
+            return True
+        row = conn.execute(
+            "SELECT status, terminal, worker_id, version FROM coverage_leases "
+            "WHERE run_id=? AND coverage_id=?",
+            (run_id, coverage_id),
+        ).fetchone()
+        if row is None:
+            return False
+        return (
+            row["worker_id"] == worker_id
+            and int(row["version"]) == int(version)
+            and row["status"] == "LEASED"
+            and int(row["terminal"]) == 0
+        )
+
+    def commit_child_page(
+        self,
+        run_id: str,
+        coverage_id: str,
+        *,
+        worker_id: Optional[str] = None,
+        version: Optional[int] = None,
+        now: Optional[str] = None,
+        page_index: int,
+        page_status: str,
+        cursor: Optional[str] = None,
+        has_more: bool = False,
+        total_reported: Optional[int] = None,
+        request_fingerprint: Optional[str] = None,
+        attempt_id: Optional[str] = None,
+        next_page_index: Optional[int] = None,
+        next_page_cursor: Optional[str] = None,
+        attempts: tuple = (),
+        health: Optional[dict] = None,
+        observations: tuple = (),
+    ) -> "ChildCommitResult":
+        """Atomically persist ONE page's full result batch UNDER THE LEASE FENCE
+        (build spec 3 + 5). In ONE ``immediate_transaction``: verify the fence,
+        write every attempt row, write the health row, stage every observation,
+        upsert this page DONE/FAILED (with ``has_more``/total/fingerprint), and —
+        when a continuation is required — create the next PENDING page with the
+        exact cursor. All-or-none.
+
+        A stale (reclaimed) worker writes NOTHING business and gets
+        ``STALE_TOKEN_REJECTED`` with an append-only ``BUSINESS_COMMIT_REJECTED``
+        audit event. ``worker_id``/``version`` None = unfenced sequential path."""
+        at = now or _utcnow()
+        with self.immediate_transaction() as conn:
+            if not self._fence_current(conn, run_id, coverage_id, worker_id, version):
+                self._append_lease_event(
+                    conn, coverage_id, run_id, "BUSINESS_COMMIT_REJECTED", worker_id=worker_id,
+                    attempt=int(page_index), at=at,
+                    detail={"reason": "stale_token", "kind": "page", "page_index": int(page_index)},
+                )
+                return ChildCommitResult(LeaseMutationResult.STALE_TOKEN_REJECTED, 0)
+            for a in attempts:
+                self._insert_coverage_attempt(conn, **a)
+            if health is not None:
+                self._insert_source_health(conn, **health)
+            staged = 0
+            for o in observations:
+                cur = self._insert_raw_observation(conn, **o)
+                if cur.rowcount:
+                    staged += 1
+            self._upsert_coverage_page(
+                conn, run_id, coverage_id, page_index, status=page_status, cursor=cursor,
+                has_more=has_more, results_count=staged, total_reported=total_reported,
+                request_fingerprint=request_fingerprint, attempt_id=attempt_id, now=at,
+            )
+            if next_page_index is not None:
+                self._upsert_coverage_page(
+                    conn, run_id, coverage_id, next_page_index, status="PENDING",
+                    cursor=next_page_cursor, has_more=False, now=at,
+                )
+            return ChildCommitResult(LeaseMutationResult.APPLIED, staged)
+
+    def complete_child(
+        self,
+        run_id: str,
+        coverage_id: str,
+        source_instance: str,
+        *,
+        worker_id: Optional[str] = None,
+        version: Optional[int] = None,
+        now: Optional[str] = None,
+        terminal_status: str,
+        lease_terminal_status: Optional[str] = None,
+        coverage_kwargs: Optional[dict] = None,
+    ) -> "LeaseMutationResult":
+        """Atomically record a child's terminal coverage row AND mark its lease
+        terminal in ONE transaction under the fence (build spec 3). A stale
+        worker writes neither — it gets ``STALE_TOKEN_REJECTED`` (audited) so a
+        reclaimed worker can never overwrite the authoritative result. When no
+        ``worker_id``/``version`` is supplied only the coverage row is written
+        (the sequential path owns its lease separately)."""
+        at = now or _utcnow()
+        ck = dict(coverage_kwargs or {})
+        lease_status = lease_terminal_status or terminal_status
+        with self.immediate_transaction() as conn:
+            if worker_id is not None and version is not None:
+                row = conn.execute(
+                    "SELECT status, terminal, worker_id, version FROM coverage_leases "
+                    "WHERE run_id=? AND coverage_id=?",
+                    (run_id, coverage_id),
+                ).fetchone()
+                if row is None:
+                    return LeaseMutationResult.NOT_FOUND
+                same_owner = row["worker_id"] == worker_id and int(row["version"]) == int(version)
+                if int(row["terminal"]) == 1 and same_owner:
+                    return LeaseMutationResult.ALREADY_APPLIED_IDEMPOTENTLY
+                if not (same_owner and row["status"] == "LEASED" and int(row["terminal"]) == 0):
+                    self._append_lease_event(
+                        conn, coverage_id, run_id, "BUSINESS_COMMIT_REJECTED", worker_id=worker_id,
+                        attempt=-1, at=at,
+                        detail={"reason": "stale_token", "kind": "complete_child",
+                                "current_worker": row["worker_id"], "current_version": int(row["version"])},
+                    )
+                    return LeaseMutationResult.STALE_TOKEN_REJECTED
+                self._upsert_coverage(conn, coverage_id, run_id, source_instance, now=at, **ck)
+                conn.execute(
+                    "UPDATE coverage_leases SET status=?, terminal=1, heartbeat_at=?, updated_at=? "
+                    "WHERE run_id=? AND coverage_id=? AND worker_id=? AND version=? AND status='LEASED' AND terminal=0",
+                    (lease_status, at, at, run_id, coverage_id, worker_id, version),
+                )
+                self._append_lease_event(
+                    conn, coverage_id, run_id, "COMPLETE", worker_id=worker_id, at=at,
+                    detail={"terminal_status": lease_status, "fenced_child": True},
+                )
+                return LeaseMutationResult.APPLIED
+            # Unfenced (sequential) path: write only the coverage row.
+            self._upsert_coverage(conn, coverage_id, run_id, source_instance, now=at, **ck)
+            return LeaseMutationResult.APPLIED
+
+    # ------------------------------------------------------------------
+    # Phase 1C-A FINAL — durable verification decisions (build spec 10)
+    # ------------------------------------------------------------------
+    def record_verification_decision(
+        self,
+        decision_id: str,
+        run_id: str,
+        *,
+        canonical_id: Optional[str] = None,
+        evidence_revision_ids: Optional[list] = None,
+        verification_level: str,
+        lifecycle_result: Optional[str] = None,
+        freshness_result: Optional[str] = None,
+        closure_evidence: Optional[str] = None,
+        classifier_version: str = "",
+        policy_fingerprint: str = "",
+        reasoning_ref: Optional[str] = None,
+        decided_at: Optional[str] = None,
+    ) -> bool:
+        """Append an immutable per-job verification decision (idempotent on
+        ``decision_id``). The report is derived from THIS persisted decision, not
+        re-derived from an adapter label (build spec 10)."""
+        with self._auto() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO verification_decisions (decision_id, run_id, canonical_id, "
+                "evidence_revision_ids, verification_level, lifecycle_result, freshness_result, "
+                "closure_evidence, classifier_version, policy_fingerprint, reasoning_ref, decided_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    decision_id, run_id, canonical_id,
+                    json.dumps(list(evidence_revision_ids or []), sort_keys=True),
+                    verification_level, lifecycle_result, freshness_result, closure_evidence,
+                    classifier_version, policy_fingerprint, reasoning_ref, decided_at or _utcnow(),
+                ),
+            )
+        return bool(cur.rowcount)
+
+    def list_verification_decisions(self, run_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM verification_decisions WHERE run_id = ? ORDER BY decision_id", (run_id,)
+        ).fetchall()
+
+    def get_verification_decision(self, decision_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM verification_decisions WHERE decision_id = ?", (decision_id,)
+        ).fetchone()
+
+    def current_run_canonical_ids(self, run_id: str) -> list[str]:
+        """Distinct canonical ids TOUCHED by this run's observations (build spec
+        9). This is the only correct basis for a current-run summary — never the
+        global canonical-job table which also holds prior runs' jobs."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT canonical_id FROM raw_discovery_observations "
+            "WHERE run_id = ? AND canonical_id IS NOT NULL ORDER BY canonical_id",
+            (run_id,),
+        ).fetchall()
+        return [r["canonical_id"] for r in rows]
+
+    def count_current_run_canonical_jobs(self, run_id: str) -> int:
+        """Count of DISTINCT canonical jobs touched by this run (build spec 9)."""
+        return int(
+            self._conn.execute(
+                "SELECT COUNT(DISTINCT canonical_id) AS n FROM raw_discovery_observations "
+                "WHERE run_id = ? AND canonical_id IS NOT NULL",
+                (run_id,),
+            ).fetchone()["n"]
+        )
+
     def reopen_human_coverage_lease(
         self, coverage_id: str, run_id: str, *, now: str, reason: str = "", reference: Optional[str] = None,
     ) -> "LeaseMutationResult":
@@ -2024,17 +2370,30 @@ class StateStore:
         (build spec 10)."""
         now = _utcnow()
         with self._auto() as conn:
-            conn.execute(
-                "INSERT INTO coverage_page_state (run_id, coverage_id, page_index, cursor, status, "
-                "has_more, results_count, total_reported, request_fingerprint, attempt_id, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(run_id, coverage_id, page_index) DO UPDATE SET cursor=excluded.cursor, "
-                "status=excluded.status, has_more=excluded.has_more, results_count=excluded.results_count, "
-                "total_reported=excluded.total_reported, request_fingerprint=excluded.request_fingerprint, "
-                "attempt_id=excluded.attempt_id, updated_at=excluded.updated_at",
-                (run_id, coverage_id, int(page_index), cursor, status, 1 if has_more else 0,
-                 int(results_count), total_reported, request_fingerprint, attempt_id, now, now),
+            self._upsert_coverage_page(
+                conn, run_id, coverage_id, page_index, status=status, cursor=cursor,
+                has_more=has_more, results_count=results_count, total_reported=total_reported,
+                request_fingerprint=request_fingerprint, attempt_id=attempt_id, now=now,
             )
+
+    def _upsert_coverage_page(
+        self, conn, run_id, coverage_id, page_index, *, status, cursor=None, has_more=False,
+        results_count=0, total_reported=None, request_fingerprint=None, attempt_id=None, now=None,
+    ):
+        """Conn-scoped page upsert shared by the standalone call and the atomic
+        fenced page commit."""
+        now = now or _utcnow()
+        conn.execute(
+            "INSERT INTO coverage_page_state (run_id, coverage_id, page_index, cursor, status, "
+            "has_more, results_count, total_reported, request_fingerprint, attempt_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(run_id, coverage_id, page_index) DO UPDATE SET cursor=excluded.cursor, "
+            "status=excluded.status, has_more=excluded.has_more, results_count=excluded.results_count, "
+            "total_reported=excluded.total_reported, request_fingerprint=excluded.request_fingerprint, "
+            "attempt_id=excluded.attempt_id, updated_at=excluded.updated_at",
+            (run_id, coverage_id, int(page_index), cursor, status, 1 if has_more else 0,
+             int(results_count), total_reported, request_fingerprint, attempt_id, now, now),
+        )
 
     def list_coverage_pages(self, run_id: str, coverage_id: str) -> list[sqlite3.Row]:
         return self._conn.execute(

@@ -133,6 +133,19 @@ class CrashInjection(RuntimeError):
     duplicate side effects."""
 
 
+class FenceLost(RuntimeError):
+    """Raised when a business commit is refused because the lease fence
+    ``(run_id, coverage_id, worker_id, version)`` is no longer current — another
+    worker reclaimed the child (build spec 3). NOTHING business was persisted by
+    the rejected commit; the caller must NOT mark the child complete and must not
+    re-queue it (the reclaiming worker owns it)."""
+
+    def __init__(self, coverage_id: str, page_index: Optional[int] = None):
+        self.coverage_id = coverage_id
+        self.page_index = page_index
+        super().__init__(f"lease fence lost for {coverage_id!r} (page {page_index})")
+
+
 class CoverageChildExecutor:
     """Executes exactly one coverage child through the real source pipeline."""
 
@@ -153,6 +166,7 @@ class CoverageChildExecutor:
         snapshot_cache: Optional[BoardSnapshotCache] = None,
         max_pages: int = 50,
         apply_relevance: Optional[bool] = None,
+        fence=None,
     ):
         self.store = store
         self.registry = registry
@@ -163,6 +177,14 @@ class CoverageChildExecutor:
         self.retry_budget = retry_budget
         self.limit = limit
         self.crash_hook = crash_hook
+        # Optional lease fence (build spec 3). When set, EVERY business commit
+        # (attempts/health/observations/pages/coverage) is gated on this exact
+        # (run_id, coverage_id, worker_id, version) still owning the lease — a
+        # reclaimed (stale) worker commits NOTHING. When None (the single-
+        # threaded sequential path) commits are atomic but unfenced.
+        self.fence = fence
+        self._fence_worker = getattr(fence, "worker_id", None) if fence is not None else None
+        self._fence_version = getattr(fence, "version", None) if fence is not None else None
         # Deterministic query compilation (build spec 11): compile real lane/
         # geography terms instead of sending the enum label as a search string.
         self.query_compiler = query_compiler
@@ -295,13 +317,14 @@ class CoverageChildExecutor:
         }
         return detail
 
-    def _stage_observations(self, task: CoverageTask, sig: QuerySignature, attempt_id: str,
-                            payload: dict, compiled=None) -> int:
-        """Stage each relevant posting with FULL bounded provenance (build spec
-        12). A lane-relevance filter (when a compiler is present) keeps each lane
-        independent; every typed field is preserved in a bounded, secret-redacted
-        detail (no unbounded HTML, no credentials)."""
-        staged = 0
+    def _build_observations(self, task: CoverageTask, sig: QuerySignature, attempt_id: str,
+                            payload: dict, compiled=None) -> list[dict]:
+        """Build the observation-insert batch for a page with FULL bounded
+        provenance (build spec 12). A lane-relevance filter (when a compiler is
+        present) keeps each lane independent. Returns a list of kwargs dicts for
+        ``StateStore.commit_child_page`` — NOTHING is written here, so the whole
+        page is persisted in ONE fenced transaction."""
+        obs: list[dict] = []
         for i, raw in enumerate(payload.get("results", []) or []):
             if not self._relevant(task, compiled, raw):
                 continue
@@ -311,9 +334,9 @@ class CoverageChildExecutor:
                 raw.get("company"), raw.get("title"), raw.get("location"),
                 raw.get("posted_at"), raw.get("canonical_url") or raw.get("source_url"),
             )
-            inserted = self.store.stage_raw_observation(
-                observation_id, self.run_id, task.source_instance, dedupe,
-                coverage_id=task.coverage_id, attempt_id=attempt_id,
+            obs.append(dict(
+                observation_id=observation_id, run_id=self.run_id, source_instance=task.source_instance,
+                content_hash=dedupe, coverage_id=task.coverage_id, attempt_id=attempt_id,
                 query_signature=sig.fingerprint(),
                 source_family=self.instances[task.source_instance].adapter_key.value,
                 source_job_id=raw.get("source_job_id"), source_url=raw.get("source_url"),
@@ -322,40 +345,61 @@ class CoverageChildExecutor:
                 posted_at=raw.get("posted_at"), is_active=str(raw.get("is_active", "")),
                 source_identity=f"{task.source_instance}::{source_identity}",
                 adapter_version=raw.get("adapter_version", ""), parser_version=raw.get("parser_version", ""),
-                detail=self._observation_detail(raw),
-            )
-            if inserted:
-                staged += 1
-        return staged
+                detail=self._observation_detail(raw), revision_kind="SEARCH",
+            ))
+        return obs
 
-    def _record_attempt(self, task: CoverageTask, sig: QuerySignature, attempt_label,
-                        status: str, *, jobs_found: int = 0, detail: Optional[dict] = None) -> str:
-        attempt_id = f"att::{self.run_id}::{task.coverage_id}::{attempt_label}"
-        self.store.append_coverage_attempt(
-            attempt_id, task.coverage_id, self.run_id, task.source_instance, status,
-            query_signature=sig.fingerprint(), jobs_found=jobs_found, detail=detail or {},
+    def _attempt_record(self, task: CoverageTask, sig: QuerySignature, attempt_label,
+                        status: str, *, jobs_found: int = 0, detail: Optional[dict] = None) -> dict:
+        """Build (not write) one attempt-insert record for the fenced batch."""
+        return dict(
+            attempt_id=f"att::{self.run_id}::{task.coverage_id}::{attempt_label}",
+            coverage_id=task.coverage_id, run_id=self.run_id, source_instance=task.source_instance,
+            status=status, query_signature=sig.fingerprint(), jobs_found=jobs_found, detail=detail or {},
         )
-        return attempt_id
 
-    def _record_health(self, task: CoverageTask, sig: QuerySignature, attempt_label,
-                       state: str, result_count: Optional[int]) -> None:
-        self.store.record_source_health(
-            f"health::{self.run_id}::{task.coverage_id}::{attempt_label}",
-            task.source_instance, state, result_count=result_count,
+    def _health_record(self, task: CoverageTask, sig: QuerySignature, attempt_label,
+                       state: str, result_count: Optional[int]) -> dict:
+        """Build (not write) the health-insert record for the fenced batch."""
+        return dict(
+            history_id=f"health::{self.run_id}::{task.coverage_id}::{attempt_label}",
+            source_instance=task.source_instance, state=state, result_count=result_count,
             query_signature=sig.fingerprint(), lane=task.lane,
             geography_group=task.query_key, search_mode="DELTA",
         )
 
+    def _commit_page(self, task: CoverageTask, page_index: int, cursor: Optional[str], page: dict,
+                     *, page_status: str, has_more: bool, total_reported, next_page_index=None,
+                     next_page_cursor=None) -> int:
+        """Persist ONE page's full batch atomically under the lease fence
+        (build spec 3 + 5). Returns the number of genuinely-new observations
+        staged. Raises :class:`FenceLost` when a reclaiming worker now owns the
+        lease — in which case NOTHING business was written."""
+        commit = self.store.commit_child_page(
+            self.run_id, task.coverage_id, worker_id=self._fence_worker, version=self._fence_version,
+            page_index=page_index, page_status=page_status, cursor=cursor, has_more=has_more,
+            total_reported=total_reported, attempt_id=page.get("attempt_id"),
+            next_page_index=next_page_index, next_page_cursor=next_page_cursor,
+            attempts=tuple(page.get("attempts", ())), health=page.get("health"),
+            observations=tuple(page.get("observations", ())),
+        )
+        if commit.rejected:
+            raise FenceLost(task.coverage_id, page_index)
+        return commit.staged
+
     # -- one page (with per-page retry) -------------------------------------
     def _run_page(self, task: CoverageTask, compiled, page_index: int, cursor: Optional[str]) -> dict:
-        """Execute ONE page (following the centralized retry policy). Returns a
-        dict describing either a terminal error or a completed page."""
+        """Execute ONE page (following the centralized retry policy). Performs
+        HTTP + retry only and BUILDS the persist batch (attempts/health/
+        observations) — it does NOT write, so ``execute`` can commit the whole
+        page atomically under the lease fence."""
         source_task, sig = self._build_source_task(task, compiled, page=page_index, cursor=cursor)
         adapter = self._adapter_for(task.source_instance)
         worker = SourceSearchWorker(
             {task.source_instance: adapter}, {task.coverage_id: source_task},
             history_provider=self._history_for_signature, executor=self.executor,
         )
+        attempts_batch: list[dict] = []
         attempt_number = 0
         while True:
             attempt_number += 1
@@ -364,17 +408,19 @@ class CoverageChildExecutor:
                 outcome = worker.attempt(task.coverage_id, attempt_number)
             except WorkerError as exc:
                 decision = retry.evaluate(exc.category, attempt_number, self.retry_budget)
-                self._record_attempt(
+                attempts_batch.append(self._attempt_record(
                     task, sig, label, status=f"FAILED_{exc.category.value}",
                     detail={"error_category": exc.category.value, "retry": decision.should_retry,
                             "reason": decision.reason, "page": page_index},
-                )
+                ))
                 if decision.should_retry:
                     continue
                 terminal = decision.terminal_status or TaskStatus.PERMANENT_FAILURE
-                self._record_health(task, sig, label, _STATUS_HEALTH.get(terminal, "UNKNOWN"), None)
+                health = self._health_record(task, sig, label, _STATUS_HEALTH.get(terminal, "UNKNOWN"), None)
                 return {"kind": "error", "cov": coverage_status_for(terminal),
-                        "terminal_status": terminal, "attempts": attempt_number, "sig": sig}
+                        "terminal_status": terminal, "attempts": attempt_number, "sig": sig,
+                        "attempts_batch": attempts_batch, "health": health,
+                        "observations": [], "attempt_id": attempts_batch[-1]["attempt_id"]}
             if self.crash_hook is not None:
                 self.crash_hook(task, attempt_number)
             payload = outcome.payload
@@ -382,13 +428,15 @@ class CoverageChildExecutor:
             zero_kind = payload.get("zero_result_kind")
             sentinel_info = payload.get("sentinel")
             sentinel_ran = bool(isinstance(sentinel_info, dict) and sentinel_info.get("ran"))
-            attempt_id = self._record_attempt(
+            attempt_rec = self._attempt_record(
                 task, sig, label, status=outcome.status.value, jobs_found=result_count,
                 detail={"zero_result_kind": zero_kind, "sentinel": sentinel_info,
                         "parse_findings": payload.get("parse_findings", []), "page": page_index},
             )
-            staged = self._stage_observations(task, sig, attempt_id, payload, compiled)
-            self._record_health(task, sig, label, _STATUS_HEALTH.get(outcome.status, "HEALTHY"), result_count)
+            attempts_batch.append(attempt_rec)
+            attempt_id = attempt_rec["attempt_id"]
+            observations = self._build_observations(task, sig, attempt_id, payload, compiled)
+            health = self._health_record(task, sig, label, _STATUS_HEALTH.get(outcome.status, "HEALTHY"), result_count)
             zk = None
             if zero_kind is not None:
                 try:
@@ -397,9 +445,10 @@ class CoverageChildExecutor:
                     zk = None
             cov = coverage_status_for(outcome.status, result_count=result_count, zero_kind=zk)
             return {"kind": "ok", "cov": cov, "status": outcome.status, "result_count": result_count,
-                    "staged": staged, "has_more": bool(payload.get("has_more")),
+                    "has_more": bool(payload.get("has_more")),
                     "next_cursor": payload.get("next_cursor"), "total_reported": payload.get("total_reported"),
-                    "sentinel_ran": sentinel_ran, "attempt_id": attempt_id, "attempts": attempt_number, "sig": sig}
+                    "sentinel_ran": sentinel_ran, "attempt_id": attempt_id, "attempts": attempt_number, "sig": sig,
+                    "attempts_batch": attempts_batch, "health": health, "observations": observations}
 
     # -- shared whole-board snapshot (list-only families) -------------------
     def _resume_point(self, pages: dict) -> tuple[int, Optional[str]]:
@@ -452,36 +501,48 @@ class CoverageChildExecutor:
 
     def _execute_list_only(self, task: CoverageTask, compiled, started_at: str) -> ChildExecutionOutcome:
         """Evaluate ONE lane/geography child from the shared board snapshot,
-        performing NO extra network acquisition when the snapshot already
-        exists for this instance (build spec 11)."""
+        performing NO extra network acquisition when the snapshot already exists
+        for this instance (build spec 11). The whole lane result — attempt +
+        health + observations + page — is committed in ONE fenced transaction
+        (build spec 3), and a zero result PRESERVES the board's real health
+        rather than always collapsing to ATTEMPTED_ZERO (build spec 8)."""
         key = f"{self.run_id}::{task.source_instance}"
         snap = self.snapshot_cache.get_or_fetch(key, lambda: self._acquire_board(task, compiled))
-        # Record this lane child's attempt + health + page against the shared snapshot.
         sig = self._signature(task, compiled)
         if snap.get("error"):
-            self._record_attempt(task, sig, "snap", status=snap["cov"].value, jobs_found=0,
-                                 detail={"snapshot_reused": True, "board_error": True})
-            self.store.upsert_coverage_page(self.run_id, task.coverage_id, 1, status="DONE", has_more=False)
+            attempt = self._attempt_record(task, sig, "snap", status=snap["cov"].value, jobs_found=0,
+                                            detail={"snapshot_reused": True, "board_error": True})
+            page = {"attempts": [attempt], "health": None, "observations": [], "attempt_id": attempt["attempt_id"]}
+            self._commit_page(task, 1, None, page, page_status="DONE", has_more=False, total_reported=None)
             return ChildExecutionOutcome(task.coverage_id, task.lane, snap["cov"], 1, 0, False, jobs_found=0,
                                          started_at=started_at, completed_at=_utcnow(), next_action="NONE",
                                          detail={"snapshot_reused": True})
         payload = snap["payload"]
-        attempt_id = self._record_attempt(
-            task, sig, "snap", status=snap["status"].value, jobs_found=int(payload.get("result_count", 0)),
-            detail={"snapshot_reused": True, "board_count": int(payload.get("result_count", 0)),
-                    "shared_snapshot_key": key},
+        board_count = int(payload.get("result_count", 0))
+        attempt = self._attempt_record(
+            task, sig, "snap", status=snap["status"].value, jobs_found=board_count,
+            detail={"snapshot_reused": True, "board_count": board_count, "shared_snapshot_key": key},
         )
-        staged = self._stage_observations(task, sig, attempt_id, payload, compiled)
-        self._record_health(task, sig, "snap", _STATUS_HEALTH.get(snap["status"], "HEALTHY"),
-                            int(payload.get("result_count", 0)))
-        self.store.upsert_coverage_page(self.run_id, task.coverage_id, 1, status="DONE", has_more=False,
-                                        results_count=staged, total_reported=payload.get("total_reported"),
-                                        attempt_id=attempt_id)
-        cov = CoverageStatus.COMPLETED_WITH_RESULTS if staged > 0 else CoverageStatus.ATTEMPTED_ZERO
+        observations = self._build_observations(task, sig, attempt["attempt_id"], payload, compiled)
+        health = self._health_record(task, sig, "snap", _STATUS_HEALTH.get(snap["status"], "HEALTHY"), board_count)
+        page = {"attempts": [attempt], "health": health, "observations": observations,
+                "attempt_id": attempt["attempt_id"]}
+        staged = self._commit_page(task, 1, None, page, page_status="DONE", has_more=False,
+                                   total_reported=payload.get("total_reported"))
+        # Zero-truth (build spec 8): a genuinely empty/no-lane-match on a HEALTHY
+        # board is ATTEMPTED_ZERO, but a board whose snapshot health is unresolved/
+        # access-limited/rate-limited/unavailable PRESERVES that status.
+        if staged > 0:
+            cov = CoverageStatus.COMPLETED_WITH_RESULTS
+        elif snap["cov"] in (CoverageStatus.COMPLETED_WITH_RESULTS, CoverageStatus.ATTEMPTED_ZERO):
+            cov = CoverageStatus.ATTEMPTED_ZERO
+        else:
+            cov = snap["cov"]
         return ChildExecutionOutcome(task.coverage_id, task.lane, cov, 1, staged, snap.get("sentinel_ran", False),
                                      jobs_found=staged, started_at=started_at, completed_at=_utcnow(),
-                                     next_action="NONE",
-                                     detail={"snapshot_reused": True, "board_count": int(payload.get("result_count", 0))})
+                                     next_action="HUMAN" if cov == CoverageStatus.BLOCKED_HUMAN else "NONE",
+                                     detail={"snapshot_reused": True, "board_count": board_count,
+                                             "board_status": snap["cov"].value})
 
     # -- execution ----------------------------------------------------------
     def execute(self, task: CoverageTask) -> ChildExecutionOutcome:
@@ -504,7 +565,6 @@ class CoverageChildExecutor:
         page_index, cursor = self._resume_point(pages)
         # A prior fully-DONE child with no outstanding continuation is terminal.
         if pages and all(p["status"] == "DONE" for p in pages.values()) and not self.store.coverage_pages_outstanding(self.run_id, task.coverage_id):
-            highest = pages[max(pages)]
             cov = CoverageStatus.COMPLETED_WITH_RESULTS if total_staged > 0 else CoverageStatus.ATTEMPTED_ZERO
             return ChildExecutionOutcome(task.coverage_id, task.lane, cov, 0, total_staged, False,
                                          jobs_found=total_staged, started_at=started_at, completed_at=_utcnow(),
@@ -514,9 +574,11 @@ class CoverageChildExecutor:
             page = self._run_page(task, compiled, page_index, cursor)
             attempts_total += page["attempts"]
             if page["kind"] == "error":
-                self.store.upsert_coverage_page(
-                    self.run_id, task.coverage_id, page_index, status="FAILED", cursor=cursor, has_more=False,
-                )
+                # Commit the FAILED page + its error attempts/health atomically
+                # under the fence (build spec 3 + 5).
+                page["attempts"] = page["attempts_batch"]
+                self._commit_page(task, page_index, cursor, page, page_status="FAILED",
+                                  has_more=False, total_reported=None)
                 cov = page["cov"]
                 return ChildExecutionOutcome(
                     task.coverage_id, task.lane, cov, attempts_total, total_staged, sentinel_ran,
@@ -524,7 +586,6 @@ class CoverageChildExecutor:
                     next_action="HUMAN" if cov == CoverageStatus.BLOCKED_HUMAN else "NONE",
                     detail={"terminal_status": page["terminal_status"].value, "pages": page_index},
                 )
-            total_staged += page["staged"]
             last_cov = page["cov"]
             if page["sentinel_ran"]:
                 sentinel_ran = True
@@ -538,13 +599,21 @@ class CoverageChildExecutor:
             next_cursor = page["next_cursor"]
             loop = bool(has_more and next_cursor is not None and next_cursor in seen_cursors)
             budget_hit = bool(has_more and page_index >= self.max_pages)
-            # Persist this page's durable state. has_more stays TRUE when we stop
-            # early (loop/budget) so the truth that more exists is recorded.
-            self.store.upsert_coverage_page(
-                self.run_id, task.coverage_id, page_index, status="DONE", cursor=cursor,
-                has_more=has_more, results_count=page["staged"], total_reported=rep_total,
-                attempt_id=page["attempt_id"],
+            advancing = bool(has_more and not budget_hit and not loop)
+            # ONE atomic fenced commit: this page DONE (+ its attempts/health/
+            # observations) AND — when advancing — the next PENDING page with the
+            # exact cursor. has_more stays TRUE when we stop early (loop/budget)
+            # so the truth that more exists is recorded. (build spec 3 + 5)
+            page["attempts"] = page["attempts_batch"]
+            if advancing and next_cursor is not None:
+                seen_cursors.add(next_cursor)
+            staged = self._commit_page(
+                task, page_index, cursor, page, page_status="DONE", has_more=has_more,
+                total_reported=rep_total,
+                next_page_index=(page_index + 1) if advancing else None,
+                next_page_cursor=next_cursor if advancing else None,
             )
+            total_staged += staged
             if loop:
                 return ChildExecutionOutcome(
                     task.coverage_id, task.lane, CoverageStatus.EXTRACTION_UNRESOLVED, attempts_total,
@@ -553,16 +622,7 @@ class CoverageChildExecutor:
                     detail={"reason": "cursor_loop", "cursor": next_cursor, "pages": page_index,
                             "total_reported": first_total, "total_shift": total_shift},
                 )
-            if has_more and not budget_hit:
-                # Follow a cursor when the adapter emits one, else advance by page
-                # number (page-based pagination). Either way a required next page
-                # is durably recorded BEFORE advancing so a crash cannot lose it.
-                if next_cursor is not None:
-                    seen_cursors.add(next_cursor)
-                self.store.upsert_coverage_page(
-                    self.run_id, task.coverage_id, page_index + 1, status="PENDING",
-                    cursor=next_cursor, has_more=False,
-                )
+            if advancing:
                 page_index += 1
                 cursor = next_cursor
                 continue
@@ -590,6 +650,7 @@ __all__ = [
     "CoverageChildExecutor",
     "ChildExecutionOutcome",
     "CrashInjection",
+    "FenceLost",
     "BoardSnapshotCache",
     "canonical_dedupe_key",
 ]

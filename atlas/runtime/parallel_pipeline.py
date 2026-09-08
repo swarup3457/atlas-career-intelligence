@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from typing import Callable, Mapping, Optional
 
 from atlas.runtime.fixture_pipeline import PipelineResult, TaskExecutionResult
-from atlas.sources.child_executor import ChildExecutionOutcome, CoverageChildExecutor, CrashInjection
+from atlas.sources.child_executor import ChildExecutionOutcome, CoverageChildExecutor, CrashInjection, FenceLost
 from atlas.sources.coverage import CoverageManifest, CoverageStatus, CoverageTask
 from atlas.sources.executor import RateLimitedExecutor
 from atlas.sources.leasing import (
@@ -58,6 +58,7 @@ class _WorkerResult:
     coverage_id: str
     crashed: bool
     outcome: Optional[ChildExecutionOutcome]
+    fence_lost: bool = False
 
 
 class ParallelExecutionPipeline:
@@ -91,6 +92,7 @@ class ParallelExecutionPipeline:
         geography=None,
         snapshot_cache=None,
         max_pages: int = 50,
+        heartbeat_store_factory: Optional[StoreFactory] = None,
     ):
         if workers < 1:
             raise ValueError("workers must be >= 1")
@@ -130,6 +132,10 @@ class ParallelExecutionPipeline:
         self.geography = geography
         self.snapshot_cache = snapshot_cache
         self.max_pages = max_pages
+        # The heartbeat opens its OWN store connection; a test may inject a
+        # factory whose connection fails on heartbeat to prove the worker aborts
+        # before a durable commit when lease health is unknown (build spec 8).
+        self.heartbeat_store_factory = heartbeat_store_factory or store_factory
         self._worker_seq = itertools.count(1)
         self._cap_lock = threading.Lock()
 
@@ -249,6 +255,11 @@ class ParallelExecutionPipeline:
                     except Exception:  # noqa: BLE001 - an unexpected worker crash
                         wr = _WorkerResult(cid, crashed=True, outcome=None)
                     if wr.crashed or wr.outcome is None:
+                        if wr.fence_lost:
+                            # Another worker reclaimed this child and owns it now.
+                            # Do NOT re-queue (the reclaiming worker will finish
+                            # it) and do NOT count it as executed here.
+                            continue
                         reclaim_counts[cid] += 1
                         if reclaim_counts[cid] <= self.max_reclaims:
                             remaining.add(cid)  # lease was released → reclaimable
@@ -286,8 +297,10 @@ class ParallelExecutionPipeline:
 
     def _run_child(self, task: CoverageTask, lease: Lease) -> _WorkerResult:
         """Runs on a pool thread with its OWN StateStore connection. The lease
-        token fences every mutation; a periodic heartbeat keeps a long child's
-        lease unreclaimable; ANY unexpected exception releases the owned lease in
+        token FENCES every business commit (attempts/health/observations/pages/
+        coverage) via the shared child executor + StateStore fenced ops; a
+        periodic heartbeat keeps a long child's lease unreclaimable AND surfaces
+        unknown lease health; ANY unexpected exception releases the owned lease in
         ``finally`` so it is reclaimable and NOTHING partial is persisted."""
         worker_id = lease.worker_id
         store = self.store_factory()
@@ -299,10 +312,11 @@ class ParallelExecutionPipeline:
                 policy_version=self.policy_version, retry_budget=self.retry_budget, limit=self.limit,
                 crash_hook=self.child_crash_hook, query_compiler=self.query_compiler,
                 geography=self.geography, snapshot_cache=self.snapshot_cache, max_pages=self.max_pages,
+                fence=lease,
             )
             if self.enable_heartbeat:
                 heartbeat = LeaseHeartbeat(
-                    self.store_factory, self.run_id, lease, ttl_seconds=self.ttl_seconds,
+                    self.heartbeat_store_factory, self.run_id, lease, ttl_seconds=self.ttl_seconds,
                     clock=self.lease_clock, interval_seconds=self.heartbeat_interval_seconds,
                 )
                 heartbeat.start()
@@ -315,6 +329,13 @@ class ParallelExecutionPipeline:
                     heartbeat.stop(); heartbeat = None
                 lease_mgr.release(lease, requeue=True)
                 return _WorkerResult(task.coverage_id, crashed=True, outcome=None)
+            except FenceLost:
+                # A reclaiming worker owns this child now — a fenced business
+                # commit was refused. Persist nothing; do NOT release (not ours)
+                # and do NOT re-queue (the reclaiming worker will finish it).
+                if heartbeat is not None:
+                    heartbeat.stop(); heartbeat = None
+                return _WorkerResult(task.coverage_id, crashed=True, outcome=None, fence_lost=True)
             except Exception:  # noqa: BLE001 - any unexpected worker fault
                 # Build spec 8: an unexpected ValueError/AdapterError/persistence
                 # exception must never strand an owned lease. Release it (fenced)
@@ -328,20 +349,38 @@ class ParallelExecutionPipeline:
                 return _WorkerResult(task.coverage_id, crashed=True, outcome=None)
             finally:
                 if heartbeat is not None:
-                    heartbeat.stop(); heartbeat = None
-            store.upsert_coverage(
-                task.coverage_id, self.run_id, task.source_instance, company=task.company,
-                source_type=task.source_type, lane=task.lane, query_key=task.query_key,
-                attempted=True, completed=outcome.status in _TERMINAL_SET,
-                status=outcome.status.value, jobs_found=outcome.jobs_found,
-                started_at=outcome.started_at, completed_at=outcome.completed_at,
-                next_action=outcome.next_action, detail=outcome.detail,
+                    heartbeat.stop()
+            # Build spec 8: if the heartbeat could not prove the lease is still
+            # alive (reclaimed OR repeated DB failures -> unknown health), abort
+            # BEFORE the durable terminal commit and let the child be reclaimed.
+            if heartbeat is not None and not heartbeat.lease_health_ok:
+                was_stale = heartbeat.stale
+                try:
+                    lease_mgr.release(lease, requeue=True)
+                except Exception:  # noqa: BLE001
+                    pass
+                heartbeat = None
+                # A reclaimed (stale) lease must NOT be re-queued (fence_lost);
+                # merely-unknown health (DB failures) IS re-queued for reclaim.
+                return _WorkerResult(task.coverage_id, crashed=True, outcome=None, fence_lost=was_stale)
+            heartbeat = None
+            # Atomically record the terminal coverage row AND mark the lease
+            # terminal UNDER THE FENCE (build spec 3). A stale-token rejection
+            # means another worker already reclaimed+finished it.
+            res = store.complete_child(
+                self.run_id, task.coverage_id, task.source_instance,
+                worker_id=lease.worker_id, version=lease.version,
+                terminal_status=outcome.status.value,
+                coverage_kwargs=dict(
+                    company=task.company, source_type=task.source_type, lane=task.lane,
+                    query_key=task.query_key, attempted=True, completed=outcome.status in _TERMINAL_SET,
+                    status=outcome.status.value, jobs_found=outcome.jobs_found,
+                    started_at=outcome.started_at, completed_at=outcome.completed_at,
+                    next_action=outcome.next_action, detail=outcome.detail,
+                ),
             )
-            # Mirror coverage terminality onto the lease (FENCED) so it is never
-            # re-leased in this run (a human-blocked child likewise awaits human
-            # action). A stale-token rejection here means another worker already
-            # reclaimed+finished it — harmless, our terminal write was superseded.
-            lease_mgr.complete(lease, terminal_status=outcome.status.value)
+            if res == LeaseMutationResult.STALE_TOKEN_REJECTED:
+                return _WorkerResult(task.coverage_id, crashed=True, outcome=None, fence_lost=True)
             return _WorkerResult(task.coverage_id, crashed=False, outcome=outcome)
         finally:
             if heartbeat is not None:
