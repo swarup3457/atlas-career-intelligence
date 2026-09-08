@@ -371,6 +371,31 @@ def _check_source_framework(report: HealthReport, settings: Settings) -> None:
     except Exception as exc:  # noqa: BLE001
         report.add("Sources: generic career adapters", FAIL, str(exc))
 
+    # Phase 1D: the two READ-ONLY portal discovery adapters (LinkedIn + Naukri)
+    # register under distinct families; no import-time network/browser, no enabled
+    # instances, and NO auto-apply/stealth/login-automation capability exists.
+    try:
+        from atlas.sources.models import Capability
+        from atlas.sources.portals import PORTAL_ADAPTER_CLASSES, build_portals_registry, describe_portal_adapters
+
+        preg = build_portals_registry()
+        pdesc = describe_portal_adapters()
+        pfamilies = sorted(f.value for f in preg.registered_families())
+        forbidden = {Capability.AUTHENTICATED}  # authenticated is opt-in per-instance, never a class default
+        class_caps_ok = all(forbidden.isdisjoint(cls.CAPABILITIES) for cls in PORTAL_ADAPTER_CLASSES)
+        if pfamilies == ["linkedin", "naukri"] and len(pdesc) == 2 and class_caps_ok:
+            report.add(
+                "Sources: portal discovery adapters",
+                PASS,
+                "2 registered (linkedin + naukri), READ-ONLY, no apply/login/stealth capability, "
+                "disabled unless configured",
+            )
+        else:
+            report.add("Sources: portal discovery adapters", FAIL,
+                       f"unexpected portal adapters: families={pfamilies} class_caps_ok={class_caps_ok}")
+    except Exception as exc:  # noqa: BLE001
+        report.add("Sources: portal discovery adapters", FAIL, str(exc))
+
 
 def _check_company_registry(report: HealthReport, settings: Settings) -> None:
     """Phase 1A.5 company/source registry integrity checks (all offline):

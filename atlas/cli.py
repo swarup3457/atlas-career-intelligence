@@ -699,8 +699,9 @@ def _cmd_careers(args: argparse.Namespace) -> int:
         companies = []
         from atlas.planning import PlannedCompany
 
-        for company, decision in prepared.routable:
-            inst = decision.source_instance
+        for entry in prepared.routable:
+            company = entry.company
+            inst = entry.decision.source_instance
             instances[inst.instance_id] = inst
             companies.append(PlannedCompany(
                 company_id=company.company_id, name=company.name, tier=company.tier,
@@ -715,6 +716,205 @@ def _cmd_careers(args: argparse.Namespace) -> int:
         return 0 if result.terminal_state in ("COMPLETE", "PARTIAL", "WAITING_FOR_HUMAN") else 1
 
     print("ERROR: unknown careers subcommand")
+    return 2
+
+
+def _fresh_run_id(prefix: str) -> str:
+    import datetime as _dt
+
+    return f"{prefix}-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def _cmd_market(args: argparse.Namespace) -> int:
+    """Market discovery + adaptive search. Default is DRY-RUN/offline plan; live
+    network/browser discovery requires --live."""
+    import json as _json
+
+    from atlas.market.campaign import CampaignBudget, MarketCampaign, MarketWave
+    from atlas.market.runtime import MarketRunReuseError, MarketSearchRuntime
+    from atlas.persistence.sqlite import StateStore
+
+    sub = getattr(args, "market_command", None)
+    settings = load_settings()
+    settings.ensure_directories()
+
+    def _lanes() -> list[str]:
+        from atlas.policy import load_policy
+
+        if getattr(args, "lanes", None):
+            return [l.strip() for l in args.lanes.split(",") if l.strip()]
+        return list(load_policy(None).lanes.keys())
+
+    def _budget() -> CampaignBudget:
+        return CampaignBudget(
+            max_waves=int(getattr(args, "max_waves", 3)),
+            max_browser_calls=int(getattr(args, "max_browser", 40)),
+            max_portal_pages=int(getattr(args, "max_pages", 2)),
+        )
+
+    if sub in ("plan", "run"):
+        run_id = getattr(args, "run_id", None) or _fresh_run_id("market")
+        geos = [g.strip() for g in getattr(args, "geographies", "PRIMARY").split(",") if g.strip()]
+        rt = MarketSearchRuntime(
+            settings, run_id, lanes=_lanes(), geography_groups=geos,
+            portal_families=tuple(f.strip() for f in getattr(args, "portals", "linkedin,naukri").split(",") if f.strip()),
+            budget=_budget(), recency_days=int(getattr(args, "recency_days", 7)))
+        live = bool(getattr(args, "live", False))
+        if sub == "plan" or not live:
+            plan = rt.plan()
+            print(f"CAMPAIGN={plan['campaign_id']} RUN_ID={plan['run_id']} WAVE0_TASKS={plan['wave0_tasks']}")
+            print(f"LANES={plan['lanes']} GEOS={plan['geographies']} PORTALS={plan['portal_families']}")
+            print("NOTE: market plan is OFFLINE/dry-run. Pass 'market run --live' to execute.")
+            if getattr(args, "json", False):
+                print("\n" + _json.dumps(plan))
+            return 0
+        try:
+            res = rt.run(live=True, resume=bool(getattr(args, "resume", False)))
+        except MarketRunReuseError as exc:
+            print(f"ERROR: {exc}")
+            return 2
+        print(f"RUN_ID={res.run_id} STATUS={res.status} LEADS={res.portal_leads} "
+              f"DYNAMIC_COMPANIES={res.dynamic_companies} VERIFIED_LINKS={res.verified_links}")
+        print(f"WAVES={len(res.waves)} REPORT={res.report_path} REPORT_VALID={res.report_valid}")
+        print(f"MAX_CONCURRENCY={res.summary.get('max_observed_concurrency')} "
+              f"AUTH_PROFILE_OWNERS_MAX={res.summary.get('authenticated_profile_owner_max')}")
+        if getattr(args, "json", False):
+            print("\n" + _json.dumps(res.to_dict()))
+        return 0 if res.status in ("COMPLETE", "PARTIAL_BUDGET") else 1
+
+    if sub == "resume":
+        run_id = args.run_id
+        with StateStore(settings.state_db) as store:
+            row = store.get_market_campaign(f"camp::{run_id}")
+        if row is None:
+            print(f"ERROR: no campaign for run_id {run_id!r}")
+            return 2
+        camp = MarketCampaign.from_row(row)
+        rt = MarketSearchRuntime(
+            settings, run_id, lanes=camp.config.get("lanes") or _lanes(),
+            geography_groups=camp.config.get("geographies", ["PRIMARY"]),
+            portal_families=tuple(camp.config.get("portal_families", ["linkedin", "naukri"])),
+            budget=camp.budget)
+        if not bool(getattr(args, "live", False)):
+            print("NOTE: market resume requires --live.")
+            return 2
+        res = rt.run(live=True, resume=True)
+        print(f"RUN_ID={res.run_id} STATUS={res.status} LEADS={res.portal_leads}")
+        return 0
+
+    if sub == "status":
+        run_id = args.run_id
+        with StateStore(settings.state_db) as store:
+            row = store.get_market_campaign(f"camp::{run_id}")
+            if row is None:
+                print(f"ERROR: no campaign for run_id {run_id!r}")
+                return 2
+            camp = MarketCampaign.from_row(row)
+            waves = store.list_market_waves(camp.campaign_id)
+            leads = store.list_portal_leads(run_id)
+            links = store.list_portal_official_links(run_id)
+            budget = store.get_campaign_budget(camp.campaign_id)
+            deficits = store.list_wave_deficits(camp.campaign_id)
+        print(f"CAMPAIGN={camp.campaign_id} STATUS={camp.status.value} CURRENT_WAVE={camp.current_wave}")
+        print(f"TERMINAL_REASON={camp.terminal_reason}")
+        for w in waves:
+            print(f"  WAVE {w['wave_index']}: status={w['status']} tasks={len(_json.loads(w['tasks_json'] or '[]'))} "
+                  f"seal={(w['seal_hash'] or '')[:12]} deficit={w['deficit_reason']}")
+        verified = sum(1 for l in links if l["verification_state"] in ("LINKED_OFFICIAL_VERIFIED", "CLOSED_POSITIVE_EVIDENCE"))
+        print(f"PORTAL_LEADS={len(leads)} VERIFIED_LINKS={verified} DEFICITS={len(deficits)}")
+        if budget is not None:
+            print(f"BUDGET http={budget['http_calls']}/{budget['max_http']} browser={budget['browser_calls']}/{budget['max_browser']} "
+                  f"results={budget['results']}/{budget['max_results']}")
+        return 0
+
+    if sub == "discovered":
+        with StateStore(settings.state_db) as store:
+            run_id = getattr(args, "run_id", None)
+            provs = store.list_dynamic_company_provenance(run_id=run_id)
+            seen = set()
+            print("DYNAMICALLY DISCOVERED COMPANIES:")
+            for p in provs:
+                cid = p["company_id"]
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                co = store.get_company(cid) if cid else None
+                name = (co["display_name"] if co else p["normalized_name"]) or "?"
+                print(f"  [{p['resolution_status']}] {name} domain={p['resolved_domain'] or '-'} "
+                      f"from={p['discovery_source']}")
+            if not provs:
+                print("  (none)")
+        return 0
+
+    print("ERROR: unknown market subcommand")
+    return 2
+
+
+def _cmd_portals(args: argparse.Namespace) -> int:
+    """Portal (LinkedIn/Naukri) read-only health + explicit visible auth."""
+    from atlas.sources.models import SearchRequest
+    from atlas.sources.portals import describe_portal_adapters, make_portal_instance
+    from atlas.sources.portals.registry import PORTAL_FAMILIES, adapter_class_for_family
+    from atlas.sources.models import SourceFamily
+
+    sub = getattr(args, "portals_command", None)
+
+    if sub == "health":
+        live = bool(getattr(args, "live", False))
+        print("PORTAL ADAPTERS (READ-ONLY):")
+        for d in describe_portal_adapters():
+            print(f"  {d['source_family']}: {d['adapter_class']} v{d['adapter_version']} "
+                  f"class={d['concurrency_class']} caps={d['capabilities']}")
+        if not live:
+            print("NOTE: portals health is OFFLINE by default (adapter descriptors). Pass --live for a bounded probe.")
+            return 0
+        family_names = {"linkedin": SourceFamily.LINKEDIN, "naukri": SourceFamily.NAUKRI}
+        want = [f.strip() for f in (getattr(args, "family", None) or "linkedin,naukri").split(",")]
+        rc = 0
+        for fname in want:
+            fam = family_names.get(fname)
+            if fam is None:
+                continue
+            inst = make_portal_instance(fam, f"{fname}-health")
+            adapter = adapter_class_for_family(fam)(inst)
+            health = adapter.health_check()
+            print(f"  LIVE {fname}: {health.state.value} — {health.detail}")
+            if health.state.value in ("AUTH_REQUIRED",):
+                print(f"    -> run:  atlas portals auth --family {fname}   (opens Chrome for you to sign in)")
+        return rc
+
+    if sub == "auth":
+        # An EXPLICIT, human-in-the-loop visible auth flow. Atlas NEVER types
+        # credentials, solves a CAPTCHA, or automates login — it only opens a
+        # visible Chrome window (dedicated profile) so YOU can sign in.
+        family = getattr(args, "family", "linkedin")
+        url = {"linkedin": "https://www.linkedin.com/login",
+               "naukri": "https://www.naukri.com/nlogin/login"}.get(family, "https://www.linkedin.com/login")
+        profile = Path(getattr(args, "profile", None) or f".browser-profile-{family}")
+        if not bool(getattr(args, "live", False)):
+            print(f"NOTE: 'portals auth' opens a VISIBLE Chrome for MANUAL sign-in to {family} ({url}).")
+            print("      Atlas never enters credentials or bypasses any check. Pass --live to open the window.")
+            print(f"      Dedicated profile: {profile}")
+            return 0
+        from atlas.browser.manager import BrowserManager
+
+        print(f"Opening a visible Chrome for you to sign in to {family} manually: {url}")
+        print("Atlas will NOT type your password or solve any challenge. Close the window when done.")
+        try:
+            with BrowserManager(profile, channel="chrome") as manager:
+                page = manager.launch(headless=False)
+                manager.navigate(page, url)
+                try:
+                    input("Press Enter here AFTER you have finished signing in (or to abort)... ")
+                except EOFError:
+                    pass
+        except Exception as exc:  # noqa: BLE001
+            print(f"ERROR: could not open browser: {exc}")
+            return 1
+        print("Auth window closed. The dedicated profile session is retained locally (never exported).")
+        return 0
+
+    print("ERROR: unknown portals subcommand")
     return 2
 
 
@@ -921,6 +1121,64 @@ def build_parser() -> argparse.ArgumentParser:
     p_ca_resume.add_argument("--live", action="store_true")
     p_ca_resume.add_argument("--json", action="store_true")
     p_ca_resume.set_defaults(func=_cmd_careers)
+
+    # -- market: portal discovery + adaptive search campaign (Phase 1D) -------
+    p_market = subparsers.add_parser(
+        "market",
+        help="Market discovery + adaptive search (portals + campaign/waves). Offline/dry-run by default.",
+    )
+    market_sub = p_market.add_subparsers(dest="market_command", required=True)
+
+    def _add_market_common(p):
+        p.add_argument("--lanes", default=None, help="Comma-separated lane keys (default: all policy lanes).")
+        p.add_argument("--geographies", default="PRIMARY", help="Comma-separated geography groups.")
+        p.add_argument("--portals", default="linkedin,naukri", help="Comma-separated portal families.")
+        p.add_argument("--max-waves", dest="max_waves", type=int, default=3)
+        p.add_argument("--max-browser", dest="max_browser", type=int, default=40)
+        p.add_argument("--max-pages", dest="max_pages", type=int, default=2)
+        p.add_argument("--recency-days", dest="recency_days", type=int, default=7)
+        p.add_argument("--json", action="store_true")
+
+    p_mk_plan = market_sub.add_parser("plan", help="Seal a campaign + Wave 0 baseline (offline, no network).")
+    p_mk_plan.add_argument("--run-id", default=None)
+    _add_market_common(p_mk_plan)
+    p_mk_plan.set_defaults(func=_cmd_market)
+
+    p_mk_run = market_sub.add_parser("run", help="Run the adaptive market campaign (requires --live).")
+    p_mk_run.add_argument("--run-id", default=None)
+    p_mk_run.add_argument("--live", action="store_true", help="Perform live portal discovery (network/browser).")
+    p_mk_run.add_argument("--resume", action="store_true")
+    _add_market_common(p_mk_run)
+    p_mk_run.set_defaults(func=_cmd_market)
+
+    p_mk_resume = market_sub.add_parser("resume", help="Resume a PARTIAL market campaign (requires --live).")
+    p_mk_resume.add_argument("--run-id", required=True)
+    p_mk_resume.add_argument("--live", action="store_true")
+    p_mk_resume.add_argument("--json", action="store_true")
+    p_mk_resume.set_defaults(func=_cmd_market)
+
+    p_mk_status = market_sub.add_parser("status", help="Show a campaign's waves / leads / deficits / budget.")
+    p_mk_status.add_argument("--run-id", required=True)
+    p_mk_status.add_argument("--json", action="store_true")
+    p_mk_status.set_defaults(func=_cmd_market)
+
+    p_mk_disc = market_sub.add_parser("discovered", help="List dynamically discovered companies (equiv. `companies discovered`).")
+    p_mk_disc.add_argument("--run-id", default=None, help="Scope to one run (default: all).")
+    p_mk_disc.set_defaults(func=_cmd_market)
+
+    # -- portals: read-only portal health + explicit visible auth ------------
+    p_portals = subparsers.add_parser(
+        "portals", help="Read-only portal (LinkedIn/Naukri) health + explicit visible sign-in.")
+    portals_sub = p_portals.add_subparsers(dest="portals_command", required=True)
+    p_po_health = portals_sub.add_parser("health", help="Portal adapter descriptors (offline) or a bounded live probe.")
+    p_po_health.add_argument("--family", default=None, help="Comma-separated: linkedin,naukri (live probe).")
+    p_po_health.add_argument("--live", action="store_true", help="Bounded live read-only health probe (opt-in).")
+    p_po_health.set_defaults(func=_cmd_portals)
+    p_po_auth = portals_sub.add_parser("auth", help="Open a VISIBLE Chrome for MANUAL portal sign-in (never automated).")
+    p_po_auth.add_argument("--family", default="linkedin", help="linkedin|naukri")
+    p_po_auth.add_argument("--profile", default=None, help="Dedicated browser profile dir (optional).")
+    p_po_auth.add_argument("--live", action="store_true", help="Actually open the visible window.")
+    p_po_auth.set_defaults(func=_cmd_portals)
 
     return parser
 
