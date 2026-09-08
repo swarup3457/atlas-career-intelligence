@@ -68,9 +68,16 @@ class CoveragePlanner:
     def build(self, plan: PlanInput) -> CoverageManifest:
         manifest = CoverageManifest(plan.run_id)
         lane_key = _lane_bundle_key(plan.lanes)
+        # Required lanes for per-lane child accountability (build spec 8 / P0-11).
+        req_lanes = list(plan.lanes) or ["ALL"]
 
-        # 1. One company task per due company (carries the whole lane bundle
-        #    + geography group — never one task per lane×city).
+        # 1. One company task per due company. To keep EVERY required lane
+        #    independently accountable (P0-11) we emit ONE child coverage row
+        #    per company×source_instance×lane — a failed React extraction can
+        #    never be hidden by a successful Java result — while the shared
+        #    parent batch key lets execution combine compatible lane queries
+        #    for efficient transport. Geography stays a GROUP (never per-city),
+        #    so there is no blind company×source×lane×city explosion.
         for company in plan.companies:
             if company.needs_source_discovery or not company.source_instances:
                 manifest.plan(
@@ -87,21 +94,25 @@ class CoveragePlanner:
                 )
                 continue
             archetype = TaskArchetype.COMPANY_DEEP if company.mode.upper() == "DEEP" else TaskArchetype.COMPANY_DELTA
-            # One task per company×source_instance (its official/ATS routes),
-            # carrying the full lane bundle + geo group.
             for instance_id in company.source_instances:
-                manifest.plan(
-                    CoverageTask(
-                        coverage_id=f"{archetype.value.lower()}::{company.company_id}::{instance_id}",
-                        source_instance=instance_id,
-                        company=company.name,
-                        source_type=archetype.value,
-                        lane=lane_key,
-                        query_key=f"{company.geography_group}",
-                        next_action="SEARCH",
-                        detail={"archetype": archetype.value, "geography_group": company.geography_group},
+                parent_batch = f"{archetype.value.lower()}::{company.company_id}::{instance_id}"
+                for lane in req_lanes:
+                    manifest.plan(
+                        CoverageTask(
+                            coverage_id=f"{parent_batch}::{lane}",
+                            source_instance=instance_id,
+                            company=company.name,
+                            source_type=archetype.value,
+                            lane=lane,
+                            query_key=f"{company.geography_group}",
+                            next_action="SEARCH",
+                            detail={
+                                "archetype": archetype.value,
+                                "geography_group": company.geography_group,
+                                "parent_batch": parent_batch,
+                            },
+                        )
                     )
-                )
 
         # 2. Portal discovery: per portal × lane × geography group — NOT per
         #    company. This is where the Cartesian explosion is avoided.

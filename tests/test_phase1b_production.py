@@ -36,8 +36,18 @@ from atlas.reporting.mapping import (
     write_report,
 )
 from atlas.runtime.production import ProductionSearchRuntime
+from atlas.planning import PlannedCompany
+from atlas.sources.testing.fake import make_fake_instance
 
 pytestmark = pytest.mark.integration
+
+
+def _fixture_topology(scenario="results", **kw):
+    """A tiny fixture topology (one company, one fake instance) for runtime tests."""
+    iid = "t-workday"
+    instances = {iid: make_fake_instance(iid, scenario=scenario, company="TestCo", **kw)}
+    companies = [PlannedCompany(company_id="tco", name="TestCo", source_instances=(iid,), geography_group="PRIMARY")]
+    return instances, companies
 
 
 def _settings(tmp_path, **overrides):
@@ -58,24 +68,30 @@ def _settings(tmp_path, **overrides):
 
 # --- NullController end-to-end + phase order ------------------------------
 def test_nullcontroller_end_to_end_reaches_complete(tmp_path):
-    rt = ProductionSearchRuntime(_settings(tmp_path), "run-1", discovery_count=10)
+    # Executes the REAL sealed plan (per-lane children) through the fixture
+    # pipeline — not a synthetic count (P0-1).
+    rt = ProductionSearchRuntime(_settings(tmp_path), "run-1")
     res = rt.run()
     assert res.terminal_state == ProductionTerminalState.COMPLETE.value
     # phases occurred in the canonical order
     expected = [p.value for p in PRODUCTION_PHASE_ORDER if p != ProductionPhase.COMPLETE]
     assert list(res.phases_completed) == expected
     assert res.policy_fingerprint and res.plan_fingerprint
+    # Every planned child is terminal, across all six lanes (P0-11).
+    assert res.planned_tasks > 0 and res.terminal_tasks == res.planned_tasks
+    assert len(res.lane_summary) == 6
+    assert res.run_lock_status == "RUN_LOCK_ACQUIRED"
 
 
 def test_completed_manifest_has_tz_aware_completed_at(tmp_path):
-    res = ProductionSearchRuntime(_settings(tmp_path), "run-2", discovery_count=3).run()
+    res = ProductionSearchRuntime(_settings(tmp_path), "run-2").run()
     assert res.manifest["completed_at"]
     assert res.manifest["completed_at"].endswith("+00:00")  # tz-aware UTC
 
 
 # --- search isolation ------------------------------------------------------
 def test_discovery_cannot_trigger_excel_or_remote_audit(tmp_path):
-    res = ProductionSearchRuntime(_settings(tmp_path), "run-3", discovery_count=5).run()
+    res = ProductionSearchRuntime(_settings(tmp_path), "run-3").run()
     # Every recorded side effect happened in a persistence phase, never during
     # DISCOVER / health / hydration.
     for eff in res.persistence_side_effects:
@@ -89,12 +105,30 @@ def test_phase_context_rejects_side_effect_in_discovery_phase():
         ctx.record_side_effect(ProductionPhase.DISCOVER, "excel_report")
 
 
-# --- compact checkpoints (thousands of discoveries) ------------------------
-def test_checkpoint_stays_bounded_with_thousands_of_discoveries(tmp_path):
-    res = ProductionSearchRuntime(_settings(tmp_path), "run-big", discovery_count=3000).run()
+def test_missing_mandatory_handler_fails_closed():
+    # build spec 13 / P0-17: a missing mandatory handler must fail closed.
+    from atlas.orchestration.production_graph import MissingPhaseHandlerError, build_production_graph
+
+    with pytest.raises(MissingPhaseHandlerError):
+        build_production_graph({}, runtime=None)
+
+
+# --- compact checkpoints ---------------------------------------------------
+def test_checkpoint_stays_bounded_with_large_plan(tmp_path):
+    # A large plan (many companies × six lanes) still checkpoints only run/plan
+    # refs + counters — never per-job payloads (P0-4/P0-16).
+    instances, companies = _fixture_topology()
+    # 20 companies × 6 lanes = 120 child coverage rows.
+    instances = {}
+    companies = []
+    for i in range(20):
+        iid = f"co{i}-wd"
+        instances[iid] = make_fake_instance(iid, scenario="results", result_count=3, company=f"Co{i}")
+        companies.append(PlannedCompany(company_id=f"co{i}", name=f"Co{i}", source_instances=(iid,), geography_group="PRIMARY"))
+    res = ProductionSearchRuntime(_settings(tmp_path), "run-big", instances=instances, companies=companies).run()
     assert res.terminal_state == ProductionTerminalState.COMPLETE.value
-    assert res.counters["discovered"] == 3000
-    # The checkpoint carries counters/ids only — never 3000 job descriptions.
+    assert res.planned_tasks == 120 and res.terminal_tasks == 120
+    # The checkpoint carries counters/ids only — never job descriptions.
     assert res.checkpoint_bytes < 65536
 
 
@@ -109,8 +143,10 @@ def test_compact_state_rejects_bulky_fields():
 
 
 # --- WAITING / FAILED distinct from COMPLETE ------------------------------
-def test_waiting_for_human_is_not_complete(tmp_path):
-    rt = ProductionSearchRuntime(_settings(tmp_path), "run-wait", discovery_count=2, simulate_waiting_for_human=True)
+def test_human_blocked_child_yields_waiting_for_human(tmp_path):
+    # A login-wall coverage child is human-blocked -> WAITING_FOR_HUMAN, never COMPLETE.
+    instances, companies = _fixture_topology(scenario="error", error_category="LOGIN_WALL")
+    rt = ProductionSearchRuntime(_settings(tmp_path), "run-wait", instances=instances, companies=companies)
     res = rt.run()
     assert res.terminal_state == ProductionTerminalState.WAITING_FOR_HUMAN.value
     assert res.terminal_state != ProductionTerminalState.COMPLETE.value
@@ -122,10 +158,17 @@ def test_plan_failure_is_not_complete(tmp_path):
     assert res.terminal_state == ProductionTerminalState.FAILED.value
 
 
+def test_local_persistence_failure_never_completes(tmp_path):
+    # P0-5: an injected mandatory local-persistence failure must be FAILED, not COMPLETE.
+    rt = ProductionSearchRuntime(_settings(tmp_path), "run-persistfail", simulate_local_persist_failure=True)
+    res = rt.run()
+    assert res.terminal_state == ProductionTerminalState.FAILED.value
+
+
 # --- remote audit degradation ---------------------------------------------
 def test_remote_audit_failure_does_not_stop_local_run(tmp_path):
     rt = ProductionSearchRuntime(
-        _settings(tmp_path), "run-audit", discovery_count=2,
+        _settings(tmp_path), "run-audit",
         remote_audit=FailingRemoteAudit(), remote_audit_enabled=True,
     )
     res = rt.run()
@@ -200,13 +243,15 @@ def test_production_report_uses_atomic_writer_with_locked_fallback(tmp_path):
 # --- partial + resume ------------------------------------------------------
 def test_partial_saves_continuation_and_resume_completes(tmp_path):
     settings = _settings(tmp_path)
-    rt = ProductionSearchRuntime(settings, "run-partial", discovery_count=3, stop_after_phase=ProductionPhase.DISCOVER)
+    rt = ProductionSearchRuntime(settings, "run-partial", stop_after_phase=ProductionPhase.DISCOVER)
     res = rt.run()
     assert res.terminal_state == ProductionTerminalState.PARTIAL.value
-    # Resume from the exact checkpointed continuation.
-    rt2 = ProductionSearchRuntime(settings, "run-partial", discovery_count=3)
+    # Resume from the exact checkpointed continuation (a fresh runtime object).
+    rt2 = ProductionSearchRuntime(settings, "run-partial")
     res2 = rt2.resume()
     assert res2.terminal_state == ProductionTerminalState.COMPLETE.value
+    # No duplicate report publication and every child still terminal.
+    assert res2.terminal_tasks == res2.planned_tasks
 
 
 # --- report mapping (report-only, 8 sheets, reopen+validate) --------------

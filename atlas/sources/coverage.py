@@ -349,6 +349,19 @@ class CoverageManifest:
         counts["_terminal"] = sum(1 for t in self._tasks.values() if t.is_terminal)
         return counts
 
+    def lane_summary(self) -> dict[str, dict[str, int]]:
+        """Per-lane planned vs terminal accounting (build spec 8 / P0-11). Each
+        required lane is independently accountable, so a failed lane can never
+        be hidden by a successful sibling lane in the same parent batch."""
+        out: dict[str, dict[str, int]] = {}
+        for t in self._tasks.values():
+            lane = t.lane or "ALL"
+            bucket = out.setdefault(lane, {"planned": 0, "terminal": 0})
+            bucket["planned"] += 1
+            if t.is_terminal:
+                bucket["terminal"] += 1
+        return out
+
     # -- persistence --------------------------------------------------------
     def persist(self, store, *, policy_fingerprint: Optional[str] = None) -> None:
         """Persist BOTH the plan lifecycle row (state/no_work_due/failure_

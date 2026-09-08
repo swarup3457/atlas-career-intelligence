@@ -22,8 +22,12 @@ from atlas.models import ErrorCategory, TaskStatus
 from atlas.sources.adapter import AdapterError, CapabilityNotSupported, SourceAdapter
 from atlas.sources.health import SourceHealthState
 from atlas.sources.models import SearchRequest, SearchResult, ZeroResultKind
+from atlas.sources.query_signature import QuerySignature
 from atlas.sources.zero_result import assess_search, run_sentinel_probe, should_run_sentinel
 from atlas.workers.base import BaseWorker, WorkerError, WorkerOutcome
+
+if False:  # TYPE_CHECKING-style hint without a runtime import cost
+    from atlas.sources.executor import RateLimitedExecutor
 
 
 @dataclass(frozen=True)
@@ -36,7 +40,12 @@ class SourceTask:
     lane: Optional[str] = None
     company: Optional[str] = None
     sentinel_request: Optional[SearchRequest] = None
+    query_signature: Optional[QuerySignature] = None
     metadata: Mapping[str, object] = field(default_factory=dict)
+
+    @property
+    def signature_fingerprint(self) -> Optional[str]:
+        return self.query_signature.fingerprint() if self.query_signature is not None else None
 
 
 # Sentinel health state → terminal task status (all terminal; the sentinel
@@ -64,10 +73,12 @@ class SourceSearchWorker(BaseWorker):
         plan: Mapping[str, SourceTask],
         *,
         history_provider: Optional[Callable[[str], Sequence[int]]] = None,
+        executor: Optional["RateLimitedExecutor"] = None,
     ):
         self.adapters = dict(adapters)
         self.plan = dict(plan)
         self.history_provider = history_provider
+        self.executor = executor
         # Diagnostic record of every sentinel probe run (for tests/telemetry).
         self.sentinel_log: list[dict] = []
 
@@ -75,6 +86,14 @@ class SourceSearchWorker(BaseWorker):
         if self.history_provider is None:
             return ()
         return self.history_provider(instance_id) or ()
+
+    def _search(self, adapter: SourceAdapter, request: SearchRequest) -> SearchResult:
+        """One adapter search, routed through the shared rate-limited executor
+        when configured (build spec 10 / P0-13) so pacing/concurrency/Retry-
+        After are applied centrally; otherwise a direct single call."""
+        if self.executor is not None:
+            return self.executor.run_search(adapter, request)
+        return adapter.search(request)
 
     def attempt(self, item: str, attempt_number: int) -> WorkerOutcome:
         task = self.plan.get(item)
@@ -85,7 +104,7 @@ class SourceSearchWorker(BaseWorker):
             raise WorkerError(ErrorCategory.CONFIG_ERROR, f"No adapter for instance {task.instance_id!r}.")
 
         try:
-            result: SearchResult = adapter.search(task.request)
+            result: SearchResult = self._search(adapter, task.request)
         except CapabilityNotSupported as exc:
             raise WorkerError(ErrorCategory.CONFIG_ERROR, str(exc)) from exc
         except AdapterError as exc:
@@ -105,7 +124,7 @@ class SourceSearchWorker(BaseWorker):
             base_payload["zero_result_kind"] = ZeroResultKind.NOT_APPLICABLE.value
             return WorkerOutcome(status=TaskStatus.SUCCESS, payload=base_payload)
 
-        history = self._history(task.instance_id)
+        history = self._history(task.signature_fingerprint or task.instance_id)
         kind = assess_search(result, historical_yields=history)
         base_payload["zero_result_kind"] = kind.value
 

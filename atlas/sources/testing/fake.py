@@ -42,6 +42,7 @@ class FakeScenario:
     kind: str = "results"          # results|zero|untrusted_zero|error|parse_failure|selector_drift
     result_count: int = 3
     error_category: Optional[ErrorCategory] = None
+    retry_after: Optional[float] = None
     # For untrusted_zero / selector_drift: how the single sentinel probe behaves.
     sentinel: str = "healthy"      # healthy|drift|zero|error
     sentinel_error_category: Optional[ErrorCategory] = None
@@ -60,6 +61,7 @@ class FakeScenario:
             kind=str(metadata.get("scenario", "results")),
             result_count=int(metadata.get("result_count", 3)),
             error_category=cat(metadata.get("error_category")),
+            retry_after=(float(metadata["retry_after"]) if metadata.get("retry_after") is not None else None),
             sentinel=str(metadata.get("sentinel", "healthy")),
             sentinel_error_category=cat(metadata.get("sentinel_error_category")),
             fail_first_n=int(metadata.get("fail_first_n", 0)),
@@ -147,7 +149,7 @@ class FakeAdapter(SourceAdapter):
         kind = self.scenario.kind
         if kind == "error":
             category = self.scenario.error_category or ErrorCategory.HTTP_5XX
-            raise AdapterError(category, f"Simulated {category.value} failure.")
+            raise AdapterError(category, f"Simulated {category.value} failure.", retry_after=self.scenario.retry_after)
         if kind == "parse_failure":
             return SearchResult(
                 results=(),

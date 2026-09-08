@@ -55,12 +55,15 @@ class CapabilityNotSupported(Exception):
 class AdapterError(Exception):
     """A classified single-attempt failure raised by an adapter. Carries an
     :class:`ErrorCategory` so the worker bridge can defer to the central
-    retry policy. Adapters never decide retry themselves."""
+    retry policy. Adapters never decide retry themselves. An optional
+    ``retry_after`` (seconds) conveys an explicit ``Retry-After`` from a 429
+    so the shared rate-limited executor can honor it centrally."""
 
-    def __init__(self, category: ErrorCategory, message: str):
+    def __init__(self, category: ErrorCategory, message: str, *, retry_after: Optional[float] = None):
         super().__init__(message)
         self.category = category
         self.message = message
+        self.retry_after = retry_after
 
 
 class SourceAdapter(ABC):

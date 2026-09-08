@@ -79,8 +79,18 @@ def make_advance_node(handlers: Mapping[ProductionPhase, PhaseHandler], runtime:
         state["phases_completed"] = completed
         nxt = next_phase(phase)
         if nxt is None or nxt == ProductionPhase.COMPLETE:
-            state["phase"] = ProductionPhase.COMPLETE.value
-            state["terminal_state"] = ProductionTerminalState.COMPLETE.value
+            # Real terminality gate (build spec 13 / P0-17): the runtime decides
+            # the TRUE terminal state (COMPLETE only when the sealed plan's
+            # required children are all terminal, persistence/report succeeded,
+            # and no required human-blocked child remains). It may fail closed to
+            # WAITING_FOR_HUMAN / PARTIAL / FAILED — never a false COMPLETE.
+            resolver = getattr(runtime, "resolve_terminal", None)
+            terminal = ProductionTerminalState.COMPLETE
+            if resolver is not None:
+                terminal = resolver(state)
+            state["terminal_state"] = terminal.value
+            if terminal == ProductionTerminalState.COMPLETE:
+                state["phase"] = ProductionPhase.COMPLETE.value
         else:
             state["phase"] = nxt.value
         return state
@@ -88,9 +98,29 @@ def make_advance_node(handlers: Mapping[ProductionPhase, PhaseHandler], runtime:
     return advance_phase
 
 
+# Mandatory production phases that MUST have a registered handler. A missing
+# handler fails closed (build spec 13 / P0-17) — the graph never silently
+# advances past a phase with no handler.
+_MANDATORY_HANDLER_PHASES: tuple[ProductionPhase, ...] = tuple(
+    p for p in ProductionPhase if p != ProductionPhase.COMPLETE
+)
+
+
+class MissingPhaseHandlerError(RuntimeError):
+    """Raised when a mandatory production phase has no registered handler."""
+
+
 def build_production_graph(handlers: Mapping[ProductionPhase, PhaseHandler], runtime: object):
     """Build (uncompiled) the production phase graph. Invoke repeatedly with
-    an empty input until ``terminal_state`` is set (checkpoint after each)."""
+    an empty input until ``terminal_state`` is set (checkpoint after each).
+
+    Validates that EVERY mandatory phase has a handler so a run can never
+    silently advance past an unimplemented phase (build spec 13)."""
+    missing = [p.value for p in _MANDATORY_HANDLER_PHASES if p not in handlers]
+    if missing:
+        raise MissingPhaseHandlerError(
+            f"production graph is missing mandatory phase handlers: {missing}"
+        )
     builder = StateGraph(ProductionState)
     builder.add_node("advance_phase", make_advance_node(handlers, runtime))
     builder.set_entry_point("advance_phase")
@@ -104,6 +134,7 @@ def is_terminal(state: ProductionState) -> bool:
 
 __all__ = [
     "PhaseIsolationError",
+    "MissingPhaseHandlerError",
     "PhaseContext",
     "PhaseHandler",
     "make_advance_node",

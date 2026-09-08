@@ -493,6 +493,49 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_health_hist_signature ON source_health_history(query_signature, observed_at)",
         ],
     ),
+    (
+        7,
+        "Phase 1B.1: append-only raw discovery observation staging (build spec 12 / "
+        "P0-15). Raw normalized source observations are staged here during DISCOVER "
+        "and resolved into canonical_jobs only in DEDUPE/RECONCILE, preserving full "
+        "provenance (run/coverage/attempt/query-signature) before canonicalization.",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS raw_discovery_observations (
+                observation_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                coverage_id TEXT,
+                attempt_id TEXT,
+                query_signature TEXT,
+                source_instance TEXT NOT NULL,
+                source_family TEXT,
+                source_job_id TEXT,
+                source_url TEXT,
+                canonical_url TEXT,
+                company TEXT,
+                title TEXT,
+                location TEXT,
+                lane TEXT,
+                posted_at TEXT,
+                is_active TEXT,
+                content_hash TEXT NOT NULL,
+                source_identity TEXT,
+                raw_evidence_ref TEXT,
+                adapter_version TEXT NOT NULL DEFAULT '',
+                parser_version TEXT NOT NULL DEFAULT '',
+                processing_status TEXT NOT NULL DEFAULT 'STAGED',
+                canonical_id TEXT,
+                observed_at TEXT NOT NULL,
+                detail_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_raw_obs_run ON raw_discovery_observations(run_id)",
+            "CREATE INDEX IF NOT EXISTS idx_raw_obs_status ON raw_discovery_observations(processing_status)",
+            "CREATE INDEX IF NOT EXISTS idx_raw_obs_identity ON raw_discovery_observations(source_identity)",
+            "CREATE INDEX IF NOT EXISTS idx_raw_obs_hash ON raw_discovery_observations(content_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_raw_obs_coverage ON raw_discovery_observations(coverage_id)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)
@@ -1318,6 +1361,94 @@ class StateStore:
             "SELECT * FROM coverage_attempts WHERE coverage_id = ? ORDER BY observed_at, attempt_id",
             (coverage_id,),
         ).fetchall()
+
+    # ------------------------------------------------------------------
+    # Phase 1B.1 — raw discovery observation staging (build spec 12 / P0-15)
+    # ------------------------------------------------------------------
+    def stage_raw_observation(
+        self,
+        observation_id: str,
+        run_id: str,
+        source_instance: str,
+        content_hash: str,
+        *,
+        coverage_id: Optional[str] = None,
+        attempt_id: Optional[str] = None,
+        query_signature: Optional[str] = None,
+        source_family: Optional[str] = None,
+        source_job_id: Optional[str] = None,
+        source_url: Optional[str] = None,
+        canonical_url: Optional[str] = None,
+        company: Optional[str] = None,
+        title: Optional[str] = None,
+        location: Optional[str] = None,
+        lane: Optional[str] = None,
+        posted_at: Optional[str] = None,
+        is_active: Optional[str] = None,
+        source_identity: Optional[str] = None,
+        raw_evidence_ref: Optional[str] = None,
+        adapter_version: str = "",
+        parser_version: str = "",
+        observed_at: Optional[str] = None,
+        detail: Optional[dict] = None,
+    ) -> bool:
+        """Append a raw normalized source observation to the staging table
+        (idempotent on ``observation_id``, NEVER updated once staged). This is
+        written during DISCOVER; canonicalization happens later in DEDUPE, so
+        raw discoveries never become canonical jobs directly (P0-15). Returns
+        True if a new row was inserted."""
+        with self._auto() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO raw_discovery_observations (observation_id, run_id, coverage_id, "
+                "attempt_id, query_signature, source_instance, source_family, source_job_id, source_url, "
+                "canonical_url, company, title, location, lane, posted_at, is_active, content_hash, "
+                "source_identity, raw_evidence_ref, adapter_version, parser_version, processing_status, "
+                "canonical_id, observed_at, detail_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'STAGED', NULL, ?, ?)",
+                (
+                    observation_id, run_id, coverage_id, attempt_id, query_signature, source_instance,
+                    source_family, source_job_id, source_url, canonical_url, company, title, location,
+                    lane, posted_at, is_active, content_hash, source_identity, raw_evidence_ref,
+                    adapter_version, parser_version, observed_at or _utcnow(),
+                    json.dumps(detail or {}, sort_keys=True),
+                ),
+            )
+        return bool(cur.rowcount)
+
+    def list_raw_observations(
+        self, run_id: str, *, processing_status: Optional[str] = None
+    ) -> list[sqlite3.Row]:
+        if processing_status is not None:
+            return self._conn.execute(
+                "SELECT * FROM raw_discovery_observations WHERE run_id = ? AND processing_status = ? "
+                "ORDER BY observed_at, observation_id",
+                (run_id, processing_status),
+            ).fetchall()
+        return self._conn.execute(
+            "SELECT * FROM raw_discovery_observations WHERE run_id = ? ORDER BY observed_at, observation_id",
+            (run_id,),
+        ).fetchall()
+
+    def count_raw_observations(self, run_id: Optional[str] = None) -> int:
+        if run_id is None:
+            return int(
+                self._conn.execute("SELECT COUNT(*) AS n FROM raw_discovery_observations").fetchone()["n"]
+            )
+        return int(
+            self._conn.execute(
+                "SELECT COUNT(*) AS n FROM raw_discovery_observations WHERE run_id = ?", (run_id,)
+            ).fetchone()["n"]
+        )
+
+    def mark_raw_observation_processed(
+        self, observation_id: str, canonical_id: str, *, processing_status: str = "CANONICALIZED"
+    ) -> None:
+        with self._auto() as conn:
+            conn.execute(
+                "UPDATE raw_discovery_observations SET processing_status=?, canonical_id=? "
+                "WHERE observation_id=?",
+                (processing_status, canonical_id, observation_id),
+            )
 
     # ------------------------------------------------------------------
     # Phase 1B — coverage plan lifecycle (build spec 7.8)

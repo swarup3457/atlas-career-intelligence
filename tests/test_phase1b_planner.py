@@ -45,13 +45,38 @@ def test_portal_discovery_is_per_source_not_per_company():
     assert len(portal_tasks) == len(PORTALS) * len(LANES) * len(GEO)
 
 
-def test_company_task_carries_lane_bundle_not_per_lane_city():
+def test_company_task_has_independent_per_lane_child_coverage():
+    # P0-11: each required lane is an INDEPENDENT child coverage row so a
+    # failed lane cannot be hidden by a successful sibling lane. Geography
+    # stays a group (never per-city), so there is no blind explosion.
     manifest = CoveragePlanner().build(_plan_input(3))
     company_tasks = [t for t in manifest.tasks() if t.source_type in (TaskArchetype.COMPANY_DEEP.value, TaskArchetype.COMPANY_DELTA.value)]
-    # 3 companies × 1 source instance each = 3 tasks (NOT 3×6 lanes×cities)
-    assert len(company_tasks) == 3
+    # 3 companies × 1 source instance × 6 lanes = 18 independent child rows.
+    assert len(company_tasks) == 3 * len(LANES)
+    lanes_seen = {t.lane for t in company_tasks}
+    assert lanes_seen == set(LANES)  # every required lane accounted for
     for t in company_tasks:
-        assert "+" in t.lane  # the whole lane bundle in one task
+        assert "+" not in (t.lane or "")  # never a bundled lane string
+        assert t.detail.get("parent_batch")  # shares a transport batch key
+
+
+def test_lane_summary_is_independently_accountable():
+    manifest = CoveragePlanner().build_and_seal(_plan_input(2))
+    from atlas.sources.coverage import CoverageStatus
+
+    lane_sum = manifest.lane_summary()
+    for lane in LANES:
+        assert lane in lane_sum
+        assert lane_sum[lane]["planned"] >= 2  # 2 companies contribute per lane
+        assert lane_sum[lane]["terminal"] == 0
+    # Marking ONE lane's children terminal never marks another lane terminal.
+    react_children = [t for t in manifest.tasks() if t.lane == "REACT_FRONTEND"
+                      and t.source_type in (TaskArchetype.COMPANY_DEEP.value, TaskArchetype.COMPANY_DELTA.value)]
+    for t in react_children:
+        manifest.mark(t.coverage_id, CoverageStatus.EXTRACTION_UNRESOLVED)
+    ls2 = manifest.lane_summary()
+    assert ls2["REACT_FRONTEND"]["terminal"] == len(react_children)
+    assert ls2["JAVA_BACKEND"]["terminal"] == 0  # sibling lane unaffected
 
 
 def test_ats_cross_company_discovery_per_family():

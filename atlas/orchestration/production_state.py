@@ -111,8 +111,11 @@ class ProductionTerminalState(str, enum.Enum):
 
 class ProductionState(TypedDict, total=False):
     run_id: str
+    started_at: str
     policy_fingerprint: str
     plan_fingerprint: str
+    candidate_snapshot: str
+    fixture_mode: bool
     phase: str
     phases_completed: list[str]
     task_ids: list[str]
@@ -121,15 +124,20 @@ class ProductionState(TypedDict, total=False):
     retry_refs: dict[str, int]
     result_summary: dict[str, str]   # task_id -> compact status string ONLY
     human_waiting: list[str]
+    local_persist_ok: bool
+    report_valid: bool
     terminal_state: Optional[str]
     notes: list[str]
 
 
-def initial_production_state(run_id: str) -> ProductionState:
+def initial_production_state(run_id: str, *, started_at: str = "", fixture_mode: bool = True) -> ProductionState:
     return ProductionState(
         run_id=run_id,
+        started_at=started_at,
         policy_fingerprint="",
         plan_fingerprint="",
+        candidate_snapshot="",
+        fixture_mode=fixture_mode,
         phase=ProductionPhase.INITIALIZE.value,
         phases_completed=[],
         task_ids=[],
@@ -138,6 +146,8 @@ def initial_production_state(run_id: str) -> ProductionState:
         retry_refs={},
         result_summary={},
         human_waiting=[],
+        local_persist_ok=True,
+        report_valid=False,
         terminal_state=None,
         notes=[],
     )

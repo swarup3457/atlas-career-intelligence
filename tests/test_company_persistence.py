@@ -15,7 +15,7 @@ def test_migration_v5_present_and_prior_intact(tmp_path):
         assert store.schema_version() == SCHEMA_VERSION
         versions = [r[0] for r in store._conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version").fetchall()]
-        assert versions == [1, 2, 3, 4, 5, 6]
+        assert versions == list(range(1, SCHEMA_VERSION + 1))
         tables = {r[0] for r in store._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert {"company_registry", "company_aliases", "company_source_relationships",
@@ -33,7 +33,7 @@ def test_reopen_does_not_rerun_migrations(tmp_path):
     store.close()
     store2 = StateStore(db)
     try:
-        assert store2.schema_version() == 6
+        assert store2.schema_version() == 7
         assert store2.get_company("co-x") is not None
     finally:
         store2.close()
@@ -75,7 +75,7 @@ def test_backup_restore_preserves_company_data(tmp_path):
 
     backups = tmp_path / "backups"
     manifest = create_backup(settings, backups)
-    assert manifest.state_schema_version == 6
+    assert manifest.state_schema_version == 7
 
     target = tmp_path / "restored"
     result = restore_backup(backup_dir_for(backups, manifest), target)
