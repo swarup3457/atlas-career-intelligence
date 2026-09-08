@@ -312,3 +312,48 @@ def test_full_observation_provenance_round_trips_and_is_bounded(tmp_path):
     assert len(frag) <= 2100 and "ghp_" not in frag
     assert detail["description_len"] > 4000  # original length recorded
     store.close()
+
+
+# ---------------------------------------------------------------------------
+# §22 — concurrency 1 == 4 on MULTI-PAGE fixtures
+# ---------------------------------------------------------------------------
+def _run_parallel(db, run_id, instances, tasks, workers):
+    from atlas.runtime.parallel_pipeline import ParallelExecutionPipeline
+    from atlas.sources.coverage import CoverageManifest
+
+    store = StateStore(db); store.create_run(run_id, "none")
+    man = CoverageManifest(run_id)
+    for t in tasks:
+        man.plan(t)
+    man.seal(); man.persist(store, policy_fingerprint="pol"); store.close()
+
+    pipe = ParallelExecutionPipeline(lambda: StateStore(db), _reg(PagingAdapter), instances,
+                                     run_id=run_id, policy_version="pol", workers=workers)
+    man2 = CoverageManifest.load(StateStore(db), run_id)
+    pipe.execute(man2, [t.coverage_id for t in tasks])
+
+    from atlas.runtime.canonicalize import canonicalize_run
+    store = StateStore(db)
+    canonicalize_run(store, run_id)
+    canon = store.count_canonical_jobs()
+    obs = store.count_raw_observations(run_id)
+    statuses = sorted((t.coverage_id, t.status.value) for t in CoverageManifest.load(store, run_id).tasks())
+    store.close()
+    return canon, obs, statuses
+
+
+def test_concurrency_1_and_4_are_equal_on_multipage_fixtures(tmp_path):
+    # Several paginated instances (7 items / 3 per page => 3 pages each).
+    insts = {f"i{k}": SourceInstance(f"i{k}", SourceType.FAKE, metadata={"total": 7, "page_size": 3})
+             for k in range(6)}
+    tasks = [CoverageTask(coverage_id=f"c{k}", source_instance=f"i{k}", lane="JAVA_BACKEND",
+                          query_key="PRIMARY", company=f"Co{k}") for k in range(6)]
+    r1 = _run_parallel(tmp_path / "one.sqlite", "one", insts, tasks, workers=1)
+    r4 = _run_parallel(tmp_path / "four.sqlite", "four", insts, tasks, workers=4)
+    # Identical canonical jobs, observations, and per-child statuses AFTER
+    # pagination — only scheduling differs.
+    assert r1[1] == r4[1] == 6 * 7  # 6 instances x 7 distinct source observations each
+    assert r1[0] == r4[0]  # identical canonical count (deduped identically)
+    assert [s for _, s in r1[2]] == [s for _, s in r4[2]]
+    assert all(s == CoverageStatus.COMPLETED_WITH_RESULTS.value for _, s in r1[2])
+
