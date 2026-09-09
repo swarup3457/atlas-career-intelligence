@@ -1,0 +1,383 @@
+# Atlas Role-Intent Policy V2 (Search Hunt Recovery V2).
+#
+# Versioned, typed, conjunctive lane-qualification contract. This SUPERSEDES the
+# ANY-positive behaviour of config/policy/search_lanes.yaml for FINAL
+# qualification. search_lanes.yaml remains a discovery/recall hint source only.
+#
+# Authority: V1 02_CORE_AGENT_INSTRUCTIONS.md (six independent lanes, role +
+# technology evidence) is primary; V3 adds freshness/coverage hardening.
+#
+# Qualification model (deterministic, see atlas/hunt/qualification.py):
+#   1. role family must be in allowed_role_families and NOT in excluded_role_families;
+#   2. EVERY required_anchor_group must be satisfied (any_of within a group);
+#   3. a dominant wrong-stack signal with no lane anchor => REJECT_WRONG_STACK;
+#   4. support_signals are corroboration only and are NEVER sufficient alone;
+#   5. GENERAL_SOFTWARE is a controlled fallback, not a catch-all.
+#
+# Public policy only. No candidate PII.
+schema_version: 1
+policy_version: "V2.0"
+source: "V1/02_CORE_AGENT_INSTRUCTIONS.md, V1/instruction.md.txt, Atlas_Search_Hunt_Architecture_V2 s.4-5"
+
+# Display diversity caps applied to the candidate-facing shortlist. An
+# acceptance run may not disable these.
+display_defaults:
+  max_display_per_company: 5
+  max_display_per_lane_per_company: 3
+  max_shortlist_total: 15
+
+lanes:
+  JAVA_BACKEND:
+    priority: 1
+    display_name: "Java / backend / Spring / API / microservices"
+    allowed_role_families:
+      - SOFTWARE_DEVELOPMENT
+      - BACKEND_DEVELOPMENT
+      - FULLSTACK_DEVELOPMENT
+      - ENTERPRISE_APPLICATION_DEVELOPMENT
+    excluded_role_families:
+      - QA_MANUAL
+      - QA_AUTOMATION_SDET
+      - PRODUCT_MANAGEMENT
+      - PROGRAM_MANAGEMENT
+      - DEVOPS_SRE_INFRA
+      - SUPPORT_HELPDESK
+      - FUNCTIONAL_CONSULTING
+      - SALES_BPO
+      - DATA_ML_ANALYTICS
+      - MOBILE
+    required_anchor_groups:
+      - group: java_core
+        any_of: [Java, JVM, Spring, Spring Boot, Spring MVC, Jakarta EE, J2EE, JavaEE]
+    support_signals:
+      - backend
+      - REST
+      - RESTful
+      - API
+      - microservices
+      - SQL
+      - MySQL
+      - PostgreSQL
+      - Hibernate
+      - JPA
+      - Kafka
+      - Maven
+      - Gradle
+      - AWS
+      - Azure
+      - GCP
+      - distributed systems
+      - service-oriented
+    wrong_stack_signals:
+      - Ruby
+      - Ruby on Rails
+      - Rails
+      - Go
+      - Golang
+      - Rust
+      - Django
+      - Flask
+      - Node.js
+      - NodeJS
+      - NestJS
+      - Express.js
+      - PHP
+      - Laravel
+      - Scala
+      - Elixir
+    reject_when_wrong_stack_dominant: true
+    title_prefilter_signals:
+      - Java
+      - Backend
+      - Back-end
+      - Spring
+      - Microservices
+      - API Developer
+      - Server-side
+      - Software Engineer
+      - Software Developer
+    query_templates:
+      - "Java Developer"
+      - "Java Backend"
+      - "Spring Boot"
+      - "Java Software Engineer"
+      - "Backend Engineer Java"
+      - "Microservices Java"
+
+  JAVA_FULLSTACK:
+    priority: 2
+    display_name: "Java full stack"
+    allowed_role_families:
+      - SOFTWARE_DEVELOPMENT
+      - FULLSTACK_DEVELOPMENT
+      - BACKEND_DEVELOPMENT
+      - ENTERPRISE_APPLICATION_DEVELOPMENT
+    excluded_role_families:
+      - QA_MANUAL
+      - QA_AUTOMATION_SDET
+      - PRODUCT_MANAGEMENT
+      - PROGRAM_MANAGEMENT
+      - DEVOPS_SRE_INFRA
+      - SUPPORT_HELPDESK
+      - FUNCTIONAL_CONSULTING
+      - SALES_BPO
+      - DATA_ML_ANALYTICS
+      - MOBILE
+    required_anchor_groups:
+      - group: java_core
+        any_of: [Java, JVM, Spring, Spring Boot, Spring MVC, Jakarta EE, J2EE, JavaEE]
+      - group: frontend_core
+        any_of: [React, ReactJS, Angular, Vue, Vue.js, JavaScript, TypeScript]
+    support_signals:
+      - REST
+      - API
+      - microservices
+      - SQL
+      - HTML
+      - CSS
+      - full stack
+    wrong_stack_signals:
+      - Ruby on Rails
+      - Rails
+      - Golang
+      - Django
+      - Laravel
+    reject_when_wrong_stack_dominant: false
+    title_prefilter_signals:
+      - Full Stack
+      - Fullstack
+      - Full-stack
+      - Java Full Stack
+      - Software Engineer
+    query_templates:
+      - "Java Full Stack"
+      - "Full Stack Java Developer"
+      - "Spring Boot React"
+      - "Java React Developer"
+
+  REACT_FRONTEND:
+    priority: 3
+    display_name: "React / frontend"
+    allowed_role_families:
+      - SOFTWARE_DEVELOPMENT
+      - FRONTEND_DEVELOPMENT
+      - FULLSTACK_DEVELOPMENT
+    excluded_role_families:
+      - QA_MANUAL
+      - QA_AUTOMATION_SDET
+      - PRODUCT_MANAGEMENT
+      - PROGRAM_MANAGEMENT
+      - DEVOPS_SRE_INFRA
+      - SUPPORT_HELPDESK
+      - FUNCTIONAL_CONSULTING
+      - SALES_BPO
+      - DATA_ML_ANALYTICS
+      - MOBILE
+    required_anchor_groups:
+      - group: react_core
+        any_of: [React, ReactJS, React.js]
+    support_signals:
+      - JavaScript
+      - TypeScript
+      - HTML
+      - CSS
+      - Redux
+      - Next.js
+      - React Router
+      - responsive UI
+    wrong_stack_signals:
+      - Angular only
+    reject_when_wrong_stack_dominant: false
+    title_prefilter_signals:
+      - React
+      - Frontend
+      - Front-end
+      - Front end
+      - UI Developer
+      - UI Engineer
+      - Web Developer
+      - JavaScript Developer
+    query_templates:
+      - "React Developer"
+      - "Frontend Engineer"
+      - "React Frontend Developer"
+      - "UI Engineer React"
+
+  DOTNET:
+    priority: 4
+    display_name: ".NET / ASP.NET / C#"
+    allowed_role_families:
+      - SOFTWARE_DEVELOPMENT
+      - BACKEND_DEVELOPMENT
+      - FULLSTACK_DEVELOPMENT
+      - ENTERPRISE_APPLICATION_DEVELOPMENT
+    excluded_role_families:
+      - QA_MANUAL
+      - QA_AUTOMATION_SDET
+      - PRODUCT_MANAGEMENT
+      - PROGRAM_MANAGEMENT
+      - DEVOPS_SRE_INFRA
+      - SUPPORT_HELPDESK
+      - FUNCTIONAL_CONSULTING
+      - SALES_BPO
+      - DATA_ML_ANALYTICS
+      - MOBILE
+    required_anchor_groups:
+      - group: dotnet_core
+        any_of: [".NET", ".NET Core", "C#", "ASP.NET", "ASP.NET Core", "dotnet"]
+    support_signals:
+      - Entity Framework
+      - REST
+      - API
+      - SQL Server
+      - React
+      - JavaScript
+      - Azure
+    wrong_stack_signals:
+      - Java only
+      - Ruby on Rails
+      - Golang
+    reject_when_wrong_stack_dominant: false
+    title_prefilter_signals:
+      - .NET
+      - Dotnet
+      - "C#"
+      - ASP.NET
+    query_templates:
+      - ".NET Developer"
+      - "C# Developer"
+      - "ASP.NET Core Developer"
+
+  ENTERPRISE_HR_PAYROLL_INTEGRATION:
+    priority: 5
+    display_name: "Enterprise applications / payroll / HR tech / integration"
+    allowed_role_families:
+      - SOFTWARE_DEVELOPMENT
+      - BACKEND_DEVELOPMENT
+      - FULLSTACK_DEVELOPMENT
+      - ENTERPRISE_APPLICATION_DEVELOPMENT
+    excluded_role_families:
+      - QA_MANUAL
+      - QA_AUTOMATION_SDET
+      - PRODUCT_MANAGEMENT
+      - PROGRAM_MANAGEMENT
+      - DEVOPS_SRE_INFRA
+      - SUPPORT_HELPDESK
+      - FUNCTIONAL_CONSULTING
+      - SALES_BPO
+      - DATA_ML_ANALYTICS
+      - MOBILE
+    required_anchor_groups:
+      - group: enterprise_domain
+        any_of:
+          - payroll
+          - HCM
+          - HR technology
+          - HR tech
+          - human resources
+          - workforce management
+          - HRIS
+          - enterprise application
+          - enterprise applications
+          - business application
+          - business applications
+          - system integration
+          - ERP
+    support_signals:
+      - Java
+      - Spring
+      - API integration
+      - REST
+      - web applications
+      - product development
+    wrong_stack_signals: []
+    reject_when_wrong_stack_dominant: false
+    # "Integration" ALONE is insufficient: the role family must be a development
+    # family (enforced by allowed_role_families) AND a domain anchor present.
+    title_prefilter_signals:
+      - Payroll
+      - HR Technology
+      - HCM
+      - Workforce
+      - Enterprise Application
+      - Integration Developer
+      - Integration Engineer
+      - Business Application
+    query_templates:
+      - "Enterprise Application Developer"
+      - "Payroll Software Engineer"
+      - "HR Technology Developer"
+      - "Integration Developer"
+
+  GENERAL_SOFTWARE:
+    priority: 6
+    display_name: "General software engineering (controlled fallback)"
+    is_fallback: true
+    allowed_role_families:
+      - SOFTWARE_DEVELOPMENT
+      - BACKEND_DEVELOPMENT
+      - FULLSTACK_DEVELOPMENT
+      - FRONTEND_DEVELOPMENT
+      - ENTERPRISE_APPLICATION_DEVELOPMENT
+    excluded_role_families:
+      - QA_MANUAL
+      - QA_AUTOMATION_SDET
+      - PRODUCT_MANAGEMENT
+      - PROGRAM_MANAGEMENT
+      - DEVOPS_SRE_INFRA
+      - SUPPORT_HELPDESK
+      - FUNCTIONAL_CONSULTING
+      - SALES_BPO
+      - DATA_ML_ANALYTICS
+      - MOBILE
+    # No hard technology anchor, BUT at least one transferable/neutral tech is
+    # required and a dominant incompatible stack is rejected (so a Ruby-only or
+    # Go-only backend job cannot re-enter the shortlist as "general software").
+    required_anchor_groups: []
+    require_transferable_or_neutral: true
+    transferable_or_neutral_any:
+      - Java
+      - Spring
+      - React
+      - JavaScript
+      - TypeScript
+      - .NET
+      - "C#"
+      - SQL
+      - REST
+      - API
+      - Python
+      - Node.js
+      - HTML
+      - CSS
+      - software development
+      - application development
+      - web application
+    support_signals:
+      - software engineering
+      - application development
+    wrong_stack_signals:
+      - Ruby
+      - Ruby on Rails
+      - Rails
+      - Go
+      - Golang
+      - Rust
+      - Scala
+      - Elixir
+      - PHP
+      - Laravel
+    reject_when_wrong_stack_dominant: true
+    title_prefilter_signals:
+      - Software Engineer
+      - Software Developer
+      - Associate Software Engineer
+      - Application Developer
+      - SDE
+      - Programmer Analyst
+      - Member of Technical Staff
+    query_templates:
+      - "Software Engineer"
+      - "Software Developer"
+      - "Associate Software Engineer"
+      - "Application Developer"
