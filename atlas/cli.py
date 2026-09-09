@@ -1090,6 +1090,7 @@ def _cmd_daily(args: argparse.Namespace) -> int:
     def _make_runner(run_id, *, live=False):
         market_exec = None
         source_health_provider = None
+        official_followup = None
         seed_jobs = list(jobs)
         if live and live_families:
             from atlas.runtime.live_sources import LivePortalDiscovery
@@ -1112,8 +1113,23 @@ def _cmd_daily(args: argparse.Namespace) -> int:
                     base.update(outcome.health_dict())
                 return base
 
+        # Optional REAL live portal->official follow-up + linkage (§5.5). Runs the
+        # real official ATS adapters for companies with independently-known boards
+        # and links live portal leads to official evidence.
+        if live and bool(getattr(args, "official_followup", False)):
+            from atlas.runtime.official_followup import DEFAULT_KNOWN_SOURCES, LiveOfficialFollowup
+
+            followup = LiveOfficialFollowup(
+                settings, run_id, known_sources=DEFAULT_KNOWN_SOURCES,
+                recency_days=int(getattr(args, "recency_days", 30) or 30),
+                max_portal_pages=int(getattr(args, "max_pages", 2) or 2), max_official=300)
+            official_followup = followup.run
+            if not live_families:
+                seed_jobs = []  # follow-up contributes the real leads
+
         return DailyRunner(settings, run_id, jobs=seed_jobs, candidate=candidate, live=live,
-                           market_exec=market_exec, source_health_provider=source_health_provider)
+                           market_exec=market_exec, official_followup=official_followup,
+                           source_health_provider=source_health_provider)
 
     if sub == "plan":
         run_id = getattr(args, "run_id", None) or _fresh_run_id("daily")
@@ -1471,6 +1487,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_da_run.add_argument("--location", default="India", help="Location filter for live discovery.")
     p_da_run.add_argument("--max-pages", dest="max_pages", type=int, default=2)
     p_da_run.add_argument("--recency-days", dest="recency_days", type=int, default=7)
+    p_da_run.add_argument("--official-followup", dest="official_followup", action="store_true",
+                          help="Run REAL live portal->official follow-up + linkage for known-source companies.")
     p_da_run.add_argument("--allow-private-candidate-to-copilot", dest="allow_private", action="store_true",
                           help="Explicit consent to send real candidate data to Copilot (default OFF).")
     p_da_run.add_argument("--json", action="store_true")
@@ -1485,6 +1503,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_da_resume.add_argument("--location", default="India")
     p_da_resume.add_argument("--max-pages", dest="max_pages", type=int, default=2)
     p_da_resume.add_argument("--recency-days", dest="recency_days", type=int, default=7)
+    p_da_resume.add_argument("--official-followup", dest="official_followup", action="store_true")
     p_da_resume.add_argument("--json", action="store_true")
     p_da_resume.set_defaults(func=_cmd_daily)
 

@@ -99,6 +99,7 @@ class DailyRunner:
         deep_limit: int = 10,
         official_exec: Optional[JobProducer] = None,
         market_exec: Optional[JobProducer] = None,
+        official_followup: Optional[Any] = None,
         source_health_provider: Optional[Any] = None,
         build_docx: bool = True,
         eligible_for_latest: bool = True,
@@ -117,6 +118,8 @@ class DailyRunner:
         self.deep_limit = deep_limit
         self.official_exec = official_exec
         self.market_exec = market_exec
+        self.official_followup = official_followup
+        self.followup_result = None
         self.source_health_provider = source_health_provider
         self.build_docx = build_docx
         self.eligible_for_latest = eligible_for_latest
@@ -203,6 +206,11 @@ class DailyRunner:
         try:
             if self.official_exec is not None:
                 self.jobs.extend(self.official_exec())
+            if self.official_followup is not None:
+                followup = self.official_followup()
+                self.followup_result = followup
+                if followup is not None and hasattr(followup, "rankable_jobs"):
+                    self.jobs.extend(followup.rankable_jobs())
         except AuthExpired as exc:
             return self._enter_waiting(state, DailyPhase.EXECUTE_OFFICIAL, exc)
         self._record_phase_run(DailyPhase.EXECUTE_OFFICIAL)
@@ -387,13 +395,19 @@ class DailyRunner:
                         source_health.update(extra)
                 except Exception as exc:  # noqa: BLE001
                     source_health["provider_error"] = str(exc)
+            verification_summary = {"selected": len(self.result.selected)}
+            if self.followup_result is not None and hasattr(self.followup_result, "to_dict"):
+                fr = self.followup_result.to_dict()
+                verification_summary["official_followup"] = fr
+                verification_summary["official_followup_attempts"] = fr.get("official_attempts", 0)
+                verification_summary["linked_official_verified"] = fr.get("linked_verified_total", 0)
             self.publish_result = self.publisher.publish(
                 self.run_id, status=status, sheet_data=sheet_data,
                 coverage={"jobs": len(self.jobs)},
                 source_health=source_health,
                 recommendations=recommendations_payload(evaluations),
                 portal_leads={"count": 0},
-                verification_summary={"selected": len(self.result.selected)},
+                verification_summary=verification_summary,
                 manifest_extra={"packs": [p.to_dict() for p in self.pack_results]},
                 eligible_for_latest=self.eligible_for_latest,
             )
