@@ -136,10 +136,15 @@ def test_pilot_end_to_end_india_only_with_audit_columns(tmp_path, profile, monke
                       "LLM_Search_Model", "Company_Search_Task_ID"):
         assert audit_col in header
     gi = header.index("Geography_Decision")
+    li_ev = header.index("Location_Evidence")
     ui = header.index("Unsupported_Mandatory_Backend")
     li = header.index("Location")
     for row in ws.iter_rows(min_row=2, values_only=True):
-        assert row[gi] in ("INDIA_PRIMARY", "INDIA_SECONDARY", "REMOTE_INDIA", "INDIA_WIDE"), row
+        # Section 13: the Geography_Decision audit column must read INDIA_ELIGIBLE, with the
+        # fine-grained typed class preserved in Location_Evidence.
+        assert row[gi] == "INDIA_ELIGIBLE", row
+        assert any(t in (row[li_ev] or "") for t in
+                   ("INDIA_PRIMARY", "INDIA_SECONDARY", "REMOTE_INDIA", "INDIA_WIDE")), row
         assert not row[ui], f"unsupported backend in main row: {row}"
         assert "San Francisco" not in (row[li] or "")
     wb.close()

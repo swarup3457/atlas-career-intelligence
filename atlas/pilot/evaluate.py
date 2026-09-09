@@ -110,6 +110,7 @@ class AcceptedJob:
     company_search_task_id: str
     posted_date: str
     updated_date: str
+    geography_class: str = ""   # fine-grained typed decision (INDIA_PRIMARY/SECONDARY/REMOTE_INDIA/INDIA_WIDE)
 
     @property
     def is_recommended(self) -> bool:
@@ -187,8 +188,15 @@ def evaluate_company(
             company=result.company, title=detail.title, location=detail.location, lane=lane,
             role_family=ev.qualification.by_lane[lane].role_family, match=m, evaluation=ev,
             official_url=detail.official_url, requisition_id=detail.requisition_id,
-            geography_decision=(geo.decision if geo else ""),
-            location_evidence=(f"{geo.location_evidence} :: {'; '.join(geo.reasons)}" if geo else detail.location),
+            # Section 13: the Geography_Decision AUDIT COLUMN must read INDIA_ELIGIBLE for an
+            # accepted India row. The fine-grained typed decision (INDIA_PRIMARY/SECONDARY/
+            # REMOTE_INDIA/INDIA_WIDE) is preserved in geography_class and the location evidence.
+            geography_decision="INDIA_ELIGIBLE",
+            geography_class=(geo.decision if geo else ""),
+            location_evidence=(
+                f"{geo.decision}: {geo.location_evidence} :: {'; '.join(geo.reasons)}"
+                if geo else detail.location
+            ),
             supported_stack_evidence=_stack_evidence(tech, ev),
             # An unsupported backend is only a DISQUALIFIER when no supported backend anchors
             # the role. For a Java/.NET-anchored role, any other language is a candidate GAP

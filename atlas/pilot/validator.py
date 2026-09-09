@@ -21,7 +21,9 @@ from atlas.pilot.config import PilotConfig
 from atlas.pilot.evaluate import PilotEvaluation
 from atlas.pilot.models import CompanySearchResult, TERMINAL_STATUSES, SEARCHED_TERMINAL
 
-_INDIA_DECISIONS = frozenset({"INDIA_PRIMARY", "INDIA_SECONDARY", "REMOTE_INDIA", "INDIA_WIDE"})
+_INDIA_DECISIONS = frozenset(
+    {"INDIA_ELIGIBLE", "INDIA_PRIMARY", "INDIA_SECONDARY", "REMOTE_INDIA", "INDIA_WIDE"}
+)
 _JAVA_CORE = ("java", "spring", "jvm", "j2ee", "jakarta")
 _DOTNET_CORE = (".net", "c#", "asp.net", "dotnet")
 _FRONTEND = ("react", "angular", "vue", "javascript", "typescript")

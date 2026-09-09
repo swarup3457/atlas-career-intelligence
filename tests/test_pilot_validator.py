@@ -49,15 +49,23 @@ def config_lanes():
 
 def _india_row(**kw):
     row = {"company": "C0", "title": "Java Backend Engineer", "lane": "JAVA_BACKEND",
-           "geography_decision": "INDIA_PRIMARY", "unsupported_mandatory_backend": "",
+           "geography_decision": "INDIA_ELIGIBLE", "geography_class": "INDIA_PRIMARY",
+           "unsupported_mandatory_backend": "",
            "supported_stack_evidence": "Java, Spring Boot", "requirement_evidence": "matched: Java",
-           "location_evidence": "Bengaluru, India", "recommendation": "STRONG_APPLY"}
+           "location_evidence": "INDIA_PRIMARY: Bengaluru, India", "recommendation": "STRONG_APPLY"}
     row.update(kw)
     return row
 
 
 def test_clean_run_passes(tmp_path, config):
     run_dir = _write_run(tmp_path, accepted=[_india_row()])
+    rep = validate_pilot_run(run_dir, config)
+    assert rep.passed, rep.failures
+
+
+def test_india_eligible_audit_value_passes(tmp_path, config):
+    # Section 13: the audit column value INDIA_ELIGIBLE is the accepted geography verdict.
+    run_dir = _write_run(tmp_path, accepted=[_india_row(geography_decision="INDIA_ELIGIBLE")])
     rep = validate_pilot_run(run_dir, config)
     assert rep.passed, rep.failures
 

@@ -222,7 +222,8 @@ def write_pilot_report(
         {
             "company": a.company, "title": a.title, "location": a.location, "lane": a.lane,
             "official_url": a.official_url, "requisition_id": a.requisition_id,
-            "geography_decision": a.geography_decision, "location_evidence": a.location_evidence,
+            "geography_decision": a.geography_decision, "geography_class": a.geography_class,
+            "location_evidence": a.location_evidence,
             "supported_stack_evidence": a.supported_stack_evidence,
             "unsupported_mandatory_backend": a.unsupported_mandatory_backend,
             "experience_decision": a.experience_decision, "requirement_evidence": a.requirement_evidence,
