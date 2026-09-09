@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 
-__all__ = ["signal_present", "find_signals", "normalize_text"]
+__all__ = ["signal_present", "find_signals", "normalize_text", "strip_alternative_language_enumerations"]
 
 
 def normalize_text(text: object) -> str:
@@ -60,3 +60,38 @@ def find_signals(text: object, signals) -> tuple[str, ...]:
             if sig not in seen:
                 seen.append(sig)
     return tuple(seen)
+
+
+# ---------------------------------------------------------------------------
+# Alternative-language enumerations (prompt s.3.3, s.8)
+# ---------------------------------------------------------------------------
+# A single programming language token. Short tokens (go/r/c) carry a right word
+# boundary so "go" never matches "google". Longer names first for greediness.
+_LANG = (
+    r"(?:python|typescript|javascript|node\.?js|golang|java(?:script)?|scala|kotlin|"
+    r"swift|ruby|rust|elixir|haskell|perl|dart|php|c\+\+|c#|go(?![a-z])|r(?![a-z])|c(?![a-z+#]))"
+)
+# "X, Y, Java, or Z" — 3+ languages joined by commas and a terminal "or" is an
+# alternatives list ("use any one"), NOT a mandatory Java/JVM backend.
+_ALT_LANG_LIST_RE = re.compile(
+    r"(?<![a-z0-9])(?:one of\s+|such as\s+|like\s+|using\s+|e\.g\.,?\s+|for example,?\s+)?"
+    r"(" + _LANG + r"(?:\s*,\s*" + _LANG + r"){1,}\s*,?\s*or\s+" + _LANG + r")(?![a-z0-9])",
+    re.I,
+)
+
+
+def strip_alternative_language_enumerations(text: object) -> str:
+    """Neutralize alternative-language enumerations of 3+ languages so no single
+    language inside "Python, TypeScript, Java, or Go" anchors a lane. A genuine
+    Java/Spring mention elsewhere in the same posting is untouched."""
+    if not text:
+        return "" if text is None else str(text)
+    s = str(text)
+
+    def _repl(m: re.Match[str]) -> str:
+        span = m.group(0)
+        if len(re.findall(_LANG, span, re.I)) >= 3:
+            return " alternative programming languages "
+        return span
+
+    return _ALT_LANG_LIST_RE.sub(_repl, s)

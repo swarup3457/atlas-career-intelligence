@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Acme Careers (Atlas offline SPA fixture)</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  header { display:flex; justify-content:space-between; align-items:center; }
+  .job-card { border:1px solid #ccc; padding:8px; margin:8px 0; }
+  .location { color:#555; margin-left:12px; }
+  #detail { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Acme Careers</h1>
+  <!-- A normal header Sign in link: NOT an auth wall (prompt s.3.4). -->
+  <a id="signin" href="#/signin">Sign in</a>
+</header>
+
+<section id="search">
+  <label for="q">Search jobs</label>
+  <input id="q" name="q" type="search" placeholder="Search jobs by title" aria-label="Search jobs">
+  <label for="loc">Location</label>
+  <select id="loc" name="loc" aria-label="Location">
+    <option value="All">All locations</option>
+    <option value="India">India</option>
+    <option value="United States">United States</option>
+    <option value="United Kingdom">United Kingdom</option>
+  </select>
+  <button id="go" type="button">Search</button>
+</section>
+
+<section id="results"><p id="hint">Type a query and press Search.</p></section>
+
+<section id="detail">
+  <a id="back-link" href="#/">&larr; Back to results</a>
+  <h2 id="d-title"></h2>
+  <p class="location" id="d-loc"></p>
+  <div id="d-desc"></div>
+</section>
+
+<script>
+const JOBS = [
+  {id:1, title:"Java Backend Engineer", location:"Bengaluru, India", desc:"Build Java Spring Boot microservices and REST APIs. 2 years experience required."},
+  {id:2, title:"Java Full Stack Developer", location:"Hyderabad, India", desc:"Java, Spring Boot and React. 3 years experience."},
+  {id:3, title:"Java Platform Engineer", location:"Pune, India", desc:"Java platform engineering. 8+ years experience required."},
+  {id:4, title:"React Frontend Developer", location:"Bengaluru, India", desc:"React and TypeScript UI. 2 years experience."},
+  {id:5, title:".NET Core Developer", location:"Chennai, India", desc:"C#, .NET Core and ASP.NET. 4+ years experience."},
+  {id:6, title:"Java Developer", location:"New York, United States", desc:"Java backend services. 3 years experience."},
+  {id:7, title:"Payroll Software Engineer", location:"Hyderabad, India", desc:"Java payroll and HCM integration platform. 2 years experience."},
+  {id:8, title:"Java Services Engineer", location:"London, United Kingdom", desc:"Java services. 5 years experience."}
+];
+const PAGE = 2;
+let filtered = [];
+let shown = 0;
+
+function render() {
+  const res = document.getElementById('results');
+  res.innerHTML = '';
+  const slice = filtered.slice(0, shown);
+  if (slice.length === 0) { res.innerHTML = '<p id="hint">No results yet. Search to begin.</p>'; return; }
+  for (const j of slice) {
+    const card = document.createElement('div');
+    card.className = 'job-card';
+    card.innerHTML = '<a class="job-link" href="#/job/' + j.id + '">' + j.title + '</a>' +
+                     '<span class="location">' + j.location + '</span>';
+    res.appendChild(card);
+  }
+  if (shown < filtered.length) {
+    const more = document.createElement('button');
+    more.id = 'more'; more.type = 'button'; more.textContent = 'Load more';
+    more.addEventListener('click', () => { shown = Math.min(filtered.length, shown + PAGE); render(); });
+    res.appendChild(more);
+  }
+}
+
+function doSearch() {
+  const q = (document.getElementById('q').value || '').toLowerCase();
+  const loc = document.getElementById('loc').value;
+  filtered = JOBS.filter(j =>
+    (!q || j.title.toLowerCase().includes(q)) &&
+    (loc === 'All' || j.location.includes(loc))
+  );
+  shown = Math.min(PAGE, filtered.length);
+  render();
+}
+document.getElementById('go').addEventListener('click', doSearch);
+document.getElementById('q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+function route() {
+  const m = (location.hash || '').match(/#\/job\/(\d+)/);
+  const detail = document.getElementById('detail');
+  const results = document.getElementById('results');
+  if (m) {
+    const j = JOBS.find(x => x.id === parseInt(m[1], 10));
+    if (j) {
+      document.getElementById('d-title').textContent = j.title;
+      document.getElementById('d-loc').textContent = j.location;
+      document.getElementById('d-desc').textContent = j.desc;
+      detail.style.display = 'block';
+      results.style.display = 'none';
+      return;
+    }
+  }
+  detail.style.display = 'none';
+  results.style.display = 'block';
+}
+window.addEventListener('hashchange', route);
+route();
+</script>
+</body>
+</html>

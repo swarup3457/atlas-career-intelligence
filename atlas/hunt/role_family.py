@@ -28,6 +28,8 @@ class RoleFamily(str, enum.Enum):
     FULLSTACK_DEVELOPMENT = "FULLSTACK_DEVELOPMENT"
     FRONTEND_DEVELOPMENT = "FRONTEND_DEVELOPMENT"
     ENTERPRISE_APPLICATION_DEVELOPMENT = "ENTERPRISE_APPLICATION_DEVELOPMENT"
+    ARCHITECTURE_ADVISORY = "ARCHITECTURE_ADVISORY"
+    TECH_LEAD = "TECH_LEAD"
     QA_MANUAL = "QA_MANUAL"
     QA_AUTOMATION_SDET = "QA_AUTOMATION_SDET"
     DEVOPS_SRE_INFRA = "DEVOPS_SRE_INFRA"
@@ -63,6 +65,54 @@ class RoleFamilyDecision:
 # "Software Development Engineer in Test" is SDET, not SOFTWARE_DEVELOPMENT.
 # Each entry: (family, title_signals, body_signals_that_confirm).
 _EXCLUDED_TITLE_SIGNALS: tuple[tuple[RoleFamily, tuple[str, ...]], ...] = (
+    (
+        # Solution/enterprise/technical architecture and advisory roles — a hard
+        # non-development exclusion (prompt s.3.3, s.8). Title-weighted only, so a
+        # development role that merely mentions "microservices architecture" in the
+        # body is never misclassified.
+        RoleFamily.ARCHITECTURE_ADVISORY,
+        (
+            "solution architect",
+            "solutions architect",
+            "solution architecture",
+            "solutions architecture",
+            "software architect",
+            "enterprise architect",
+            "technical architect",
+            "system architect",
+            "systems architect",
+            "application architect",
+            "data architect",
+            "cloud architect",
+            "security architect",
+            "integration architect",
+            "architect",
+            "architecture",
+            "advisor",
+            "advisory",
+        ),
+    ),
+    (
+        # Technical / team / engineering lead roles (prompt s.3.3, s.8).
+        RoleFamily.TECH_LEAD,
+        (
+            "tech lead",
+            "tech-lead",
+            "technical lead",
+            "team lead",
+            "engineering lead",
+            "development lead",
+            "dev lead",
+            "delivery lead",
+            "squad lead",
+            "module lead",
+            "technical team lead",
+            "lead engineer",
+            "lead software engineer",
+            "lead software developer",
+            "lead developer",
+        ),
+    ),
     (
         RoleFamily.QA_AUTOMATION_SDET,
         (
@@ -242,6 +292,7 @@ _SOFTWARE = (
     "development engineer",
     "product engineer",
     "developer",
+    "dev",
     "engineer",
 )
 

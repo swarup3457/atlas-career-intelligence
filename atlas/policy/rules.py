@@ -10,7 +10,9 @@ genuinely ambiguous semantic judgments only.
 from __future__ import annotations
 
 import datetime
+import html
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional
 
@@ -55,6 +57,28 @@ _PREF_AFTER_RE = re.compile(
     re.I,
 )
 _SINGLE_RE = re.compile(rf"(\d+(?:\.\d+)?)\s*{_YEARS}", re.I)
+# A preferred/desirable figure written as "N+ preferred" (no "years" token) — a
+# common Workday shape (e.g. "2+ years required, 5+ preferred"). It must be
+# captured as PREFERRED, never as a mandatory minimum.
+_PREF_PLUS_AFTER_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*\+[^.0-9]{0,18}?(?:preferred|desirable|desired|a\s+plus|nice\s+to\s+have|ideally|good\s+to\s+have|bonus)",
+    re.I,
+)
+
+# Any dash-like code point normalized to ASCII hyphen-minus so "8–12+" parses.
+_DASHES_RE = re.compile(r"[\u2010\u2011\u2012\u2013\u2014\u2015\u2212\u2043\uFE58\uFE63\uFF0D]")
+
+
+def _normalize_experience_text(s: str) -> str:
+    """Canonicalize experience text BEFORE number extraction: decode HTML
+    entities (numeric ``&#43;`` included), NFKC-normalize, and fold dash/
+    non-breaking-space variants. This is the defensive fix for audit root
+    cause 5 — a hard ``4+`` written ``4&#43;`` must be seen as ``4+``."""
+    s = html.unescape(s)
+    s = unicodedata.normalize("NFKC", s)
+    s = _DASHES_RE.sub("-", s)
+    s = s.replace("\u00a0", " ")
+    return s
 
 
 def extract_experience(text: Optional[str]) -> ExtractedExperience:
@@ -65,10 +89,10 @@ def extract_experience(text: Optional[str]) -> ExtractedExperience:
     does NOT establish a mandatory minimum."""
     if not text or not str(text).strip():
         return ExtractedExperience(ambiguous=True, raw=text or "")
-    s = str(text)
+    s = _normalize_experience_text(str(text))
 
     preferred_years: Optional[float] = None
-    pm = _PREF_BEFORE_RE.search(s) or _PREF_AFTER_RE.search(s)
+    pm = _PREF_BEFORE_RE.search(s) or _PREF_AFTER_RE.search(s) or _PREF_PLUS_AFTER_RE.search(s)
     if pm:
         preferred_years = float(pm.group(1))
 

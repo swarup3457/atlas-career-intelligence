@@ -274,21 +274,22 @@ lanes:
       - DATA_ML_ANALYTICS
       - MOBILE
     required_anchor_groups:
-      - group: enterprise_domain
+      - group: hr_payroll_domain
         any_of:
           - payroll
           - HCM
+          - human capital management
           - HR technology
           - HR tech
+          - HR systems
           - human resources
           - workforce management
+          - workforce
           - HRIS
-          - enterprise application
-          - enterprise applications
-          - business application
-          - business applications
-          - system integration
-          - ERP
+          - benefits administration
+          - time and attendance
+          - talent management
+          - applicant tracking
     support_signals:
       - Java
       - Spring
@@ -296,6 +297,13 @@ lanes:
       - REST
       - web applications
       - product development
+      - enterprise application
+      - enterprise applications
+      - business application
+      - business applications
+      - system integration
+      - integration
+      - ERP
     wrong_stack_signals: []
     reject_when_wrong_stack_dominant: false
     # "Integration" ALONE is insufficient: the role family must be a development

@@ -21,7 +21,7 @@ from typing import Optional
 from atlas.hunt.experience_v2 import ExperienceFit, ExperienceFitBand, evaluate_experience_fit
 from atlas.hunt.role_family import RoleFamilyDecision, classify_role_family
 from atlas.hunt.role_intent import LaneContract, RoleIntentPolicy
-from atlas.hunt.signals import find_signals, signal_present
+from atlas.hunt.signals import find_signals, signal_present, strip_alternative_language_enumerations
 from atlas.policy.models import ExperiencePolicy
 
 __all__ = [
@@ -94,7 +94,9 @@ def qualify_lane(
 ) -> RoleQualificationDecision:
     """Qualify one job against one lane contract (conjunctive)."""
     rf = role_family or classify_role_family(job.title, job.description)
-    text = job.evidence_text
+    # Alternative-language enumerations ("Python, TypeScript, Java, or Go") do not
+    # anchor a lane (prompt s.3.3/s.8): neutralize them before signal matching.
+    text = strip_alternative_language_enumerations(job.evidence_text)
     reasons: list[str] = []
 
     def decide(status: QualificationStatus, **kw) -> RoleQualificationDecision:

@@ -440,8 +440,8 @@ _WS_RE = re.compile(r"\s+")
 
 
 def _strip_html(html: str) -> str:
-    text = re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=re.I | re.S)
-    text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
-    text = _TAG_RE.sub(" ", text)
-    text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-    return _WS_RE.sub(" ", text).strip()
+    # Canonical normalization (V4 s.7): full html.unescape (numeric entities
+    # included), NFKC, dash/nbsp folding, section boundaries preserved.
+    from atlas.pilot.normalize import normalize_source_text
+
+    return normalize_source_text(html)
