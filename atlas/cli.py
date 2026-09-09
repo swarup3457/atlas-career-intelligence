@@ -1081,8 +1081,39 @@ def _cmd_daily(args: argparse.Namespace) -> int:
     candidate = _synthetic_daily_candidate()
     jobs = _synthetic_daily_jobs()
 
+    # Optional REAL live portal discovery (read-only). When --sources is given,
+    # the daily run seeds real leads from the configured portals in addition to
+    # the synthetic demonstration set; source health is published truthfully.
+    sources_arg = (getattr(args, "sources", None) or "").strip()
+    live_families = tuple(s.strip() for s in sources_arg.split(",") if s.strip()) if sources_arg else ()
+
     def _make_runner(run_id, *, live=False):
-        return DailyRunner(settings, run_id, jobs=jobs, candidate=candidate, live=live)
+        market_exec = None
+        source_health_provider = None
+        seed_jobs = list(jobs)
+        if live and live_families:
+            from atlas.runtime.live_sources import LivePortalDiscovery
+
+            disco = LivePortalDiscovery(
+                lane=getattr(args, "lane", None) or "JAVA_BACKEND",
+                location=getattr(args, "location", None) or "India",
+                recency_days=int(getattr(args, "recency_days", 7) or 7),
+                max_pages=int(getattr(args, "max_pages", 2) or 2),
+            )
+            producer = disco.as_market_exec(live_families)
+            market_exec = producer
+            # when real leads are seeded, do not also inject the synthetic demo set
+            seed_jobs = []
+
+            def source_health_provider():
+                outcome = getattr(producer, "holder", {}).get("outcome")
+                base = {"mode": "live", "families": list(live_families)}
+                if outcome is not None:
+                    base.update(outcome.health_dict())
+                return base
+
+        return DailyRunner(settings, run_id, jobs=seed_jobs, candidate=candidate, live=live,
+                           market_exec=market_exec, source_health_provider=source_health_provider)
 
     if sub == "plan":
         run_id = getattr(args, "run_id", None) or _fresh_run_id("daily")
@@ -1092,6 +1123,7 @@ def _cmd_daily(args: argparse.Namespace) -> int:
         else:
             print(f"Daily plan for run {run_id}:")
             print(f"  jobs={plan['jobs']} triage_limit={plan['triage_limit']} deep_limit={plan['deep_limit']}")
+            print(f"  live sources: {', '.join(live_families) if live_families else '(none; synthetic demo set)'}")
             print(f"  run dir:   {plan['run_dir']}")
             print(f"  workbook:  {plan['workbook_path']}")
         return 0
@@ -1433,6 +1465,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_da_run.add_argument("--run-id", default=None)
     p_da_run.add_argument("--live", action="store_true")
     p_da_run.add_argument("--background", action="store_true", help="Headless/background (no interactive prompts).")
+    p_da_run.add_argument("--sources", default=None,
+                          help="Comma-separated READ-ONLY live portals to seed real leads (e.g. linkedin,naukri).")
+    p_da_run.add_argument("--lane", default="JAVA_BACKEND", help="Search lane for live discovery.")
+    p_da_run.add_argument("--location", default="India", help="Location filter for live discovery.")
+    p_da_run.add_argument("--max-pages", dest="max_pages", type=int, default=2)
+    p_da_run.add_argument("--recency-days", dest="recency_days", type=int, default=7)
     p_da_run.add_argument("--allow-private-candidate-to-copilot", dest="allow_private", action="store_true",
                           help="Explicit consent to send real candidate data to Copilot (default OFF).")
     p_da_run.add_argument("--json", action="store_true")
@@ -1442,6 +1480,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_da_resume.add_argument("--run-id", required=True)
     p_da_resume.add_argument("--live", action="store_true")
     p_da_resume.add_argument("--background", action="store_true")
+    p_da_resume.add_argument("--sources", default=None)
+    p_da_resume.add_argument("--lane", default="JAVA_BACKEND")
+    p_da_resume.add_argument("--location", default="India")
+    p_da_resume.add_argument("--max-pages", dest="max_pages", type=int, default=2)
+    p_da_resume.add_argument("--recency-days", dest="recency_days", type=int, default=7)
     p_da_resume.add_argument("--json", action="store_true")
     p_da_resume.set_defaults(func=_cmd_daily)
 

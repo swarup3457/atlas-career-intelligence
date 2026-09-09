@@ -99,6 +99,7 @@ class DailyRunner:
         deep_limit: int = 10,
         official_exec: Optional[JobProducer] = None,
         market_exec: Optional[JobProducer] = None,
+        source_health_provider: Optional[Any] = None,
         build_docx: bool = True,
         eligible_for_latest: bool = True,
         stop_after_phase: Optional[DailyPhase] = None,
@@ -116,6 +117,7 @@ class DailyRunner:
         self.deep_limit = deep_limit
         self.official_exec = official_exec
         self.market_exec = market_exec
+        self.source_health_provider = source_health_provider
         self.build_docx = build_docx
         self.eligible_for_latest = eligible_for_latest
         self.stop_after_phase = stop_after_phase
@@ -229,6 +231,10 @@ class DailyRunner:
             seen.setdefault(j.job_key, j)
         self.jobs = list(seen.values())
         self.jobs_by_key = seen
+        # Durably persist the discovered lead set so a fresh-process RESUME
+        # reconstructs the EXACT same jobs without re-running (non-deterministic)
+        # live discovery.
+        self._persist_leads()
         state["jobs_discovered"] = len(self.jobs)
         self._record_phase_run(DailyPhase.CANONICALIZE)
         return state
@@ -258,8 +264,12 @@ class DailyRunner:
         """Reconstruct the deterministic in-memory pipeline (dedup + ranking)
         if it is not already present. Pure and side-effect-free, so calling it
         on RESUME reproduces identical results WITHOUT rerunning any graph phase
-        (the phase-run counters are untouched)."""
+        (the phase-run counters are untouched). For live runs, the discovered
+        leads are reloaded from the durable per-run leads file so resume is exact
+        despite non-deterministic live discovery."""
         if not self.jobs_by_key:
+            if not self.jobs:
+                self.jobs = self._load_leads()
             seen: dict[str, RankableJob] = {}
             for j in self.jobs:
                 seen.setdefault(j.job_key, j)
@@ -272,6 +282,60 @@ class DailyRunner:
                 self.jobs, self.policy, self.candidate, controller=self.controller,
                 model=self.model, triage_limit=self.triage_limit, deep_limit=self.deep_limit,
             )
+
+    # -- durable lead persistence (exact live resume) -----------------------
+    def _leads_path(self) -> Path:
+        self.paths.run_dir.mkdir(parents=True, exist_ok=True)
+        return self.paths.run_dir / "discovered_leads.json"
+
+    @staticmethod
+    def _job_to_row(j: RankableJob) -> dict[str, Any]:
+        return {
+            "job_key": j.job_key, "company": j.company, "title": j.title, "location": j.location,
+            "lane": j.lane, "work_mode": j.work_mode, "description": j.description,
+            "mandatory_requirements": list(j.mandatory_requirements),
+            "preferred_requirements": list(j.preferred_requirements),
+            "experience_text": j.experience_text, "eligibility_text": j.eligibility_text,
+            "posted_date": j.posted_date.isoformat() if j.posted_date else None,
+            "verification_state": j.verification_state, "has_live_official_page": j.has_live_official_page,
+            "is_fetchable": j.is_fetchable, "source_family": j.source_family,
+            "canonical_id": j.canonical_id, "url": j.url,
+        }
+
+    @staticmethod
+    def _row_to_job(row: dict[str, Any]) -> RankableJob:
+        pd = row.get("posted_date")
+        posted = datetime.date.fromisoformat(pd) if pd else None
+        return RankableJob(
+            job_key=row["job_key"], company=row.get("company", ""), title=row.get("title", ""),
+            location=row.get("location", ""), lane=row.get("lane"), work_mode=row.get("work_mode", "UNKNOWN"),
+            description=row.get("description", ""),
+            mandatory_requirements=tuple(row.get("mandatory_requirements", [])),
+            preferred_requirements=tuple(row.get("preferred_requirements", [])),
+            experience_text=row.get("experience_text", ""), eligibility_text=row.get("eligibility_text", ""),
+            posted_date=posted, verification_state=row.get("verification_state", "PORTAL_CURRENT_LEAD"),
+            has_live_official_page=bool(row.get("has_live_official_page", False)),
+            is_fetchable=bool(row.get("is_fetchable", True)), source_family=row.get("source_family", ""),
+            canonical_id=row.get("canonical_id"), url=row.get("url"),
+        )
+
+    def _persist_leads(self) -> None:
+        rows = [self._job_to_row(j) for j in self.jobs]
+        tmp = self._leads_path().with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rows, indent=2, sort_keys=True, default=str), encoding="utf-8")
+        import os as _os
+
+        _os.replace(tmp, self._leads_path())
+
+    def _load_leads(self) -> list[RankableJob]:
+        p = self._leads_path()
+        if not p.exists():
+            return list(self.jobs)
+        try:
+            rows = json.loads(p.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return list(self.jobs)
+        return [self._row_to_job(r) for r in rows]
 
     def _h_build_packs(self, state: DailyState, _rt) -> DailyState:
         self._ensure_pipeline()
@@ -315,10 +379,18 @@ class DailyRunner:
         }]
         status = "COMPLETE"
         try:
+            source_health = {"mode": "live" if self.live else "offline"}
+            if self.source_health_provider is not None:
+                try:
+                    extra = self.source_health_provider()
+                    if isinstance(extra, dict):
+                        source_health.update(extra)
+                except Exception as exc:  # noqa: BLE001
+                    source_health["provider_error"] = str(exc)
             self.publish_result = self.publisher.publish(
                 self.run_id, status=status, sheet_data=sheet_data,
                 coverage={"jobs": len(self.jobs)},
-                source_health={"mode": "live" if self.live else "offline"},
+                source_health=source_health,
                 recommendations=recommendations_payload(evaluations),
                 portal_leads={"count": 0},
                 verification_summary={"selected": len(self.result.selected)},

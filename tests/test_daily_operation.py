@@ -122,6 +122,38 @@ def test_auth_expired_yields_waiting_for_human(settings, candidate):
     assert res.latest_updated in (None, False)
 
 
+def test_live_market_exec_crash_resume_reloads_persisted_leads(settings, candidate):
+    """A live-style run seeds leads via market_exec (non-deterministic in
+    reality). After a crash before publish, a FRESH runner with NO seed jobs and
+    NO market_exec must resume EXACTLY from the durably persisted lead set."""
+    from atlas.runtime.live_sources import LivePortalDiscovery
+    from tests.test_live_sources import FakeAdapter, _result
+
+    def _market_exec():
+        disco = LivePortalDiscovery(lane="JAVA_BACKEND", location="India", max_pages=1,
+                                    adapter_factory=lambda fam: FakeAdapter([_result(i) for i in range(4)]))
+        return disco.discover(("linkedin",)).jobs
+
+    # process 1: seed via market_exec, stop after DEEP_EVALUATE (crash before publish)
+    r1 = DailyRunner(settings, "DAILY_LIVE_RESUME", jobs=[], candidate=candidate,
+                     market_exec=_market_exec, build_docx=False,
+                     stop_after_phase=DailyPhase.DEEP_EVALUATE, live=True)
+    r1.run()
+    from pathlib import Path
+    leads_file = Path(r1.paths.run_dir) / "discovered_leads.json"
+    assert leads_file.is_file()  # leads durably persisted at CANONICALIZE
+
+    # process 2: fresh runner, NO seed jobs, NO market_exec -> reloads persisted leads
+    r2 = DailyRunner(settings, "DAILY_LIVE_RESUME", jobs=[], candidate=candidate,
+                     market_exec=None, build_docx=False, live=True)
+    res2 = r2.resume()
+    assert res2.terminal_state == "COMPLETE"
+    assert res2.jobs_discovered == 4  # exact same 4 leads, not re-discovered
+    assert res2.latest_updated is True
+    # EXECUTE_MARKET ran exactly once (only in process 1); never rerun on resume
+    assert r2.phase_run_counts().get("EXECUTE_MARKET") == 1
+
+
 # --------------------------------------------------------------------------- #
 # Scheduler installer (dry-run default, explicit enable, quoted paths)
 # --------------------------------------------------------------------------- #

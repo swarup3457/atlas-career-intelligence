@@ -153,7 +153,16 @@ class TriageRanker:
                 break
         return out
 
+    @staticmethod
+    def _has_requirements(job: RankableJob) -> bool:
+        return bool(job.mandatory_requirements or job.preferred_requirements)
+
     def _triage_score(self, job: RankableJob, axes: EligibilityAxes) -> int:
+        # A job with NO extracted requirements (e.g. an unhydrated portal lead)
+        # has UNKNOWN fit; it must not score as a perfect match from absent
+        # requirements. Sort such leads by freshness urgency only.
+        if not self._has_requirements(job):
+            return max(0, min(100, round(_FRESHNESS_URGENCY.get(axes.freshness, 0))))
         mand_ratio, *_ = _ratio(job.mandatory_requirements, self.candidate.evidence)
         pref_ratio, *_ = _ratio(job.preferred_requirements, self.candidate.evidence)
         score = mand_ratio * 60 + pref_ratio * 20
@@ -211,12 +220,25 @@ class TriageRanker:
                 self.candidate.evidence_ids[t] for t in topics if t in self.candidate.evidence_ids
             )
             strengths = tuple(supported) + tuple(advisory.get(key, ()))
+            # Unhydrated leads (no known requirements) have UNKNOWN fit, not a
+            # perfect score; report None and MANUAL_VERIFICATION so the report is
+            # truthful rather than an inflated match.
+            has_reqs = self._has_requirements(job)
+            if within and has_reqs:
+                display_fit = score
+                rec = Recommendation.MONITOR.value
+            elif within and not has_reqs:
+                display_fit = None
+                rec = Recommendation.MANUAL_VERIFICATION.value
+            else:
+                display_fit = None
+                rec = Recommendation.NOT_EVALUATED.value
             evals[key] = JobEvaluation(
                 job_key=key, company=job.company, title=job.title, lane=axes.lane,
                 eligibility=axes.status, verification=axes.verification_state, freshness=axes.freshness,
-                candidate_fit=score if within else None,
-                recommendation=(Recommendation.MONITOR.value if within else Recommendation.NOT_EVALUATED.value),
-                confidence=0.5 if within else 0.0,
+                candidate_fit=display_fit,
+                recommendation=rec,
+                confidence=0.5 if (within and has_reqs) else 0.0,
                 reasoning_model=self.model, reasoning_version=REASONING_VERSION,
                 supported_evidence_ids=supported_ids, strengths=strengths, gaps=tuple(missing),
                 tier="TRIAGE" if within else "NOT_EVALUATED", selected=False,
@@ -310,7 +332,8 @@ class DeepEvaluator:
         supported_ids = tuple(
             self.candidate.evidence_ids[t] for t in matched if t in self.candidate.evidence_ids
         )
-        fit = round(mand_ratio * 70 + pref_ratio * 30)
+        has_reqs = bool(job.mandatory_requirements or job.preferred_requirements)
+        fit = round(mand_ratio * 70 + pref_ratio * 30) if has_reqs else None
 
         # recommendation mapping (deterministic; eligibility gate is the ceiling)
         if axes.status == EligibilityStatus.CLOSED.value:
@@ -318,6 +341,9 @@ class DeepEvaluator:
         elif axes.status in (EligibilityStatus.EXCLUDED.value, EligibilityStatus.NOT_ELIGIBLE.value):
             rec = Recommendation.REJECT
         elif axes.verification_state in ("PORTAL_CURRENT_LEAD", "MANUAL_VERIFICATION"):
+            rec = Recommendation.MANUAL_VERIFICATION
+        elif not has_reqs:
+            # eligible/official but no extracted requirements -> cannot claim fit
             rec = Recommendation.MANUAL_VERIFICATION
         elif mand_ratio >= 1.0:
             if axes.verification_state == "VERIFIED_OFFICIAL" and axes.freshness == "0-7 days":
