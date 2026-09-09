@@ -120,7 +120,8 @@ def _make_process_company(runtime: HuntRuntime):
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         cov = _coverage_rows(company, snapshot, runtime.campaign.lanes, prefilter, evaluations, checked_at=now_iso)
         matches = [
-            match_qualified(ev.detail, ev.qualification.by_lane[ev.final_lane], runtime.candidate, today=runtime.today)
+            match_qualified(ev.detail, ev.qualification.by_lane[ev.final_lane], runtime.candidate,
+                            today=runtime.today, geo=ev.geo_decision)
             for ev in evaluations
             if ev.final_status == QualificationStatus.QUALIFIED.value and ev.final_lane
         ]

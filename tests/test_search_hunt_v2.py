@@ -129,7 +129,7 @@ def test_senior_java_high_experience_rejected(intent, exp_policy):
         ("Java Backend Engineer", "Java, Spring Boot, REST APIs, Hibernate, MySQL.", "2 years", "JAVA_BACKEND"),
         ("Software Engineer", "Spring Boot is mandatory. Build backend services.", "1-3 years", "JAVA_BACKEND"),
         ("Java Full Stack Developer", "Java, Spring Boot backend with React frontend, TypeScript.", "2-3 years", "JAVA_FULLSTACK"),
-        ("Full Stack Engineer", "Node.js backend, React frontend, TypeScript, MongoDB.", "2 years", "REACT_FRONTEND"),
+        ("Full Stack Engineer", "Node.js backend, React frontend, TypeScript, MongoDB.", "2 years", "GENERAL_SOFTWARE"),
         ("React Developer", "React, ReactJS, TypeScript, responsive UI.", "2 years", "REACT_FRONTEND"),
         (".NET Developer", "C#, ASP.NET Core, Entity Framework, SQL Server.", "2 years", "DOTNET"),
         ("Payroll Software Engineer", "Build payroll and HCM integration software using Java Spring Boot.", "2-3 years", "ENTERPRISE_HR_PAYROLL_INTEGRATION"),
@@ -145,6 +145,21 @@ def test_positive_controls(intent, exp_policy, title, desc, experience, want):
 def test_node_react_not_java_fullstack(intent, exp_policy):
     r = _q(intent, exp_policy, "Full Stack Engineer", "Node.js backend, React frontend, TypeScript.", "2 years")
     assert r.by_lane["JAVA_FULLSTACK"].status != QualificationStatus.QUALIFIED.value
+
+
+def test_node_react_rejected_from_react_lane(intent, exp_policy):
+    # audit 3.4: a full-stack role with a mandatory Node.js backend is NOT a
+    # candidate-relevant React role, even though "React" appears.
+    r = _q(intent, exp_policy, "Full Stack Engineer", "Node.js backend, React frontend, TypeScript.", "2 years")
+    assert r.by_lane["REACT_FRONTEND"].status == QualificationStatus.REJECT_WRONG_STACK.value
+    assert r.primary_lane != "REACT_FRONTEND"
+
+
+def test_java_react_still_react_or_fullstack(intent, exp_policy):
+    # a supported backend (Java) alongside React is fine.
+    r = _q(intent, exp_policy, "React Developer", "React, TypeScript UI backed by Java Spring Boot services.", "2 years")
+    assert r.primary_lane in ("REACT_FRONTEND", "JAVA_FULLSTACK")
+    assert r.by_lane["REACT_FRONTEND"].status == QualificationStatus.QUALIFIED.value
 
 
 # ---------------------------------------------------------------------------

@@ -166,6 +166,14 @@ def write_hunt_report(
     stamp = now.strftime("%Y%m%d-%H%M%S")
     run_dir = Path(output_root) / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    # Immutability guard: a run id is written exactly once. A second attempt to
+    # publish into an existing run directory is refused deterministically,
+    # regardless of sub-second filename timing (build spec 25).
+    existing_wb = list(run_dir.glob("Atlas_Jobs_*.xlsx"))
+    if existing_wb:
+        raise FileExistsError(
+            f"run {run_id} already has a published workbook ({existing_wb[0].name}); refusing to overwrite"
+        )
     workbook_path = run_dir / f"Atlas_Jobs_{stamp}_{run_id}.xlsx"
 
     # index qualified evaluations by job key for the shortlist join

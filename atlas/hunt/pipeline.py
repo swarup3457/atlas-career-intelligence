@@ -15,6 +15,7 @@ from typing import Mapping, Optional, Protocol, Sequence
 
 from atlas.hunt.campaign import CompanyCampaign, CompanyRef
 from atlas.hunt.experience_v2 import ExperienceFitBand
+from atlas.hunt.geography import JobGeographyDecision, classify_job_geography
 from atlas.hunt.matching import CandidateMatchDecision, HuntCandidate, match_qualified
 from atlas.hunt.models import (
     BoardSnapshot,
@@ -33,7 +34,7 @@ from atlas.hunt.qualification import (
 )
 from atlas.hunt.role_intent import RoleIntentPolicy
 from atlas.policy.loader import PolicyBundle
-from atlas.policy.rules import NOT_ELIGIBLE, freshness_band, international_eligibility
+from atlas.policy.rules import freshness_band
 
 __all__ = [
     "BoardProvider",
@@ -93,6 +94,7 @@ class JobEvaluation:
     final_lane: Optional[str]
     geo_class: str = ""
     freshness: str = ""
+    geo_decision: Optional[JobGeographyDecision] = None
 
 
 @dataclass
@@ -146,22 +148,33 @@ def evaluate_detail(
         job, intent, experience_policy=policy.experience,
         candidate_years=candidate_years, overall_evidence_strong=overall_evidence_strong,
     )
-    geo = international_eligibility(detail.eligibility_text or detail.description, policy.geography)
+    geo_dec = classify_job_geography(
+        detail.location,
+        work_mode=detail.work_mode,
+        eligibility_text=detail.eligibility_text or "",
+        description=detail.description or "",
+        geography=policy.geography,
+    )
+    geo = geo_dec.decision
     fresh = freshness_band(detail.posted_date, today=today, has_live_official_page=detail.has_live_official_page)
 
     if not qual.qualified:
         # surface the primary lane's (or best) rejection reason
         best = _best_reject(qual)
         return JobEvaluation(detail, qual, best.status if best else QualificationStatus.NEEDS_DETAIL.value,
-                             None, geo_class=geo, freshness=fresh)
+                             None, geo_class=geo, freshness=fresh, geo_decision=geo_dec)
 
-    if geo == NOT_ELIGIBLE:
-        return JobEvaluation(detail, qual, "REJECT_LOCATION", qual.primary_lane, geo_class=geo, freshness=fresh)
+    # India-only hard gate: the JOB's own geography must be India-eligible. UNKNOWN/
+    # N/A and any foreign/sponsored-lead decision is a hard main-output veto.
+    if not geo_dec.india_eligible:
+        return JobEvaluation(detail, qual, "REJECT_LOCATION", qual.primary_lane,
+                             geo_class=geo, freshness=fresh, geo_decision=geo_dec)
     if fresh in _STALE_BANDS:
-        return JobEvaluation(detail, qual, "REJECT_FRESHNESS", qual.primary_lane, geo_class=geo, freshness=fresh)
+        return JobEvaluation(detail, qual, "REJECT_FRESHNESS", qual.primary_lane,
+                             geo_class=geo, freshness=fresh, geo_decision=geo_dec)
 
     return JobEvaluation(detail, qual, QualificationStatus.QUALIFIED.value, qual.primary_lane,
-                         geo_class=geo, freshness=fresh)
+                         geo_class=geo, freshness=fresh, geo_decision=geo_dec)
 
 
 def _best_reject(qual: JobQualification) -> Optional[RoleQualificationDecision]:
@@ -275,7 +288,8 @@ def run_campaign(
         for ev in evaluations:
             if ev.final_status == QualificationStatus.QUALIFIED.value and ev.final_lane:
                 result.matches.append(
-                    match_qualified(ev.detail, ev.qualification.by_lane[ev.final_lane], candidate, today=today)
+                    match_qualified(ev.detail, ev.qualification.by_lane[ev.final_lane], candidate,
+                                    today=today, geo=ev.geo_decision)
                 )
 
         result.coverage.extend(

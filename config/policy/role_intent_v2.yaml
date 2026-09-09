@@ -179,6 +179,7 @@ lanes:
     required_anchor_groups:
       - group: react_core
         any_of: [React, ReactJS, React.js]
+    enforce_supported_backend: true
     support_signals:
       - JavaScript
       - TypeScript

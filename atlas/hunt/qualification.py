@@ -164,6 +164,35 @@ def qualify_lane(
                 return decide(QualificationStatus.REJECT_WRONG_STACK)
             matched_anchors.extend(transferable)
 
+    # --- 3b) supported-backend gate (React/full-stack precision, audit 3.4) ----
+    if lane.enforce_supported_backend:
+        from atlas.hunt.stack_evidence import (
+            StackVerdict,
+            analyze_technology_evidence,
+            react_fullstack_verdict,
+        )
+
+        tech = analyze_technology_evidence(
+            job.title, job.description, job.mandatory_requirements, job.preferred_requirements
+        )
+        verdict, why = react_fullstack_verdict(tech)
+        if verdict == StackVerdict.REJECT:
+            reasons.append(f"supported-backend gate: {why}")
+            return decide(
+                QualificationStatus.REJECT_WRONG_STACK,
+                matched_anchor_groups=tuple(matched_groups), matched_anchors=tuple(matched_anchors),
+                support_signals_present=support_present,
+                dominant_stack=tech.dominant_backend or dominant,
+            )
+        if verdict == StackVerdict.AMBIGUOUS:
+            reasons.append(f"supported-backend gate ambiguous: {why}")
+            return decide(
+                QualificationStatus.AMBIGUOUS_REVIEW,
+                matched_anchor_groups=tuple(matched_groups), matched_anchors=tuple(matched_anchors),
+                support_signals_present=support_present,
+                dominant_stack=tech.dominant_backend or dominant,
+            )
+
     # --- 4) experience gate ---------------------------------------------------
     exp_fit: Optional[ExperienceFit] = None
     exp_band: Optional[str] = None

@@ -1392,6 +1392,9 @@ def build_parser() -> argparse.ArgumentParser:
     from atlas.hunt.cli import register_hunt_commands
     register_hunt_commands(subparsers)
 
+    from atlas.pilot.cli import register_llm_pilot_commands
+    register_llm_pilot_commands(subparsers)
+
     p_doctor = subparsers.add_parser("doctor", help="Run the offline health check.")
     p_doctor.set_defaults(func=_cmd_doctor)
 

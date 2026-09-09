@@ -17,6 +17,7 @@ from atlas.candidate.eligibility import Recommendation, match_requirement
 from atlas.candidate.models import EvidenceClass, _STRENGTH
 from atlas.data_integrity.normalizers import identity_token
 from atlas.hunt.experience_v2 import ExperienceFitBand
+from atlas.hunt.geography import GeoDecision, JobGeographyDecision
 from atlas.hunt.models import JobDetailRevision
 from atlas.hunt.qualification import RoleQualificationDecision
 from atlas.hunt.role_intent import RoleIntentPolicy
@@ -43,6 +44,16 @@ _REC_RANK = {
 }
 
 _FRESH_SCORE = {"0-7 days": 5, "8-14 days": 4, "15-30 days": 2}
+
+# Location points are awarded from the JOB's India geography decision, NEVER from
+# the candidate's own location group (audit root cause 3.2). Foreign/unknown jobs
+# are rejected before matching, so they should not appear here.
+_GEO_LOCATION_SCORE = {
+    GeoDecision.INDIA_PRIMARY.value: 10,
+    GeoDecision.INDIA_SECONDARY.value: 8,
+    GeoDecision.REMOTE_INDIA.value: 8,
+    GeoDecision.INDIA_WIDE.value: 6,
+}
 
 
 @dataclass(frozen=True)
@@ -98,9 +109,14 @@ def match_qualified(
     candidate: HuntCandidate,
     *,
     today=None,
+    geo: Optional[JobGeographyDecision] = None,
 ) -> CandidateMatchDecision:
     """Score a qualified job with the V1 evidence-weighted model and assign a
-    recommendation band. Verification/experience gates can cap the band."""
+    recommendation band. Verification/experience gates can cap the band.
+
+    Location points come from the JOB's India geography decision (``geo``), never
+    from the candidate's location group. A job with NO extracted requirement
+    evidence can never become an apply-family recommendation (audit 3.2 / prompt s.9)."""
     reasons: list[str] = []
     mand_matched, mand_missing = _coverage(detail.mandatory_requirements, candidate.evidence)
     pref_matched, _ = _coverage(detail.preferred_requirements, candidate.evidence)
@@ -122,7 +138,8 @@ def match_qualified(
 
     score += 15.0 if decision.support_signals_present else 10.0
     score += 10.0 if (not candidate.target_lanes or decision.lane in candidate.target_lanes) else 6.0
-    score += {"PRIMARY": 10, "SECONDARY": 8}.get(candidate.location_group, 5)
+    # Location points from the JOB's geography, not the candidate's location group.
+    score += _GEO_LOCATION_SCORE.get(geo.decision, 0) if geo is not None else 0
     score += 5.0 * (len(pref_matched) / (len(detail.preferred_requirements) or 1)) if detail.preferred_requirements else 0.0
 
     fresh = freshness_band(detail.posted_date, today=today, has_live_official_page=detail.has_live_official_page)
@@ -131,6 +148,7 @@ def match_qualified(
     score_i = int(round(min(100.0, max(0.0, score))))
 
     official = detail.verification_state in ("VERIFIED_OFFICIAL", "VERIFIED_AUTHORIZED_RECRUITER")
+    has_req_evidence = bool(detail.mandatory_requirements or detail.preferred_requirements)
     if exp == ExperienceFitBand.MANUAL_VERIFICATION.value:
         rec = Recommendation.MANUAL_VERIFICATION.value
         reasons.append("ambiguous seniority requires manual verification")
@@ -147,6 +165,12 @@ def match_qualified(
         rec = Recommendation.STRETCH.value
     else:
         rec = Recommendation.MONITOR.value
+
+    # An empty-requirements job can never be an apply-family recommendation: a
+    # recommended row MUST carry non-empty requirement evidence (prompt s.9/13).
+    if not has_req_evidence and rec in APPLY_FAMILY:
+        rec = Recommendation.MANUAL_VERIFICATION.value
+        reasons.append("no extracted requirement evidence; cannot be an apply recommendation")
 
     return CandidateMatchDecision(
         job_key=detail.canonical_key, lane=decision.lane, company=detail.company, title=detail.title,

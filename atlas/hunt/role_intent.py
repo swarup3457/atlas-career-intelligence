@@ -53,6 +53,12 @@ class LaneContract:
     wrong_stack_signals: tuple[str, ...] = ()
     reject_when_wrong_stack_dominant: bool = True
     is_fallback: bool = False
+    # When true, a full-stack/frontend lane additionally rejects a role whose
+    # MANDATORY backend is an unsupported language (Python/Node/Ruby/Go/PHP/...)
+    # unless a supported backend (Java/.NET) is also present. Used by
+    # REACT_FRONTEND so "React + mandatory Node/Python backend" is not treated as
+    # a candidate-relevant React role (audit root cause 3.4).
+    enforce_supported_backend: bool = False
     require_transferable_or_neutral: bool = False
     transferable_or_neutral_any: tuple[str, ...] = ()
     title_prefilter_signals: tuple[str, ...] = ()
@@ -88,6 +94,7 @@ class LaneContract:
             wrong_stack_signals=_tuple(raw.get("wrong_stack_signals")),
             reject_when_wrong_stack_dominant=bool(raw.get("reject_when_wrong_stack_dominant", True)),
             is_fallback=bool(raw.get("is_fallback", False)),
+            enforce_supported_backend=bool(raw.get("enforce_supported_backend", False)),
             require_transferable_or_neutral=bool(raw.get("require_transferable_or_neutral", False)),
             transferable_or_neutral_any=_tuple(raw.get("transferable_or_neutral_any")),
             title_prefilter_signals=_tuple(raw.get("title_prefilter_signals")),
