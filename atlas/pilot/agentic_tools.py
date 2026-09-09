@@ -41,6 +41,25 @@ __all__ = ["AgenticCompanyToolbox", "build_v4_sdk_tools", "V4_TOOL_NAMES", "look
 
 _EXPERIENCE_HINT = ("experience", "years", "yrs")
 
+# Publicly-known SECONDARY official career hosts for the fixed cohort. An employer
+# often serves its careers on a different registrable domain than its main site
+# (e.g. jpmorganchase.com vs careers.jpmorgan.com). These are public official
+# domains, added ONLY to widen the browser's trusted-host set — never used to seed
+# job answers. Keyed by lowercased company name.
+SECONDARY_OFFICIAL_HOSTS: dict = {
+    "jpmorgan chase": ("jpmorgan.com", "careers.jpmorgan.com", "jpmc.com"),
+    "jpmorgan": ("jpmorgan.com", "careers.jpmorgan.com"),
+    "tcs": ("ibegin.tcs.com", "tcs.com"),
+    "cognizant": ("careers.cognizant.com",),
+    "infosys": ("career.infosys.com", "digitalcareers.infosys.com"),
+    "oracle": ("careers.oracle.com", "oracle.com"),
+    "sap": ("jobs.sap.com", "sap.com"),
+    "ibm": ("careers.ibm.com", "ibm.com"),
+    "adp": ("jobs.adp.com", "workforcenow.adp.com", "adp.com"),
+    "accenture": ("accenture.com",),
+    "fiserv": ("careers.fiserv.com", "fiserv.com"),
+}
+
 # A captured "job detail" is only a real posting when its title reads like a role.
 # The live browser/web path can otherwise capture a page banner (e.g. ADP's
 # "YOU ARE ONE STEP CLOSER TO FINDING YOUR NEXT JOB") as a job — such non-jobs
@@ -89,12 +108,15 @@ class AgenticCompanyToolbox:
     actor: Optional[CompanyBrowserActor] = None
     submitted: Optional[CompanySearchResult] = None
     # blocker / error signals (Python-decided terminality)
-    _auth_confirmed: bool = False
-    _access_limited: bool = False
-    _browser_error: bool = False
+    _auth_confirmed: bool = False          # BROWSER-confirmed login wall only
+    _http_access_limited: bool = False     # a plain-HTTP (non-JS) discovery 403 — a WEAK signal
+    _browser_access_limited: bool = False  # the BROWSER itself was refused (hard nav block)
+    _browser_error: bool = False           # retryable browser/tool hiccup (e.g. click timeout)
     _async_error: bool = False
     _browser_started: bool = False
+    _browser_searched: bool = False        # the browser produced at least one observed result set
     _web_lead_found: bool = False
+    extra_trusted_hosts: tuple = ()
     action_budget: int = 60
 
     def __post_init__(self) -> None:
@@ -127,8 +149,13 @@ class AgenticCompanyToolbox:
         out = self.base.discover_official_careers_entry(domain, entry_hint)
         self._sync_web_domain()
         d = self.base.discovery
-        if d is not None and d.status in (CompanySearchStatus_legacy_access()):
-            self._access_limited = True
+        # A plain-HTTP (non-JS, Atlas-UA) discovery 403/access status is a WEAK
+        # signal: enterprise WAFs routinely refuse a non-browser client while a
+        # real browser renders fine (prompt s.3.4 — 403 is ACCESS_LIMITED unless
+        # the BROWSER confirms a wall). Record it, but the stateful browser is the
+        # real arbiter — never let it terminate the company on its own.
+        if d is not None and d.status in CompanySearchStatus_legacy_access():
+            self._http_access_limited = True
         return out
 
     def search_official_career_site(self, query: str, lane: str = "",
@@ -158,10 +185,27 @@ class AgenticCompanyToolbox:
         return out
 
     # -- stateful browser (12 tools) ----------------------------------------
+    def _trusted_hosts(self) -> tuple:
+        hosts = list(self.extra_trusted_hosts)
+        d = self.base.discovery
+        if d is not None and d.official_domain:
+            hosts.append(d.official_domain)
+        # publicly-known secondary official career hosts for the fixed cohort
+        # (an employer often serves careers on a different registrable domain,
+        # e.g. jpmorganchase.com vs careers.jpmorgan.com). Public info, not seeds.
+        hosts.extend(SECONDARY_OFFICIAL_HOSTS.get(self.company.lower(), ()))
+        seen, out = set(), []
+        for h in hosts:
+            h = (h or "").lower().lstrip(".")
+            if h and h not in seen:
+                seen.add(h)
+                out.append(h)
+        return tuple(out)
+
     def _ensure_actor(self) -> CompanyBrowserActor:
         if self.actor is None:
             factory = self.browser_factory
-            trusted = tuple(h for h in (self.base.discovery.official_domain if self.base.discovery else "",) if h)
+            trusted = self._trusted_hosts()
             if factory is not None:
                 self.actor = factory(actor_id=f"{self.task_id or self.company}", company=self.company,
                                      task_id=self.task_id, trusted_hosts=trusted)
@@ -172,17 +216,25 @@ class AgenticCompanyToolbox:
                 )
         return self.actor
 
-    def _guard(self, fn, *a, **kw) -> dict:
+    def _guard(self, fn, *a, is_navigation: bool = False, **kw) -> dict:
+        from atlas.pilot.browser_actor import is_hard_navigation_block
         try:
             return {"ok": True, **(fn(*a, **kw) or {})}
         except BrowserActorError as exc:
             msg = str(exc)
-            if "asyncio" in msg.lower() or "event loop" in msg.lower():
+            low = msg.lower()
+            if "asyncio" in low or "event loop" in low:
                 self._async_error = True
+                self.base.limitations.append(f"async runtime error (retryable): {msg[:160]}")
+            elif is_navigation and is_hard_navigation_block(msg):
+                # the BROWSER itself was refused by the server -> a real external block
+                self._browser_access_limited = True
+                self.base.limitations.append(f"browser-confirmed access block: {msg[:160]}")
             else:
+                # a soft interaction hiccup (e.g. a click/locator timeout) -> retryable
                 self._browser_error = True
-            self.base.limitations.append(f"browser tool error (retryable): {msg[:160]}")
-            return {"ok": False, "error": msg, "retryable": True}
+                self.base.limitations.append(f"browser tool error (retryable): {msg[:160]}")
+            return {"ok": False, "error": msg, "retryable": not self._browser_access_limited}
         except Exception as exc:  # noqa: BLE001
             self._browser_error = True
             self.base.limitations.append(f"browser tool error (retryable): {type(exc).__name__}: {exc}")
@@ -191,6 +243,8 @@ class AgenticCompanyToolbox:
     def _note_challenge(self, obs: dict) -> None:
         ch = (obs or {}).get("challenge") or {}
         content = bool(obs.get("job_cards") or obs.get("headings"))
+        if content:
+            self._browser_searched = True
         if looks_like_login_wall(password_field_present=ch.get("password_field", False),
                                  job_content_visible=content,
                                  signin_link_only=ch.get("signin_link", False)):
@@ -199,7 +253,18 @@ class AgenticCompanyToolbox:
     def browser_start(self, url: str) -> dict:
         self._browser_started = True
         actor = self._ensure_actor()
-        out = self._guard(actor.start, url)
+        out = self._guard(actor.start, url, is_navigation=True)
+        if out.get("ok"):
+            self._note_challenge(out)
+        return out
+
+    def browser_goto_search(self, url: str) -> dict:
+        """Navigate the persistent page directly to a trusted search-results URL
+        (query/location params) — reliable for SPAs that filter via the URL and
+        avoids fragile button clicks."""
+        self._browser_started = True
+        actor = self._ensure_actor()
+        out = self._guard(actor.goto_search, url, is_navigation=True)
         if out.get("ok"):
             self._note_challenge(out)
         return out
@@ -241,7 +306,7 @@ class AgenticCompanyToolbox:
         # Capture the card's title/location BEFORE navigating (the handle map is
         # replaced by the detail page's observation once we navigate).
         pre_card = dict(getattr(actor, "_last_cards", {}).get(handle, {})) if handle else {}
-        out = self._guard(actor.open_job_detail, handle, url)
+        out = self._guard(actor.open_job_detail, handle, url, is_navigation=True)
         if out.get("ok"):
             self._capture_detail(out, card=pre_card, lane_hint=lane_hint)
         return out
@@ -259,23 +324,21 @@ class AgenticCompanyToolbox:
 
     # -- convenience: one lane search on the current browser page -----------
     def browser_search_lane(self, lane: str, query: str, india_location: str = "India") -> dict:
-        """Compose a bounded lane search on the live page: fill the first search input,
-        set an India location if present, submit, wait, observe + collect cards. Marks the
-        lane attempted. Every step is handle-based and read-only."""
+        """Compose a bounded, robust lane search on the live page: fill the first
+        search input, set an India location if present, submit (short click with an
+        Enter fallback), wait, then observe + collect cards. A single fragile click
+        never aborts the lane. The lane is marked ATTEMPTED only when a result set
+        was actually OBSERVED (prompt s.9: observed query/filter/results)."""
         actor = self._ensure_actor()
-        try:
-            obs = actor.observe()
-        except BrowserActorError as exc:
-            self._browser_error = True
-            return {"ok": False, "error": str(exc), "retryable": True}
+        obs = self._guard(actor.observe)
+        if not obs.get("ok"):
+            return {"ok": False, "lane": lane, "query": query, "error": obs.get("error"), "observed": False}
         self._note_challenge(obs)
-        # search input
         search = next((i for i in obs.get("inputs", [])
                        if any(k in (i.get("placeholder", "") + i.get("label", "") + i.get("name", "")).lower()
                               for k in ("search", "keyword", "title", "role", "what"))), None)
         if search:
             self._guard(actor.fill, search["handle"], query)
-        # location
         loc = next((i for i in obs.get("inputs", [])
                     if any(k in (i.get("placeholder", "") + i.get("label", "") + i.get("name", "")).lower()
                            for k in ("location", "where", "city"))), None)
@@ -284,25 +347,32 @@ class AgenticCompanyToolbox:
                 self._guard(actor.select_option, loc["handle"], india_location)
             else:
                 self._guard(actor.fill, loc["handle"], india_location)
-        # submit: prefer a Search button, else Enter in the search field
-        btn = next((b for b in obs.get("buttons", []) if "search" in (b.get("text", "").lower())), None)
-        if btn:
-            self._guard(actor.click, btn["handle"])
-        elif search:
-            self._guard(actor.press, "Enter", search["handle"])
-        self._guard(actor.wait, ms=1200)
+        # submit: prefer Enter in the search field (reliable, no navigation wait),
+        # then a short-timeout Search-button click as a fallback. Neither aborts.
+        submitted = False
+        if search:
+            r = self._guard(actor.press, "Enter", search["handle"])
+            submitted = r.get("ok", False)
+        if not submitted:
+            btn = next((b for b in obs.get("buttons", []) if "search" in (b.get("text", "").lower())), None)
+            if btn:
+                self._guard(actor.click, btn["handle"], timeout_ms=5000)
+        self._guard(actor.wait, ms=1400)
         cards = self._guard(actor.collect_job_cards)
-        if lane in self.base.lanes:
+        observed = cards.get("ok", False)
+        if observed:
+            self._browser_searched = True
+        if lane in self.base.lanes and observed:
             cov = self.base.lanes[lane]
             cov.attempted = True
             cov.queries.append(query)
             cov.pages += 1
-            cov.candidates += int(cards.get("count", 0)) if cards.get("ok") else 0
+            cov.candidates += int(cards.get("count", 0))
         self.base.queries_attempted.append(query)
         self.base.pages_or_interactions += 1
-        return {"ok": cards.get("ok", False), "lane": lane, "query": query,
-                "cards": cards.get("job_cards", []) if cards.get("ok") else [],
-                "count": cards.get("count", 0) if cards.get("ok") else 0}
+        return {"ok": observed, "lane": lane, "query": query, "observed": observed,
+                "cards": cards.get("job_cards", []) if observed else [],
+                "count": cards.get("count", 0) if observed else 0}
 
     def _capture_detail(self, detail_out: dict, *, card: Optional[dict] = None, handle: str = "",
                         lane_hint: str = "") -> None:
@@ -356,13 +426,9 @@ class AgenticCompanyToolbox:
         all_lanes = len(searched_lanes) == len(primary)
         details = len(self.base.details)
         d = self.base.discovery
+        made_progress = bool(searched_lanes or self._browser_searched)
 
-        if self._async_error and not searched_lanes:
-            return CompanySearchStatus.ASYNC_RUNTIME_ERROR.value
-        if self._browser_error and not searched_lanes:
-            return CompanySearchStatus.BROWSER_TOOL_ERROR.value
-        if self._auth_confirmed and not searched_lanes:
-            return CompanySearchStatus.AUTH_REQUIRED_CONFIRMED.value
+        # All five lanes genuinely searched -> the company is genuinely searched.
         if all_lanes:
             return (CompanySearchStatus.SEARCHED_COMPLETE_WITH_MATCHES.value if details
                     else CompanySearchStatus.SEARCHED_COMPLETE_NO_MATCHES.value)
@@ -371,17 +437,35 @@ class AgenticCompanyToolbox:
             if any(self.base.lanes[l].board_snapshot_evaluated for l in primary):
                 return (CompanySearchStatus.SEARCHED_COMPLETE_WITH_MATCHES.value if details
                         else CompanySearchStatus.SEARCHED_COMPLETE_NO_MATCHES.value)
+
+        # BROWSER-confirmed external blocks are truthful terminal outcomes.
         if self._auth_confirmed:
             return CompanySearchStatus.AUTH_REQUIRED_CONFIRMED.value
-        if self._access_limited:
+        if self._browser_access_limited and not made_progress:
             return CompanySearchStatus.ACCESS_LIMITED_EXTERNAL.value
-        if d is None or (not d.resolved and not self._browser_started and not self._web_lead_found):
-            return CompanySearchStatus.OFFICIAL_SOURCE_UNRESOLVED.value
-        if searched_lanes:
-            return CompanySearchStatus.INCOMPLETE_LANE_CHECKLIST.value
-        if self._browser_error:
+
+        # Internal / retryable faults (never terminal) — the governor retries.
+        if self._async_error and not made_progress:
+            return CompanySearchStatus.ASYNC_RUNTIME_ERROR.value
+        if self._browser_error and not made_progress:
             return CompanySearchStatus.BROWSER_TOOL_ERROR.value
-        return CompanySearchStatus.OFFICIAL_SOURCE_UNRESOLVED.value
+
+        # Nothing resolved and nothing searched: if ONLY a plain-HTTP (non-JS) 403
+        # was seen and the browser never confirmed a block, that is a weak external
+        # signal -> ACCESS_LIMITED_EXTERNAL (truthful, not searched); otherwise the
+        # source was never resolved.
+        if not made_progress:
+            if self._browser_access_limited or (self._http_access_limited and self._browser_started):
+                return CompanySearchStatus.ACCESS_LIMITED_EXTERNAL.value
+            if d is None or (not d.resolved and not self._browser_started and not self._web_lead_found):
+                if self._http_access_limited:
+                    return CompanySearchStatus.ACCESS_LIMITED_EXTERNAL.value
+                return CompanySearchStatus.OFFICIAL_SOURCE_UNRESOLVED.value
+            return CompanySearchStatus.OFFICIAL_SOURCE_UNRESOLVED.value
+
+        # Some lanes searched but not all five -> incomplete (retryable), so the
+        # governor retries THIS company to finish the checklist.
+        return CompanySearchStatus.INCOMPLETE_LANE_CHECKLIST.value
 
     def submit_company_search_result(self, status: str = "") -> dict:
         self.base.tool_calls += 1
@@ -416,10 +500,10 @@ def CompanySearchStatus_legacy_access() -> tuple:
 V4_TOOL_NAMES = frozenset({
     "resolve_official_company_site", "discover_official_careers_entry", "search_official_career_site",
     "open_official_job_detail", "web_search_leads", "web_fetch_official",
-    "browser_start", "browser_observe", "browser_fill", "browser_click", "browser_press",
-    "browser_select_option", "browser_wait", "browser_scroll_or_load_more", "browser_collect_job_cards",
-    "browser_open_job_detail", "browser_back", "browser_close", "browser_search_lane",
-    "submit_company_search_result",
+    "browser_start", "browser_goto_search", "browser_observe", "browser_fill", "browser_click",
+    "browser_press", "browser_select_option", "browser_wait", "browser_scroll_or_load_more",
+    "browser_collect_job_cards", "browser_open_job_detail", "browser_back", "browser_close",
+    "browser_search_lane", "submit_company_search_result",
 })
 
 
@@ -524,6 +608,9 @@ def build_v4_sdk_tools(tb: AgenticCompanyToolbox) -> list[Any]:
           tb.web_fetch_official, WebFetchParams),
         T("browser_start", "Open ONE persistent read-only browser session at an official/ATS career URL.",
           tb.browser_start, StartParams),
+        T("browser_goto_search", "Navigate the persistent browser to a trusted search-results URL "
+          "(the site's own ?q=&location= URL). Reliable for SPAs that filter via the URL; avoids clicks.",
+          tb.browser_goto_search, StartParams),
         T("browser_observe", "Return a bounded structured observation of the current page (handles, cards, inputs).",
           tb.browser_observe, EmptyParams),
         T("browser_fill", "Type text into an input referenced by a handle from the latest observation.",

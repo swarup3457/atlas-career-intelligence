@@ -29,7 +29,8 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
-__all__ = ["CompanyBrowserActor", "BrowserActorError", "Observation", "actor_registrable_domain"]
+__all__ = ["CompanyBrowserActor", "BrowserActorError", "Observation", "actor_registrable_domain",
+           "is_hard_navigation_block"]
 
 _DEFAULT_NAV_TIMEOUT_MS = 15000
 _DEFAULT_ACTION_TIMEOUT_S = 30.0
@@ -47,6 +48,21 @@ _TRUSTED_ATS_SUFFIXES = (
 
 class BrowserActorError(RuntimeError):
     """A browser actor fault (retryable). NEVER a terminal company outcome."""
+
+
+# Substrings in a Playwright error that indicate the SERVER refused the browser
+# (a real access block), distinct from a soft interaction timeout. Used to
+# classify a browser-confirmed external block vs a retryable tool hiccup.
+_HARD_NAV_MARKERS = (
+    "err_http_response_code_failure", "err_too_many_redirects", "err_connection_refused",
+    "err_connection_reset", "err_name_not_resolved", "err_cert", "err_ssl", "err_aborted",
+    "net::err", "status code 403", "status code 401", "http 403", "http 401",
+)
+
+
+def is_hard_navigation_block(message: object) -> bool:
+    low = str(message or "").lower()
+    return any(m in low for m in _HARD_NAV_MARKERS)
 
 
 def actor_registrable_domain(host: str) -> str:
@@ -401,14 +417,32 @@ class CompanyBrowserActor:
         return {"ok": True, "handle": handle, "value": value}
 
     # -- tool 4: click -------------------------------------------------------
-    def click(self, handle: str) -> dict:
+    def click(self, handle: str, *, timeout_ms: Optional[int] = None) -> dict:
         self.action_count += 1
-        return self._submit(self._click(handle))
+        return self._submit(self._click(handle, timeout_ms),
+                            timeout=(self.action_timeout_s if timeout_ms is None
+                                     else min(self.action_timeout_s, timeout_ms / 1000 + 3)))
 
-    async def _click(self, handle: str) -> dict:
+    async def _click(self, handle: str, timeout_ms: Optional[int] = None) -> dict:
         loc = self._locator(handle)
-        await loc.click(timeout=self.nav_timeout_ms)
+        await loc.click(timeout=timeout_ms if timeout_ms is not None else self.nav_timeout_ms)
         return {"ok": True, "handle": handle}
+
+    # -- direct search-URL navigation (reliable for query-param SPAs) --------
+    def goto_search(self, url: str) -> dict:
+        """Navigate the persistent page to a trusted search-results URL (e.g. a
+        careers site's own ?q=&location= URL). Read-only; a hard server refusal
+        surfaces as a BrowserActorError classified as a navigation block."""
+        self.action_count += 1
+        return self._submit(self._goto_search(url),
+                            timeout=max(self.action_timeout_s, self.nav_timeout_ms / 1000 + 8)).to_dict()
+
+    async def _goto_search(self, url: str) -> Observation:
+        if not self._trusted(url):
+            raise BrowserActorError(f"refused untrusted search URL: {url}")
+        await self._page.goto(url, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
+        await self._page.wait_for_timeout(600)
+        return await self._observe()
 
     # -- tool 5: press -------------------------------------------------------
     def press(self, key: str, handle: str = "") -> dict:

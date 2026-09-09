@@ -86,7 +86,8 @@ def test_v4_tool_surface_names_and_count(config):
     tb = AgenticCompanyToolbox(company="Acme", config=config)
     names = {t.name for t in build_v4_sdk_tools(tb)}
     assert names == set(V4_TOOL_NAMES)
-    assert len(names) == 20
+    assert len(names) == 21
+    assert "browser_goto_search" in names
     # the terminal tool is submit
     tb.cleanup()
 

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Globex Careers (Atlas offline query-param SPA fixture)</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  .job-card { border:1px solid #ccc; padding:8px; margin:8px 0; }
+  .location { color:#555; margin-left:12px; }
+  /* The Search button is covered by an invisible overlay so a direct click
+     times out (simulating a fragile enterprise-SPA control). The reliable path
+     is Enter in the field or a query-param URL. */
+  #overlay { position:fixed; top:0; left:0; right:0; bottom:0; z-index:5; background:transparent; }
+  #go { position:relative; z-index:1; }
+</style>
+</head>
+<body>
+<div id="overlay"></div>
+<header><h1>Globex Careers</h1><a id="signin" href="#/signin">Sign in</a></header>
+
+<section id="search">
+  <label for="q">Search jobs</label>
+  <input id="q" name="q" type="search" placeholder="Search jobs by title" aria-label="Search jobs">
+  <label for="loc">Location</label>
+  <input id="loc" name="loc" type="text" placeholder="Location" aria-label="Location">
+  <button id="go" type="button">Search</button>
+</section>
+
+<section id="results"><p id="hint">Search to begin.</p></section>
+
+<script>
+const JOBS = [
+  {id:1, title:"Java Backend Engineer", location:"Bengaluru, India", desc:"Java Spring Boot microservices. 2 years experience."},
+  {id:2, title:"Java Full Stack Developer", location:"Hyderabad, India", desc:"Java, Spring Boot and React. 3 years."},
+  {id:3, title:"React Frontend Developer", location:"Pune, India", desc:"React and TypeScript UI. 2 years."},
+  {id:4, title:".NET Core Developer", location:"Chennai, India", desc:"C#, .NET Core and ASP.NET. 4+ years."},
+  {id:5, title:"Payroll Software Engineer", location:"Hyderabad, India", desc:"Java payroll and HCM integration. 2 years."},
+  {id:6, title:"Java Developer", location:"New York, United States", desc:"Java backend. 3 years."}
+];
+
+function params() {
+  const u = new URL(location.href);
+  return { q: (u.searchParams.get('q')||'').toLowerCase(), loc: (u.searchParams.get('loc')||'') };
+}
+function render(list) {
+  const res = document.getElementById('results');
+  res.innerHTML = '';
+  if (!list.length) { res.innerHTML = '<p id="hint">No results.</p>'; return; }
+  for (const j of list) {
+    const c = document.createElement('div');
+    c.className = 'job-card';
+    c.innerHTML = '<a class="job-link" href="?job=' + j.id + '">' + j.title + '</a>' +
+                  '<span class="location">' + j.location + '</span>';
+    res.appendChild(c);
+  }
+}
+function doSearch(q, loc) {
+  q = (q||'').toLowerCase();
+  render(JOBS.filter(j => (!q || j.title.toLowerCase().includes(q)) &&
+                          (!loc || j.location.includes(loc))));
+}
+const p = params();
+if (p.q || p.loc) doSearch(p.q, p.loc);
+
+document.getElementById('q').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doSearch(document.getElementById('q').value, document.getElementById('loc').value);
+});
+document.getElementById('go').addEventListener('click', () => {
+  doSearch(document.getElementById('q').value, document.getElementById('loc').value);
+});
+</script>
+</body>
+</html>
