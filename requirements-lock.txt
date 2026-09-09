@@ -35,6 +35,7 @@ charset-normalizer==3.5.1
 colorama==0.4.6
 distro==1.9.0
 et_xmlfile==2.0.0
+github-copilot-sdk==1.0.13
 greenlet==3.5.5
 h11==0.16.0
 httpcore==1.0.9
@@ -66,11 +67,13 @@ pydantic_core==2.46.5
 pyee==13.0.1
 Pygments==2.21.0
 pytest==9.1.1
+python-dateutil==2.9.0.post0
 python-docx==1.2.0
 PyYAML==6.0.3
 requests==2.34.2
 requests-toolbelt==1.0.0
 sniffio==1.3.1
+six==1.17.0
 sqlite-vec==0.1.9
 tenacity==9.1.4
 truststore==0.10.4

@@ -267,8 +267,17 @@ def test_model_selection_prefers_configured_then_available():
 
 
 def test_official_transport_unavailable_quarantines():
-    # No transport provided -> lazily-bound official transport that is not wired.
-    ctrl = CopilotSdkController()
+    # Force the "SDK/runtime/auth unavailable" condition deterministically (no
+    # real call): a transport whose run() raises CopilotSdkUnavailable must
+    # quarantine, never crash the caller.
+    class UnavailableTransport:
+        def available_models(self):
+            return []
+
+        def run(self, **kw):
+            raise CopilotSdkUnavailable("runtime not provisioned in this environment")
+
+    ctrl = CopilotSdkController(transport=UnavailableTransport())
     res = ctrl.run_agent("triage-ranker", "rank", {})
     assert res.quarantined
     assert res.usage["events"][-1]["outcome"] == "SDK_UNAVAILABLE"
@@ -282,3 +291,30 @@ def test_build_controller_from_settings():
     ctrl = build_copilot_controller(s, transport=FakeTransport())
     assert ctrl.configured_model == s.controller_model
     assert ctrl.private_data_allowed() is False  # default settings withhold consent
+
+
+def test_official_sdk_is_pinned_and_mit():
+    import atlas.controllers.copilot as mod
+
+    assert mod.OFFICIAL_SDK_DISTRIBUTION == "github-copilot-sdk"
+    assert mod.OFFICIAL_SDK_PINNED_VERSION == "1.0.13"
+    assert mod.OFFICIAL_SDK_LICENSE == "MIT"
+    assert mod.OFFICIAL_SDK_PACKAGE == "copilot"
+
+
+def test_code_fenced_json_is_stripped_and_parsed():
+    # Real LLM output commonly wraps JSON in a ```json fence; the controller
+    # strips it so the deterministic validators can parse the content.
+    fenced = "```json\n{\"scores\": [{\"job_key\": \"a\", \"score\": 90}]}\n```"
+    ctrl = CopilotSdkController(transport=FakeTransport(content=fenced))
+    res = ctrl.run_agent("triage-ranker", "rank", {})
+    assert not res.quarantined
+    parsed = json.loads(res.content)     # parses cleanly after fence stripping
+    assert parsed["scores"][0]["score"] == 90
+
+
+def test_bare_json_is_unchanged_by_fence_stripping():
+    bare = json.dumps({"ok": True})
+    ctrl = CopilotSdkController(transport=FakeTransport(content=bare))
+    res = ctrl.run_agent("triage-ranker", "rank", {})
+    assert json.loads(res.content) == {"ok": True}

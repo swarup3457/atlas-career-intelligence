@@ -1011,6 +1011,81 @@ def _synthetic_daily_candidate():
     )
 
 
+def _cmd_copilot(args: argparse.Namespace) -> int:
+    """Optional Copilot SDK reasoning controller: info + a synthetic canary.
+
+    The canary uses SYNTHETIC data only (no candidate PII). Real private data is
+    NEVER sent unless the operator supplies both the consent flag AND an
+    account-type acknowledgement (verified elsewhere)."""
+    import json as _json
+
+    from atlas.controllers.copilot import (
+        OFFICIAL_SDK_DISTRIBUTION,
+        OFFICIAL_SDK_LICENSE,
+        OFFICIAL_SDK_PINNED_VERSION,
+        CopilotSdkController,
+    )
+
+    settings = load_settings()
+    sub = getattr(args, "copilot_command", None)
+    as_json = bool(getattr(args, "json", False))
+
+    if sub == "info":
+        info = {
+            "official_sdk": OFFICIAL_SDK_DISTRIBUTION,
+            "pinned_version": OFFICIAL_SDK_PINNED_VERSION,
+            "license": OFFICIAL_SDK_LICENSE,
+            "controller_default": settings.controller,
+            "controller_model": settings.controller_model,
+            "private_candidate_consent": bool(settings.allow_private_candidate_to_copilot),
+            "account_type": settings.copilot_account_type,
+        }
+        print(_json.dumps(info, indent=2) if as_json else
+              "\n".join(f"{k}: {v}" for k, v in info.items()))
+        return 0
+
+    if sub == "canary":
+        # SYNTHETIC candidate + jobs — never real PII.
+        payload = {
+            "jobs": [
+                {"job_key": "synth_1", "title": "Java Backend Engineer",
+                 "mandatory": ["Java", "Spring Boot"]},
+                {"job_key": "synth_2", "title": "React Frontend Engineer",
+                 "mandatory": ["React", "TypeScript"]},
+            ],
+            "candidate_evidence_tokens": ["java", "spring boot", "rest", "mysql"],
+            "instruction": "Return strict JSON {\"scores\":[{\"job_key\":..,\"score\":0-100,\"strengths\":[..]}]}",
+        }
+        ctrl = CopilotSdkController(
+            model=settings.controller_model,
+            session_timeout_s=int(getattr(args, "timeout", 90) or 90),
+            max_session_credits=settings.controller_max_session_credits,
+        )
+        if not bool(getattr(args, "live", False)):
+            print("NOTE: 'copilot canary' makes a REAL Copilot model call with SYNTHETIC data.")
+            print(f"      Model: {settings.controller_model}. Pass --live to run it.")
+            return 0
+        res = ctrl.run_agent(
+            "triage-ranker",
+            "Rank these synthetic jobs for this synthetic candidate. Output only strict JSON.",
+            payload)
+        out = {
+            "quarantined": res.quarantined, "model": res.model, "session_id": res.session_id,
+            "latency_ms": round(res.latency_ms, 1), "content": res.content[:1000],
+            "usage": ctrl.usage(),
+        }
+        if as_json:
+            print(_json.dumps(out, indent=2))
+        else:
+            print(f"Copilot synthetic canary: quarantined={res.quarantined} model={res.model} "
+                  f"session={res.session_id} latency_ms={round(res.latency_ms,1)}")
+            print(f"  content: {res.content[:300]}")
+        return 0 if not res.quarantined else 1
+
+    print("ERROR: unknown copilot subcommand")
+    return 2
+
+
 def _synthetic_daily_jobs():
     """A small PII-free synthetic job set so `atlas daily` demonstrates the full
     durable pipeline end-to-end offline. Live source wiring replaces this set."""
@@ -1526,6 +1601,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_da_remove = daily_sub.add_parser("remove-task", help="Delete the scheduled daily task.")
     p_da_remove.add_argument("--json", action="store_true")
     p_da_remove.set_defaults(func=_cmd_daily)
+
+    # -- copilot: optional reasoning controller info + synthetic canary -------
+    p_copilot = subparsers.add_parser(
+        "copilot", help="Optional Copilot SDK reasoning controller: info + synthetic canary.")
+    copilot_sub = p_copilot.add_subparsers(dest="copilot_command", required=True)
+    p_cp_info = copilot_sub.add_parser("info", help="Show the official SDK pin, license, and consent state.")
+    p_cp_info.add_argument("--json", action="store_true")
+    p_cp_info.set_defaults(func=_cmd_copilot)
+    p_cp_canary = copilot_sub.add_parser("canary", help="Run a SYNTHETIC-data Copilot reasoning canary (requires --live).")
+    p_cp_canary.add_argument("--live", action="store_true", help="Actually make the real (synthetic-data) model call.")
+    p_cp_canary.add_argument("--timeout", type=int, default=90)
+    p_cp_canary.add_argument("--json", action="store_true")
+    p_cp_canary.set_defaults(func=_cmd_copilot)
 
     return parser
 

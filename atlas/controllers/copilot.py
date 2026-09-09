@@ -43,12 +43,41 @@ from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from atlas.controllers.base import BaseController, ControllerRequest, ControllerResponse
 
-# The official GitHub Copilot Python SDK distribution. Pin this exactly in the
-# lockfile when live Copilot reasoning is enabled. It is imported LAZILY (only
-# inside :class:`_OfficialCopilotSdkTransport.run`) so Atlas never hard-depends
-# on it: deterministic runs and the entire offline test suite work without it.
-OFFICIAL_SDK_PACKAGE = "copilot"  # verified at runtime; see docs/CONTROLLER_ABSTRACTION.md
-OFFICIAL_SDK_MIN_VERSION = "0.0.0"
+
+def _json_dumps(obj: Any) -> str:
+    import json
+
+    try:
+        return json.dumps(obj, default=str, sort_keys=True)[:8000]
+    except (TypeError, ValueError):
+        return str(obj)[:8000]
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip a leading/trailing markdown code fence (```json ... ```), which real
+    LLM output commonly wraps JSON in, so the deterministic JSON validators can
+    parse it. A bare (unfenced) response is returned unchanged, so fake-transport
+    tests that already emit bare JSON are unaffected."""
+    import re
+
+    s = (text or "").strip()
+    m = re.match(r"^```[a-zA-Z0-9_-]*\s*\n?(.*?)\n?```$", s, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    return s
+
+# The official GitHub Copilot Python SDK distribution (verified pass 4):
+#   pip package : github-copilot-sdk   (author: GitHub <opensource@github.com>)
+#   import name : copilot              (from copilot import CopilotClient)
+#   homepage    : https://github.com/github/copilot-sdk
+#   license     : MIT
+# It is imported LAZILY (only inside the transport methods) so Atlas never
+# hard-depends on it: deterministic runs and the entire offline test suite work
+# without ever loading or invoking it.
+OFFICIAL_SDK_PACKAGE = "copilot"          # import name of github-copilot-sdk
+OFFICIAL_SDK_DISTRIBUTION = "github-copilot-sdk"
+OFFICIAL_SDK_PINNED_VERSION = "1.0.13"
+OFFICIAL_SDK_LICENSE = "MIT"
 
 # Tools that are NEVER permitted for any reasoning agent, regardless of the
 # per-agent allowlist. A candidate-reasoning model gets no side-effect power.
@@ -142,8 +171,13 @@ class _OfficialCopilotSdkTransport:
     bare ``ImportError``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, base_directory: Optional[str] = None,
+                 model_list_timeout_s: float = 30.0) -> None:
         self._sdk: Any = None
+        # COPILOT_HOME for the spawned runtime (session state/config). Defaults to
+        # the SDK default (~/.copilot). Set to a writable dir in restricted envs.
+        self.base_directory = base_directory
+        self.model_list_timeout_s = float(model_list_timeout_s)
 
     def _load(self) -> Any:
         if self._sdk is not None:
@@ -162,9 +196,30 @@ class _OfficialCopilotSdkTransport:
         return self._sdk
 
     def available_models(self) -> Sequence[str]:  # pragma: no cover - live only
-        sdk = self._load()
-        fn = getattr(sdk, "available_models", None)
-        return list(fn()) if callable(fn) else []
+        """Query the account's available model ids via the official SDK.
+
+        Runs a bounded async client purely to list models. Any failure (SDK not
+        installed, no runtime, no auth) surfaces as an empty list / exception the
+        caller treats as "unknown", never a crash of deterministic Atlas."""
+        self._load()
+        import asyncio
+
+        async def _list() -> list[str]:
+            from copilot import CopilotClient
+
+            async with CopilotClient() as client:
+                models = await client.list_models()
+                out: list[str] = []
+                for m in models:
+                    mid = getattr(m, "id", None)
+                    if mid:
+                        out.append(str(mid))
+                return out
+
+        try:
+            return asyncio.run(asyncio.wait_for(_list(), timeout=self.model_list_timeout_s))
+        except Exception:  # noqa: BLE001 - availability is best-effort
+            return []
 
     def run(  # pragma: no cover - live only
         self,
@@ -177,15 +232,73 @@ class _OfficialCopilotSdkTransport:
         session_id: str,
         resume: bool,
     ) -> RawSdkResult:
-        sdk = self._load()
-        # The concrete SDK call shape is intentionally isolated to this one
-        # method so the rest of Atlas is transport-agnostic. It is wired when a
-        # verified SDK version is pinned; until then this path raises clearly.
-        raise CopilotSdkUnavailable(
-            "The official Copilot SDK transport is not wired to a verified SDK "
-            "version in this build. Provide a concrete transport, or run in "
-            "deterministic mode (controller='none')."
-        )
+        """Execute ONE bounded, least-privilege reasoning turn via the official
+        SDK and return a neutral :class:`RawSdkResult`.
+
+        Least privilege is enforced at the SDK boundary: the session is created
+        with ``available_tools=[]`` (the model is granted NO tools) and a
+        default-DENY ``on_permission_request`` handler, so a reasoning agent can
+        never invoke shell/edit/git/network/browser tools even if it tried. The
+        candidate context is passed as text in the prompt only; no repository or
+        filesystem access is granted."""
+        self._load()
+        import asyncio
+
+        payload = f"{prompt}\n\nStructured input (JSON):\n{_json_dumps(context)}"
+
+        async def _run() -> RawSdkResult:
+            from copilot import CopilotClient
+            from copilot.session_events import AssistantMessageData, SessionIdleData
+
+            collected: list[str] = []
+            output_tokens = 0
+            model_used = model
+            done = asyncio.Event()
+
+            def _on_event(event) -> None:
+                data = getattr(event, "data", None)
+                if isinstance(data, AssistantMessageData):
+                    if data.content:
+                        collected.append(str(data.content))
+                    nonlocal output_tokens, model_used
+                    output_tokens += int(getattr(data, "output_tokens", 0) or 0)
+                    if getattr(data, "model", None):
+                        model_used = str(data.model)
+                elif isinstance(data, SessionIdleData):
+                    done.set()
+
+            async def _deny_permission(_request):
+                # default-DENY: a reasoning agent gets no tool side effects.
+                raise PermissionError("tool use denied for reasoning-only session")
+
+            async with CopilotClient(base_directory=self.base_directory) as client:
+                session = await client.create_session(
+                    model=model,
+                    available_tools=[],            # NO tools -> pure reasoning
+                    on_permission_request=_deny_permission,
+                    on_event=_on_event,
+                    streaming=False,
+                )
+                async with session:
+                    await session.send(payload)
+                    await done.wait()
+            return RawSdkResult(
+                content="".join(collected), model=model_used, session_id=session_id,
+                input_tokens=0, output_tokens=output_tokens, credits=0.0,
+            )
+
+        try:
+            return asyncio.run(asyncio.wait_for(_run(), timeout=max(1.0, timeout_s)))
+        except CopilotSdkUnavailable:
+            raise
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"copilot session timed out after {timeout_s}s") from exc
+        except Exception as exc:  # noqa: BLE001 - surfaced to the controller as a quarantine
+            raise CopilotSdkUnavailable(
+                f"official Copilot SDK session could not run in this environment: {exc}. "
+                "Ensure the runtime is provisioned (python -m copilot download-runtime) and "
+                "the account is authenticated; deterministic runs do not require it."
+            ) from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -561,7 +674,7 @@ class CopilotSdkController(BaseController):
                     f"({self.meter.credits}+{raw.credits} > {self.meter.max_session_credits})"
                 )
 
-            content = (raw.content or "").strip()
+            content = _strip_code_fences((raw.content or "").strip())
             outcome = "OK" if content else "EMPTY"
             self.meter.record(agent=agent.name, model=model, session_id=raw.session_id or session_id,
                               input_tokens=raw.input_tokens, output_tokens=raw.output_tokens,
