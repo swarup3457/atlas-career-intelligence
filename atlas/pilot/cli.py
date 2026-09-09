@@ -101,8 +101,17 @@ def _build_runtime(args, *, run_id: str, parent_run_id: Optional[str]) -> PilotR
     )
 
 
+def _abs(path) -> Optional[str]:
+    """Absolute, forward-slash path string that resolves from any CWD (or None)."""
+    if not path:
+        return None
+    return Path(path).resolve().as_posix()
+
+
 def _summarize(runtime: PilotRuntime, outcome, models_note: str) -> dict:
     val = runtime.validation
+    wb = outcome.report.workbook_path if outcome.report else None
+    rd = outcome.report.run_dir if outcome.report else None
     return {
         "run_id": outcome.run_id,
         "outcome": outcome.outcome,
@@ -112,8 +121,10 @@ def _summarize(runtime: PilotRuntime, outcome, models_note: str) -> dict:
         "companies_terminal": outcome.companies_terminal,
         "india_jobs": outcome.india_jobs,
         "foreign_leads": outcome.foreign_leads,
-        "workbook": str(outcome.report.workbook_path) if outcome.report else None,
-        "run_dir": str(outcome.report.run_dir) if outcome.report else None,
+        "workbook": _abs(wb),
+        "run_dir": _abs(rd),
+        "workbook_relative": (str(wb).replace("\\", "/") if wb else None),
+        "run_dir_relative": (str(rd).replace("\\", "/") if rd else None),
         "validation_passed": val.passed if val else None,
         "validation_failures": (val.failures if val else None),
         "candidate_synthetic": getattr(runtime.profile, "synthetic", None),
@@ -184,8 +195,10 @@ def _pilot_reevaluate(args: argparse.Namespace) -> int:
         "run_id": outcome.run_id, "parent_run_id": args.parent_run_id, "outcome": outcome.outcome,
         "companies_terminal": outcome.companies_terminal, "india_jobs": outcome.india_jobs,
         "foreign_leads": outcome.foreign_leads,
-        "workbook": str(outcome.report.workbook_path) if outcome.report else None,
-        "run_dir": str(outcome.report.run_dir) if outcome.report else None,
+        "workbook": _abs(outcome.report.workbook_path) if outcome.report else None,
+        "run_dir": _abs(outcome.report.run_dir) if outcome.report else None,
+        "workbook_relative": (str(outcome.report.workbook_path).replace("\\", "/") if outcome.report else None),
+        "run_dir_relative": (str(outcome.report.run_dir).replace("\\", "/") if outcome.report else None),
         "validation_passed": outcome.validation.passed if outcome.validation else None,
         "validation_failures": outcome.validation.failures if outcome.validation else None,
     }, args.json)

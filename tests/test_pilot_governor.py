@@ -207,6 +207,29 @@ def test_usage_totals_reconcile(tmp_path, profile, monkeypatch):
         assert sum(m[f] for m in by_model.values()) == totals[f]
 
 
+def test_cli_summary_emits_absolute_resolvable_paths(tmp_path, profile, monkeypatch):
+    # The machine/workbook gate must be able to resolve the workbook + run_dir from ANY CWD,
+    # so the CLI summary must emit ABSOLUTE paths (pass-2 output_gate contract fix).
+    import os
+    from pathlib import Path
+
+    from atlas.pilot.cli import _abs, _summarize
+
+    _patch_hints(monkeypatch)
+    rt = _runtime(tmp_path, profile, run_id="ABSPATHS")
+    outcome = run_pilot(rt)
+    summary = _summarize(rt, outcome, "")
+    assert os.path.isabs(summary["workbook"]), summary["workbook"]
+    assert os.path.isabs(summary["run_dir"]), summary["run_dir"]
+    # resolvable from an unrelated CWD (simulate the validator running elsewhere)
+    assert Path(summary["workbook"]).exists()
+    assert list(Path(summary["run_dir"]).glob("Atlas_LLM_India_Pilot_*.xlsx"))
+    # relative variant mirrors the report's raw path (relative in real runs where
+    # output_root is 'output/production'; absolute here only because tmp_path is absolute)
+    assert summary["workbook_relative"] == str(outcome.report.workbook_path).replace("\\", "/")
+    assert _abs(None) is None
+
+
 class _StubReport:
     def __init__(self, root):
         self.run_dir = root
