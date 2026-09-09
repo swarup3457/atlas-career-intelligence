@@ -394,6 +394,16 @@ class AgenticCompanyToolbox:
         # become candidate evidence, even if the page text mentions India + a domain word.
         if not looks_like_job_title(title):
             return
+        # Reject THIN captures: on a hard SPA the browser sometimes grabs nav/footer
+        # text (e.g. "Email X LinkedIn") instead of the real JD. Require a plausible
+        # amount of text AND at least one job-content marker, so thin/nav-only
+        # captures never pollute the evidence set (integrity, not padding).
+        low = text.lower()
+        if len(text) < 200 or not any(
+            m in low for m in ("experience", "responsib", "qualif", "skill", "requirement",
+                               "develop", "engineer", "years", "team", "role", "candidate")):
+            self.base.limitations.append(f"thin/low-signal job capture skipped: {title[:60]!r}")
+            return
         location = card.get("location", "")
         if not location:
             st = split_sections(text)

@@ -138,3 +138,19 @@ def test_non_job_banner_titles_rejected():
     assert not looks_like_job_title("Taulia careers")
     assert not looks_like_job_title("")
     assert not looks_like_job_title("Search jobs by title")
+
+
+def test_thin_capture_rejected(config):
+    """A job-like title with nav-junk detail text (e.g. 'Email X LinkedIn') must
+    NOT be recorded as evidence — it is thin/low-signal, not a real JD."""
+    tb = AgenticCompanyToolbox(company="IBM", config=config, task_id="t")
+    tb._capture_detail({"detail_text": "Email X LinkedIn", "url": "https://careers.ibm.com/job/1",
+                        "headings": []}, card={"title": "Application Developer FullStack", "location": ""})
+    assert len(tb.base.details) == 0
+    # a real JD with content markers IS recorded
+    tb._capture_detail({"detail_text": "Java Backend Engineer. Responsibilities: build Spring Boot "
+                        "microservices and REST APIs. Required qualifications: 2 years experience in "
+                        "Java development. Skills: Java, Spring, SQL. Location Bengaluru, India.",
+                        "url": "https://careers.ibm.com/job/2", "headings": []},
+                       card={"title": "Java Backend Engineer", "location": "Bengaluru, India"})
+    assert len(tb.base.details) == 1
