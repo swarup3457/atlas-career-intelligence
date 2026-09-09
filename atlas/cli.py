@@ -1126,8 +1126,10 @@ def _private_daily_candidate(settings, *, target_lanes=("JAVA_BACKEND", "GENERAL
         res.ledger, total_experience_years=float(experience_years),
         target_lanes=tuple(target_lanes), strong_overall=True,
     )
+    mode = "PRIVATE_LOCAL" if not res.used_synthetic else "SYNTHETIC_FALLBACK"
     info = {
-        "candidate_mode": "PRIVATE_LOCAL" if not res.used_synthetic else "SYNTHETIC_FALLBACK",
+        "mode": mode,                    # machine-readable contract key
+        "candidate_mode": mode,          # Section 12 wording
         "synthetic": bool(res.used_synthetic),
         "candidate_source_sha256": res.source_sha256,
         "claim_count": res.claim_count,
@@ -1248,7 +1250,7 @@ def _cmd_daily(args: argparse.Namespace) -> int:
         # private import side effects).
         if live and not bool(getattr(args, "synthetic_candidate", False)):
             return _private_daily_candidate(settings, target_lanes=official_lanes)
-        return _synthetic_daily_candidate(), {"candidate_mode": "SYNTHETIC", "synthetic": True}
+        return _synthetic_daily_candidate(), {"mode": "SYNTHETIC", "candidate_mode": "SYNTHETIC", "synthetic": True}
 
     def _make_runner(run_id, *, live=False):
         candidate, cand_info = _build_candidate(live)

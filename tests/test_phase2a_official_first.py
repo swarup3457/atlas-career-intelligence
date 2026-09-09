@@ -276,8 +276,8 @@ def _run_daily_with_official(tmp_path, run_id, *, portal=True):
         settings, run_id, jobs=[], candidate=_daily_candidate(), live=True,
         official_exec=official_exec, official_result_provider=official_result_provider,
         market_exec=market_exec, build_docx=False,
-        candidate_mode_info={"candidate_mode": "PRIVATE_LOCAL", "synthetic": False,
-                             "candidate_source_sha256": "deadbeef"})
+        candidate_mode_info={"mode": "PRIVATE_LOCAL", "candidate_mode": "PRIVATE_LOCAL",
+                             "synthetic": False, "candidate_source_sha256": "deadbeef"})
     return runner.run(), runner, settings
 
 
@@ -309,7 +309,8 @@ def test_daily_official_jobs_in_all_jobs_portal_only_excluded(tmp_path):
     # portal-only leads persisted to portal_leads.json, never All_Jobs
     portal_json = json.loads((runner.paths.run_dir / "portal_leads.json").read_text(encoding="utf-8"))
     assert portal_json["count"] == 2
-    # candidate mode recorded (§12)
+    # candidate mode recorded (§12) with the machine-readable contract key
+    assert manifest["candidate"]["mode"] == "PRIVATE_LOCAL"
     assert manifest["candidate"]["candidate_mode"] == "PRIVATE_LOCAL"
     assert manifest["candidate"]["synthetic"] is False
 

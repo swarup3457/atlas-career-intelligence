@@ -155,7 +155,7 @@ class DailyRunner:
         self.source_health_provider = source_health_provider
         self.build_docx = build_docx
         self.eligible_for_latest = eligible_for_latest
-        self.candidate_mode_info = candidate_mode_info or {"candidate_mode": "SYNTHETIC", "synthetic": True}
+        self.candidate_mode_info = candidate_mode_info or {"mode": "SYNTHETIC", "candidate_mode": "SYNTHETIC", "synthetic": True}
         self.stop_after_phase = stop_after_phase
         self.live = live
 
