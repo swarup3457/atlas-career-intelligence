@@ -29,6 +29,18 @@ from atlas.policy.loader import PolicyBundle
 
 __all__ = ["AcceptedJob", "CompanyEvaluation", "PilotEvaluation", "evaluate_pilot"]
 
+
+def _is_real_job_title(title: object) -> bool:
+    """True when a captured record's title reads like a real job posting. Empty
+    titles and banner/nav fragments are not jobs (shared with the agentic capture
+    guard). Kept here so evaluation is a deterministic backstop for every route."""
+    try:
+        from atlas.pilot.agentic_tools import looks_like_job_title
+        return looks_like_job_title(title)
+    except Exception:  # pragma: no cover - defensive
+        t = str(title or "").strip()
+        return bool(t) and len(t) >= 3
+
 _FOREIGN_LEAD_DECISIONS = frozenset(
     {GeoDecision.FOREIGN_EXCLUDED.value, GeoDecision.INTERNATIONAL_SPONSORED_LEAD.value}
 )
@@ -153,6 +165,19 @@ def evaluate_company(
         if key in seen:
             continue
         seen.add(key)
+        # Deterministic non-job / thin-capture guard (pass-4): a captured "job"
+        # with no real job title (empty, or a banner/nav fragment) must NEVER be
+        # accepted, regardless of route (the ATS fast path bypasses the browser
+        # capture guard). Route it to a skipped bucket so it cannot become a
+        # candidate row. This is the source-side backstop the product validator
+        # also enforces.
+        if not _is_real_job_title(detail.title):
+            ce.rejected.append(JobRejection(
+                title=(detail.title or "(no title captured)"), lane="", reason_code="REJECT_NON_JOB_CAPTURE",
+                detail="captured record has no usable job title (banner/thin/ATS-noise capture)",
+                location=detail.location, url=detail.official_url,
+            ))
+            continue
         ev = evaluate_detail(
             detail, intent, policy, candidate_years=profile.total_experience_years,
             overall_evidence_strong=not profile.synthetic, today=today,

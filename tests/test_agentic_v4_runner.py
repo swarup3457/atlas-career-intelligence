@@ -182,7 +182,28 @@ def test_resume_skips_completed_terminal(tmp_path, config, profile):
     assert out2.genuinely_searched == 8
 
 
-def test_validator_catches_injected_violations(tmp_path, config, profile):
+def test_empty_or_nonjob_title_never_accepted(config, profile):
+    """A captured record with no usable job title (empty, or a banner) must be
+    dropped deterministically before adjudication, on ANY route incl. the ATS
+    fast path — the source-side backstop to the product validator (pass-4)."""
+    from atlas.hunt.role_intent import load_role_intent_policy
+    from atlas.policy.loader import load_policy
+    from atlas.pilot.evaluate import evaluate_pilot
+    lanes = _lanes()
+    jobs = [
+        _job("", "Build Java Spring Boot microservices. 2 years experience.", "2 years",
+             ("Java", "Spring Boot"), "Bengaluru, India", "https://x/1", 1),
+        _job("YOU ARE ONE STEP CLOSER", "Java role. 2 years.", "2 years", ("Java",),
+             "Hyderabad, India", "https://x/2", 2),
+        _job("Java Backend Engineer", "Build Java Spring Boot microservices and REST APIs. 2 years.",
+             "2 years", ("Java", "Spring Boot"), "Bengaluru, India", "https://x/3", 3),
+    ]
+    res = _result("Accenture", S.SEARCHED_COMPLETE_WITH_MATCHES.value, jobs)
+    ev = evaluate_pilot([res], load_role_intent_policy(), load_policy(), profile, today=TODAY)
+    accepted_titles = [a.title for a in ev.accepted]
+    assert accepted_titles == ["Java Backend Engineer"]
+    assert any(r.reason_code == "REJECT_NON_JOB_CAPTURE" for r in ev.rejected)
+
     from atlas.hunt.role_intent import load_role_intent_policy
     from atlas.policy.loader import load_policy
     from atlas.pilot.evaluate import evaluate_pilot
