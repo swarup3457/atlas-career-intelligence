@@ -33,11 +33,13 @@ __all__ = ["HuntReport", "write_hunt_report", "REQUIRED_HUNT_SHEETS", "append_ru
 
 REQUIRED_HUNT_SHEETS = (
     "All_Jobs",
+    "New_Companies",
     "Company_Coverage",
     "Source_Coverage",
     "Closed_or_Rejected",
-    "Run_Summary",
     "Resume_Tailoring",
+    "Recruiter_Contacts",
+    "Run_Summary",
 )
 
 ALL_JOBS_COLUMNS = (
@@ -71,6 +73,20 @@ CLOSED_REJECTED_COLUMNS = (
 RESUME_TAILORING_COLUMNS = (
     "Company", "Role_Title", "Lane", "Recommendation", "Match_Score",
     "Requirements_Matched", "Missing_Requirements", "Official_Apply_URL",
+)
+
+# New companies discovered/added during the campaign (V3 dynamic-expansion
+# semantics): companies not in the base seed, or added by an extension batch.
+NEW_COMPANIES_COLUMNS = (
+    "Company", "Group", "Origin", "Tier", "Batch_Index", "Sealed_At", "Provenance",
+)
+
+# Recruiter/HR outreach queue (V3 Outreach_Queue). Recruiter outreach is DEFERRED
+# in the Search Recovery build (not part of search-quality recovery), so this
+# sheet is authored header-only and truthfully carries no fabricated contacts.
+RECRUITER_CONTACTS_COLUMNS = (
+    "Company", "Role_Title", "Lane", "Contact_Name", "Contact_Role",
+    "Contact_Source", "Contact_Confidence", "Outreach_Status", "Notes",
 )
 
 
@@ -172,12 +188,23 @@ def write_hunt_report(
         )
         all_jobs_rows.append([
             d.record_class, d.company, d.title, d.location, m.lane, dec.role_family,
-            ", ".join(dec.matched_anchors), m.recommendation and "QUALIFIED", "; ".join(dec.reasons),
+            ", ".join(dec.matched_anchors), "QUALIFIED", "; ".join(dec.reasons),
             fit.mandatory_min_years, fit.mandatory_max_years, fit.preferred_years, m.experience_fit,
             d.work_mode, d.source_family, ", ".join(d.discovery_channels), d.official_url,
             d.requisition_id, m.freshness_band, d.verification_state, m.match_score,
             ", ".join(m.requirements_matched), ", ".join(m.missing_requirements), m.recommendation,
         ])
+
+    # New_Companies: companies not in the base seed (dynamic-expansion provenance)
+    # or added by an extension batch (batch_index > 0). Truthful, no fabrication.
+    new_company_rows: list[list] = []
+    for batch in campaign.batches:
+        for c in batch.companies:
+            if c.origin != "SEED" or batch.batch_index > 0:
+                new_company_rows.append([
+                    c.name, c.group, c.origin, c.tier, batch.batch_index,
+                    batch.sealed_at, batch.reason,
+                ])
 
     company_rows = [
         [c.company, c.tier, c.group, c.official_domain, c.source, c.route, c.check_type, c.lane,
@@ -236,11 +263,13 @@ def write_hunt_report(
     wb = Workbook()
     wb.remove(wb.active)
     _write_sheet(wb.create_sheet("All_Jobs"), ALL_JOBS_COLUMNS, all_jobs_rows)
+    _write_sheet(wb.create_sheet("New_Companies"), NEW_COMPANIES_COLUMNS, new_company_rows)
     _write_sheet(wb.create_sheet("Company_Coverage"), COMPANY_COVERAGE_COLUMNS, company_rows)
     _write_sheet(wb.create_sheet("Source_Coverage"), SOURCE_COVERAGE_COLUMNS, source_rows)
     _write_sheet(wb.create_sheet("Closed_or_Rejected"), CLOSED_REJECTED_COLUMNS, closed_rows)
-    _write_sheet(wb.create_sheet("Run_Summary"), ("Metric", "Value"), summary_rows)
     _write_sheet(wb.create_sheet("Resume_Tailoring"), RESUME_TAILORING_COLUMNS, resume_rows)
+    _write_sheet(wb.create_sheet("Recruiter_Contacts"), RECRUITER_CONTACTS_COLUMNS, [])
+    _write_sheet(wb.create_sheet("Run_Summary"), ("Metric", "Value"), summary_rows)
     _atomic_write_workbook(wb, workbook_path)
 
     # --- JSON/JSONL side artifacts ---

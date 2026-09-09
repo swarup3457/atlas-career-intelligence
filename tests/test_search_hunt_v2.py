@@ -347,6 +347,7 @@ def _demo_runtime(tmp_path, policy, intent, run_id="T_E2E", allow_extension=Fals
 
 
 def test_end_to_end_graph_valid(tmp_path, policy, intent):
+    from openpyxl import load_workbook
     from atlas.hunt.graph import run_hunt
 
     rt = _demo_runtime(tmp_path, policy, intent)
@@ -356,6 +357,13 @@ def test_end_to_end_graph_valid(tmp_path, policy, intent):
     assert out.report.workbook_path.exists()
     assert out.report.workbook_path.name.startswith("Atlas_Jobs_")
     assert run_id_in_name(out.report.workbook_path.name, "T_E2E")
+    # the workbook has EXACTLY the 8-sheet contract the independent validator expects
+    wb = load_workbook(out.report.workbook_path, read_only=True)
+    assert set(wb.sheetnames) == {
+        "All_Jobs", "New_Companies", "Company_Coverage", "Source_Coverage",
+        "Closed_or_Rejected", "Resume_Tailoring", "Recruiter_Contacts", "Run_Summary",
+    }
+    wb.close()
     # coverage covers all six lanes for all five companies
     assert out.report.company_coverage_rows == 5 * 6
     # the six lane positives qualify; the four wrong-stack/off-family controls do not
@@ -420,6 +428,7 @@ def test_validator_flags_wrong_stack_row(tmp_path, intent):
     from atlas.hunt.report import (
         ALL_JOBS_COLUMNS, COMPANY_COVERAGE_COLUMNS, SOURCE_COVERAGE_COLUMNS,
         CLOSED_REJECTED_COLUMNS, RESUME_TAILORING_COLUMNS,
+        NEW_COMPANIES_COLUMNS, RECRUITER_CONTACTS_COLUMNS,
     )
     from atlas.hunt.validator import validate_run_dir
 
@@ -435,6 +444,7 @@ def test_validator_flags_wrong_stack_row(tmp_path, intent):
                 "Role_Family": "BACKEND_DEVELOPMENT", "Stack_Anchors": "Ruby, PostgreSQL",
                 "Qualification_Status": "QUALIFIED", "Recommendation": "PRIORITY_APPLY"})
     aj.append([row[c] for c in ALL_JOBS_COLUMNS])
+    wb.create_sheet("New_Companies").append(list(NEW_COMPANIES_COLUMNS))
     cc = wb.create_sheet("Company_Coverage")
     cc.append(list(COMPANY_COVERAGE_COLUMNS))
     for lane in intent.lane_keys():
@@ -445,10 +455,11 @@ def test_validator_flags_wrong_stack_row(tmp_path, intent):
     sc.append(list(SOURCE_COVERAGE_COLUMNS))
     sc.append(["BadCo:careers"] + [""] * (len(SOURCE_COVERAGE_COLUMNS) - 1))
     wb.create_sheet("Closed_or_Rejected").append(list(CLOSED_REJECTED_COLUMNS))
+    wb.create_sheet("Resume_Tailoring").append(list(RESUME_TAILORING_COLUMNS))
+    wb.create_sheet("Recruiter_Contacts").append(list(RECRUITER_CONTACTS_COLUMNS))
     rs = wb.create_sheet("Run_Summary")
     rs.append(["Metric", "Value"])
     rs.append(["Relevant (shortlist) jobs", 1])
-    wb.create_sheet("Resume_Tailoring").append(list(RESUME_TAILORING_COLUMNS))
     wb.save(run_dir / "Atlas_Jobs_20260909-000000_BAD.xlsx")
 
     report = validate_run_dir(run_dir, intent=intent)

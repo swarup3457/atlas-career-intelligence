@@ -98,10 +98,17 @@ def validate_run_dir(run_dir: Path, *, intent: Optional[RoleIntentPolicy] = None
         report.add("WORKBOOK_NAME", f"workbook filename not unique/timestamped: {wb_path.name}")
 
     wb = load_workbook(wb_path, read_only=True)
-    for sheet in ("All_Jobs", "Company_Coverage", "Source_Coverage", "Closed_or_Rejected", "Run_Summary", "Resume_Tailoring"):
+    expected_sheets = {
+        "All_Jobs", "New_Companies", "Company_Coverage", "Source_Coverage",
+        "Closed_or_Rejected", "Resume_Tailoring", "Recruiter_Contacts", "Run_Summary",
+    }
+    for sheet in expected_sheets:
         if sheet not in wb.sheetnames:
             report.add("MISSING_SHEET", f"missing sheet {sheet}")
-    if not report.passed and any(i.code == "MISSING_SHEET" for i in report.issues):
+    extra = set(wb.sheetnames) - expected_sheets
+    if extra:
+        report.add("EXTRA_SHEET", f"unexpected sheet(s): {sorted(extra)}")
+    if not report.passed and any(i.code in ("MISSING_SHEET", "EXTRA_SHEET") for i in report.issues):
         wb.close()
         return report
 
