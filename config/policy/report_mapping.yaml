@@ -11,54 +11,40 @@ source: "11_LIVE_CHANNEL_AND_EXCEL_OUTPUT_CONTRACT.md, 12_STEP3_VERIFICATION_HAR
 sheets:
   All_Jobs:
     columns:
+      - Record_Class
       - Company
-      - Role
-      - Job_ID
+      - Role_Title
       - Location
+      - Lane
       - Work_Mode
-      - Experience
-      - Search_Lane
-      - Company_Type
-      - Discovery_Source
-      - Source_URL
+      - Primary_Source
+      - Discovery_Channels
       - Official_Apply_URL
-      - Posted_Date
-      - Freshness
-      - Verification_Status
-      - Live_Status
+      - Official_Requisition_ID
+      - Freshness_Band
+      - Verification_Level
       - Match_Score
       - Requirements_Matched
       - Missing_Requirements
-      - Why_It_Fits
-      - Application_Recommendation
-      - First_Seen
-      - Last_Verified
-      - Notes
-    # canonical internal field -> workbook column
+      - Recommendation
+    # canonical internal field -> workbook column (Phase 2A official-first §8)
     field_map:
+      record_class: Record_Class
       company: Company
-      role_title: Role
-      source_job_id: Job_ID
+      role_title: Role_Title
       location: Location
+      lane: Lane
       work_mode: Work_Mode
-      experience_text: Experience
-      lane: Search_Lane
-      company_type: Company_Type
-      discovery_source: Discovery_Source
-      source_url: Source_URL
-      official_apply_url: Official_Apply_URL      # canonical: official_apply_url
-      posted_date: Posted_Date
-      freshness_band: Freshness
-      verification_level: Verification_Status      # canonical: verification_level
-      job_lifecycle_status: Live_Status            # canonical: job_lifecycle_status
+      primary_source: Primary_Source
+      discovery_channels: Discovery_Channels
+      official_apply_url: Official_Apply_URL          # canonical: official apply URL
+      official_requisition_id: Official_Requisition_ID
+      freshness_band: Freshness_Band
+      verification_level: Verification_Level           # canonical: verification_level
       match_score: Match_Score
       requirements_matched: Requirements_Matched
       missing_requirements: Missing_Requirements
-      why_it_fits: Why_It_Fits
-      recommendation: Application_Recommendation    # canonical: recommendation
-      first_seen: First_Seen
-      last_verified: Last_Verified
-      notes: Notes
+      recommendation: Recommendation                    # canonical: recommendation
 
   New_Companies:
     columns: [Company, Official_Domain, Careers_Domain, ATS, Company_Type, India_Locations, Source_Discovered_From, Reason_Added, Suggested_Tier, Next_Delta_Check, Next_Deep_Check]

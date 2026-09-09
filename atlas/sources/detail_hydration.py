@@ -24,15 +24,28 @@ import datetime
 from dataclasses import dataclass
 from typing import Mapping, Optional
 
+from atlas.candidate.requirements import extract_requirements
 from atlas.models import ErrorCategory
 from atlas.orchestration import retry
 from atlas.sources.adapter import AdapterError
 from atlas.sources.executor import RateLimitedExecutor
 from atlas.sources.models import Capability, DetailRequest, SourceInstance
 from atlas.sources.registry import SourceRegistry
+from atlas.sources.untrusted import redact_secrets
 
 # Families that expose a per-job detail endpoint (Ashby correctly has none).
 _DETAIL_FAMILIES = frozenset({"greenhouse", "lever", "workday", "company_career"})
+
+# Bounded, redacted description fragment kept on the hydrated observation so no
+# unbounded HTML enters the store (matches the SEARCH-stage bound).
+_MAX_DETAIL_TEXT = 2000
+
+
+def _bounded_text(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return text
+    red = redact_secrets(str(text))
+    return red[:_MAX_DETAIL_TEXT] + (" …[truncated]" if len(red) > _MAX_DETAIL_TEXT else "")
 
 
 def _utcnow() -> str:
@@ -159,6 +172,16 @@ class DetailHydrator:
 
     def _store_hydrated(self, hydrated_id: str, row, detail) -> None:
         d = detail.to_dict()
+        # Extract requirements from the FULL hydrated description (before it is
+        # bounded for storage) so candidate ranking has real mandatory/preferred
+        # requirements rather than a title-only guess (§11). Empty when the
+        # description yields nothing recognizable — never invented.
+        full_description = d.get("description") or ""
+        extraction = extract_requirements(
+            full_description,
+            skills=tuple(d.get("skills") or ()),
+            experience_text=d.get("experience_text") or "",
+        )
         # A new IMMUTABLE observation REVISION (build spec 6): it references its
         # source SEARCH observation via parent_observation_id and revision_kind
         # 'DETAIL' — canonical_id is NEVER misused to hold an observation id. It
@@ -180,7 +203,16 @@ class DetailHydrator:
             observed_at=_utcnow(),
             parent_observation_id=row["observation_id"], revision_kind="DETAIL",
             detail={"hydrated_from": row["observation_id"], "detail_provenance": dict(d.get("provenance") or {}),
-                    "description_len": len(d.get("description") or "") if d.get("description") else 0,
+                    "description_fragment": _bounded_text(full_description),
+                    "description_len": len(full_description) if full_description else 0,
+                    "skills": list(d.get("skills") or []),
+                    "work_mode": d.get("work_mode"),
+                    "experience_text": _bounded_text(d.get("experience_text")),
+                    "mandatory_requirements": list(extraction.mandatory),
+                    "preferred_requirements": list(extraction.preferred),
+                    "requirement_experience_text": extraction.experience_text,
+                    "eligibility_text": extraction.eligibility_text,
+                    "requisition_id": (d.get("provenance") or {}).get("requisition_id"),
                     "date_provenance": (d.get("provenance") or {}).get("date_provenance"),
                     "verification_level": d.get("verification_level")},
         )

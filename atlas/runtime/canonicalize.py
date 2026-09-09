@@ -161,12 +161,19 @@ def canonicalize_run(store, run_id: str) -> CanonicalizeResult:
     # -- assign every group a canonical id -----------------------------------
     groups: dict[str, list] = {}
     canonical_meta: dict[str, dict] = {}
+    obs_to_canonical: dict[str, str] = {}
     for okey, rows in official_groups.items():
         cid = official_canonical[okey]
         groups.setdefault(cid, []).extend(rows)
         canonical_meta.setdefault(cid, {"identity": "OFFICIAL_REQUISITION", "identity_key": okey})
+        for r in rows:
+            obs_to_canonical[r["observation_id"]] = cid
 
-    for row in fallback_rows:
+    # Process SEARCH revisions before DETAIL revisions so a hydrated DETAIL row
+    # can reconcile to its parent SEARCH observation's canonical even under
+    # fallback identity (no shared official requisition).
+    fallback_sorted = sorted(fallback_rows, key=lambda r: 1 if r["revision_kind"] == "DETAIL" else 0)
+    for row in fallback_sorted:
         ak = _align_key(row)
         officials = align_to_officials.get(ak)
         if officials and len(officials) == 1:
@@ -183,10 +190,20 @@ def canonicalize_run(store, run_id: str) -> CanonicalizeResult:
                                    "aligned_candidates": sorted(officials)}
             result.ambiguous += 1
         else:
-            fkey = _fallback_key(row)
-            cid = _canonical_id("fb::" + fkey)
-            groups.setdefault(cid, []).append(row)
-            canonical_meta.setdefault(cid, {"identity": "FALLBACK_CTL", "identity_key": fkey})
+            # A hydrated DETAIL revision reconciles to its parent SEARCH
+            # observation's canonical — the SAME job — even under fallback
+            # identity where there is no shared official requisition.
+            parent_cid = (obs_to_canonical.get(row["parent_observation_id"])
+                          if row["revision_kind"] == "DETAIL" else None)
+            if parent_cid is not None:
+                cid = parent_cid
+                groups.setdefault(cid, []).append(row)
+            else:
+                fkey = _fallback_key(row)
+                cid = _canonical_id("fb::" + fkey)
+                groups.setdefault(cid, []).append(row)
+                canonical_meta.setdefault(cid, {"identity": "FALLBACK_CTL", "identity_key": fkey})
+        obs_to_canonical[row["observation_id"]] = cid
 
     # -- upsert canonicals + append observation events -----------------------
     for canonical_id, rows in groups.items():

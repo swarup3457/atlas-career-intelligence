@@ -1112,6 +1112,82 @@ def _synthetic_daily_jobs():
     return jobs
 
 
+def _private_daily_candidate(settings, *, target_lanes=("JAVA_BACKEND", "GENERAL_SOFTWARE"),
+                             experience_years: float = 2.0, import_source=None):
+    """Import the REAL private candidate (PRIVATE_LOCAL) into the gitignored
+    private store and build a CandidateProfile from it. Records ONLY a mode +
+    source hash + counts (never PII). Falls back to synthetic ONLY when the
+    private source is absent; production callers should require PRIVATE_LOCAL."""
+    from atlas.candidate.eligibility import CandidateProfile
+    from atlas.candidate.importer import import_candidate_evidence
+
+    res = import_candidate_evidence(source=import_source, write=True)
+    candidate = CandidateProfile.from_ledger(
+        res.ledger, total_experience_years=float(experience_years),
+        target_lanes=tuple(target_lanes), strong_overall=True,
+    )
+    info = {
+        "candidate_mode": "PRIVATE_LOCAL" if not res.used_synthetic else "SYNTHETIC_FALLBACK",
+        "synthetic": bool(res.used_synthetic),
+        "candidate_source_sha256": res.source_sha256,
+        "claim_count": res.claim_count,
+        "private_store": res.out_path,
+    }
+    return candidate, info
+
+
+def _load_official_targets(path):
+    """Load sealed official company targets (verified domains + optional known
+    ATS boards) from a YAML/JSON file. Domains are VERIFIED facts, never guessed."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    from atlas.runtime.official_universe import OfficialCompanyTarget
+
+    text = _Path(path).read_text(encoding="utf-8")
+    if str(path).lower().endswith((".yaml", ".yml")):
+        import yaml
+        data = yaml.safe_load(text) or {}
+    else:
+        data = _json.loads(text)
+    targets = []
+    for c in data.get("companies", []):
+        targets.append(OfficialCompanyTarget(
+            company_id=str(c["company_id"]), name=str(c.get("name", c["company_id"])),
+            official_domain=str(c["official_domain"]),
+            known_careers_url=c.get("known_careers_url"),
+            tier=str(c.get("tier", "A")), mode=str(c.get("mode", "DELTA")),
+            geography_group=str(c.get("geography_group", "PRIMARY")),
+            board_token=c.get("board_token"), family=c.get("family"),
+            expected_route=c.get("expected_route"),
+        ))
+    return targets, data
+
+
+def _official_targets_from_registry(settings, *, limit: int):
+    """Select up to ``limit`` due official companies from the company registry
+    (those with a VERIFIED official domain). The runtime is generic over any
+    target list; this is the production selection path."""
+    from atlas.company.registry import CompanyRegistry
+    from atlas.persistence.sqlite import StateStore
+    from atlas.runtime.official_universe import OfficialCompanyTarget
+
+    targets = []
+    with StateStore(settings.state_db) as store:
+        registry = CompanyRegistry(store)
+        for company in registry.list_companies(limit=max(limit * 4, limit)):
+            if not company.official_domain:
+                continue
+            targets.append(OfficialCompanyTarget(
+                company_id=company.company_id, name=company.canonical_name,
+                official_domain=company.official_domain,
+                known_careers_url=company.careers_url,
+            ))
+            if len(targets) >= limit:
+                break
+    return targets
+
+
 def _cmd_daily(args: argparse.Namespace) -> int:
     """Daily operation family: plan / run / resume / status + Windows scheduler."""
     import json as _json
@@ -1153,20 +1229,65 @@ def _cmd_daily(args: argparse.Namespace) -> int:
     from atlas.orchestration.run_lock import RUN_ALREADY_ACTIVE, RunLock
     from atlas.runtime.daily import DailyRunner
 
-    candidate = _synthetic_daily_candidate()
     jobs = _synthetic_daily_jobs()
 
-    # Optional REAL live portal discovery (read-only). When --sources is given,
-    # the daily run seeds real leads from the configured portals in addition to
-    # the synthetic demonstration set; source health is published truthfully.
-    sources_arg = (getattr(args, "sources", None) or "").strip()
-    live_families = tuple(s.strip() for s in sources_arg.split(",") if s.strip()) if sources_arg else ()
+    # Supplemental READ-ONLY live portals (LinkedIn/Naukri). --include-portals is
+    # the official-first name; --sources remains accepted for back-compat.
+    portals_arg = (getattr(args, "include_portals", None) or getattr(args, "sources", None) or "").strip()
+    live_families = tuple(s.strip() for s in portals_arg.split(",") if s.strip()) if portals_arg else ()
+
+    portal_only_debug = bool(getattr(args, "portal_only_debug", False))
+    official_config_path = getattr(args, "official_config", None)
+    official_companies_n = int(getattr(args, "official_companies", 0) or 0)
+    official_workers = int(getattr(args, "official_workers", 1) or 1)
+    official_lanes = ("JAVA_BACKEND", "GENERAL_SOFTWARE")
+
+    def _build_candidate(live):
+        # A LIVE run uses the REAL PRIVATE_LOCAL candidate (§12) unless the
+        # operator explicitly forces synthetic. plan/status stay synthetic (no
+        # private import side effects).
+        if live and not bool(getattr(args, "synthetic_candidate", False)):
+            return _private_daily_candidate(settings, target_lanes=official_lanes)
+        return _synthetic_daily_candidate(), {"candidate_mode": "SYNTHETIC", "synthetic": True}
 
     def _make_runner(run_id, *, live=False):
+        candidate, cand_info = _build_candidate(live)
         market_exec = None
         source_health_provider = None
         official_followup = None
-        seed_jobs = list(jobs)
+        official_exec = None
+        official_result_provider = None
+        eligible_for_latest = True
+        seed_jobs = [] if live else list(jobs)
+
+        # OFFICIAL-FIRST: begin from the company universe. --live ALWAYS executes
+        # official company coverage unless --portal-only-debug is explicitly set.
+        if live and not portal_only_debug:
+            targets = []
+            if official_config_path:
+                targets, _ = _load_official_targets(official_config_path)
+            elif official_companies_n:
+                targets = _official_targets_from_registry(settings, limit=official_companies_n)
+            if official_companies_n and len(targets) > official_companies_n:
+                targets = targets[:official_companies_n]
+            if targets:
+                from atlas.runtime.official_universe import OfficialCompanyUniverseRunner
+
+                off_runner = OfficialCompanyUniverseRunner(
+                    settings, run_id, targets=targets, lanes=official_lanes,
+                    parallel_workers=official_workers,
+                    max_pages=int(getattr(args, "max_pages", 2) or 2), live=True)
+                _off_holder: dict = {}
+
+                def official_exec():
+                    res = off_runner.run()
+                    _off_holder["res"] = res
+                    return res.rankable_jobs()
+
+                def official_result_provider():
+                    return _off_holder.get("res")
+
+        # Supplemental live portal discovery (PORTAL_ONLY leads, never All_Jobs).
         if live and live_families:
             from atlas.runtime.live_sources import LivePortalDiscovery
 
@@ -1174,12 +1295,10 @@ def _cmd_daily(args: argparse.Namespace) -> int:
                 lane=getattr(args, "lane", None) or "JAVA_BACKEND",
                 location=getattr(args, "location", None) or "India",
                 recency_days=int(getattr(args, "recency_days", 7) or 7),
-                max_pages=int(getattr(args, "max_pages", 2) or 2),
+                max_pages=min(2, int(getattr(args, "max_pages", 2) or 2)),
             )
             producer = disco.as_market_exec(live_families)
             market_exec = producer
-            # when real leads are seeded, do not also inject the synthetic demo set
-            seed_jobs = []
 
             def source_health_provider():
                 outcome = getattr(producer, "holder", {}).get("outcome")
@@ -1188,23 +1307,25 @@ def _cmd_daily(args: argparse.Namespace) -> int:
                     base.update(outcome.health_dict())
                 return base
 
-        # Optional REAL live portal->official follow-up + linkage (§5.5). Runs the
-        # real official ATS adapters for companies with independently-known boards
-        # and links live portal leads to official evidence.
-        if live and bool(getattr(args, "official_followup", False)):
+        # Optional REAL live portal->official follow-up + linkage (PORTAL_OFFICIAL_LINKED).
+        if live and bool(getattr(args, "official_followup", False)) and not portal_only_debug:
             from atlas.runtime.official_followup import DEFAULT_KNOWN_SOURCES, LiveOfficialFollowup
 
             followup = LiveOfficialFollowup(
                 settings, run_id, known_sources=DEFAULT_KNOWN_SOURCES,
                 recency_days=int(getattr(args, "recency_days", 30) or 30),
-                max_portal_pages=int(getattr(args, "max_pages", 2) or 2), max_official=300)
+                max_portal_pages=min(2, int(getattr(args, "max_pages", 2) or 2)), max_official=300)
             official_followup = followup.run
-            if not live_families:
-                seed_jobs = []  # follow-up contributes the real leads
+
+        # --portal-only-debug is DIAGNOSTIC ONLY: it can never update latest.
+        if portal_only_debug:
+            eligible_for_latest = False
 
         return DailyRunner(settings, run_id, jobs=seed_jobs, candidate=candidate, live=live,
+                           official_exec=official_exec, official_result_provider=official_result_provider,
                            market_exec=market_exec, official_followup=official_followup,
-                           source_health_provider=source_health_provider)
+                           source_health_provider=source_health_provider,
+                           candidate_mode_info=cand_info, eligible_for_latest=eligible_for_latest)
 
     if sub == "plan":
         run_id = getattr(args, "run_id", None) or _fresh_run_id("daily")
@@ -1564,6 +1685,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_da_run.add_argument("--recency-days", dest="recency_days", type=int, default=7)
     p_da_run.add_argument("--official-followup", dest="official_followup", action="store_true",
                           help="Run REAL live portal->official follow-up + linkage for known-source companies.")
+    p_da_run.add_argument("--official-config", dest="official_config", default=None,
+                          help="Sealed official company config (YAML/JSON) with VERIFIED domains + optional ATS boards.")
+    p_da_run.add_argument("--official-companies", dest="official_companies", type=int, default=0,
+                          help="Bounded official company subset to cover this run (from registry or capping the config).")
+    p_da_run.add_argument("--official-mode", dest="official_mode", default="due",
+                          help="Official cadence mode (e.g. 'due'). Informational.")
+    p_da_run.add_argument("--official-workers", dest="official_workers", type=int, default=1,
+                          help="Bounded parallel official workers (concurrency 1==N).")
+    p_da_run.add_argument("--include-portals", dest="include_portals", default=None,
+                          help="Comma-separated READ-ONLY supplemental portals (e.g. linkedin,naukri). PORTAL_ONLY.")
+    p_da_run.add_argument("--portal-only-debug", dest="portal_only_debug", action="store_true",
+                          help="DIAGNOSTIC ONLY: skip official coverage; can NEVER update latest or return PASS.")
+    p_da_run.add_argument("--synthetic-candidate", dest="synthetic_candidate", action="store_true",
+                          help="Force the synthetic (PII-free) candidate instead of the real PRIVATE_LOCAL candidate.")
     p_da_run.add_argument("--allow-private-candidate-to-copilot", dest="allow_private", action="store_true",
                           help="Explicit consent to send real candidate data to Copilot (default OFF).")
     p_da_run.add_argument("--json", action="store_true")
@@ -1579,6 +1714,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_da_resume.add_argument("--max-pages", dest="max_pages", type=int, default=2)
     p_da_resume.add_argument("--recency-days", dest="recency_days", type=int, default=7)
     p_da_resume.add_argument("--official-followup", dest="official_followup", action="store_true")
+    p_da_resume.add_argument("--official-config", dest="official_config", default=None)
+    p_da_resume.add_argument("--official-companies", dest="official_companies", type=int, default=0)
+    p_da_resume.add_argument("--official-mode", dest="official_mode", default="due")
+    p_da_resume.add_argument("--official-workers", dest="official_workers", type=int, default=1)
+    p_da_resume.add_argument("--include-portals", dest="include_portals", default=None)
+    p_da_resume.add_argument("--portal-only-debug", dest="portal_only_debug", action="store_true")
+    p_da_resume.add_argument("--synthetic-candidate", dest="synthetic_candidate", action="store_true")
     p_da_resume.add_argument("--json", action="store_true")
     p_da_resume.set_defaults(func=_cmd_daily)
 

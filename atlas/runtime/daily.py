@@ -42,6 +42,33 @@ from atlas.reporting.production_output import (
 
 JobProducer = Callable[[], Sequence[RankableJob]]
 
+# Portal host fragments — a URL on one of these is a portal lead, never an
+# official employer/ATS URL (used to guard the All_Jobs official-URL invariant).
+_PORTAL_HOST_FRAGMENTS = (
+    "linkedin.", "naukri.", "foundit.", "indeed.", "wellfound.", "angel.co",
+    "monster.", "glassdoor.", "shine.", "timesjobs.", "instahyre.", "cutshort.",
+)
+
+
+def _is_portal_host(url: Optional[str]) -> bool:
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(url or "").hostname or "").lower()
+    return bool(host) and any(frag in host for frag in _PORTAL_HOST_FRAGMENTS)
+
+
+def _serialize_portal_lead(x: Any) -> dict[str, Any]:
+    if isinstance(x, dict):
+        d = dict(x)
+        d.setdefault("record_class", "PORTAL_ONLY")
+        return d
+    return {
+        "company": getattr(x, "company", ""), "title": getattr(x, "title", ""),
+        "location": getattr(x, "location", ""), "source_family": getattr(x, "source_family", ""),
+        "url": getattr(x, "url", ""), "verification_state": getattr(x, "verification_state", ""),
+        "record_class": "PORTAL_ONLY",
+    }
+
 
 class AuthExpired(RuntimeError):
     """Raised by a live execution callable when a portal session needs a manual,
@@ -100,9 +127,11 @@ class DailyRunner:
         official_exec: Optional[JobProducer] = None,
         market_exec: Optional[JobProducer] = None,
         official_followup: Optional[Any] = None,
+        official_result_provider: Optional[Any] = None,
         source_health_provider: Optional[Any] = None,
         build_docx: bool = True,
         eligible_for_latest: bool = True,
+        candidate_mode_info: Optional[dict] = None,
         stop_after_phase: Optional[DailyPhase] = None,
         live: bool = False,
     ) -> None:
@@ -119,10 +148,14 @@ class DailyRunner:
         self.official_exec = official_exec
         self.market_exec = market_exec
         self.official_followup = official_followup
+        self.official_result_provider = official_result_provider
         self.followup_result = None
+        self.official_result = None
+        self.portal_only_leads: list = []
         self.source_health_provider = source_health_provider
         self.build_docx = build_docx
         self.eligible_for_latest = eligible_for_latest
+        self.candidate_mode_info = candidate_mode_info or {"candidate_mode": "SYNTHETIC", "synthetic": True}
         self.stop_after_phase = stop_after_phase
         self.live = live
 
@@ -205,12 +238,19 @@ class DailyRunner:
     def _h_execute_official(self, state: DailyState, _rt) -> DailyState:
         try:
             if self.official_exec is not None:
-                self.jobs.extend(self.official_exec())
+                self.jobs.extend(self.official_exec())          # OFFICIAL_DIRECT jobs
+            if self.official_result_provider is not None:
+                self.official_result = self.official_result_provider()
             if self.official_followup is not None:
                 followup = self.official_followup()
                 self.followup_result = followup
-                if followup is not None and hasattr(followup, "rankable_jobs"):
-                    self.jobs.extend(followup.rankable_jobs())
+                if followup is not None:
+                    if hasattr(followup, "rankable_jobs"):
+                        # PORTAL_OFFICIAL_LINKED official jobs (official primary source)
+                        self.jobs.extend(followup.rankable_jobs())
+                    if hasattr(followup, "portal_only_leads"):
+                        # PORTAL_ONLY leads never enter All_Jobs — kept for portal_leads.json
+                        self.portal_only_leads.extend(followup.portal_only_leads())
         except AuthExpired as exc:
             return self._enter_waiting(state, DailyPhase.EXECUTE_OFFICIAL, exc)
         self._record_phase_run(DailyPhase.EXECUTE_OFFICIAL)
@@ -219,7 +259,10 @@ class DailyRunner:
     def _h_execute_market(self, state: DailyState, _rt) -> DailyState:
         try:
             if self.market_exec is not None:
-                self.jobs.extend(self.market_exec())
+                # Portal discovery is SUPPLEMENTAL: its leads are PORTAL_ONLY and
+                # must NEVER enter All_Jobs. They are counted and persisted to
+                # portal_leads.json only (Phase 2A official-first §7/§14).
+                self.portal_only_leads.extend(self.market_exec())
         except AuthExpired as exc:
             return self._enter_waiting(state, DailyPhase.EXECUTE_MARKET, exc)
         self._record_phase_run(DailyPhase.EXECUTE_MARKET)
@@ -239,10 +282,11 @@ class DailyRunner:
             seen.setdefault(j.job_key, j)
         self.jobs = list(seen.values())
         self.jobs_by_key = seen
-        # Durably persist the discovered lead set so a fresh-process RESUME
-        # reconstructs the EXACT same jobs without re-running (non-deterministic)
-        # live discovery.
+        # Durably persist the discovered lead set + portal-only leads so a
+        # fresh-process RESUME reconstructs the EXACT same jobs and counts without
+        # re-running (non-deterministic) live discovery.
         self._persist_leads()
+        self._persist_portal_only()
         state["jobs_discovered"] = len(self.jobs)
         self._record_phase_run(DailyPhase.CANONICALIZE)
         return state
@@ -283,6 +327,8 @@ class DailyRunner:
                 seen.setdefault(j.job_key, j)
             self.jobs = list(seen.values())
             self.jobs_by_key = seen
+        if not self.portal_only_leads:
+            self.portal_only_leads = self._load_portal_only()
         if self.result is None:
             from atlas.candidate.ranking import rank_and_evaluate
 
@@ -296,6 +342,27 @@ class DailyRunner:
         self.paths.run_dir.mkdir(parents=True, exist_ok=True)
         return self.paths.run_dir / "discovered_leads.json"
 
+    def _portal_only_path(self) -> Path:
+        self.paths.run_dir.mkdir(parents=True, exist_ok=True)
+        return self.paths.run_dir / "portal_only_leads.json"
+
+    def _persist_portal_only(self) -> None:
+        rows = [_serialize_portal_lead(x) for x in self.portal_only_leads]
+        tmp = self._portal_only_path().with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rows, indent=2, sort_keys=True, default=str), encoding="utf-8")
+        import os as _os
+
+        _os.replace(tmp, self._portal_only_path())
+
+    def _load_portal_only(self) -> list:
+        p = self._portal_only_path()
+        if not p.exists():
+            return list(self.portal_only_leads)
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return list(self.portal_only_leads)
+
     @staticmethod
     def _job_to_row(j: RankableJob) -> dict[str, Any]:
         return {
@@ -308,6 +375,9 @@ class DailyRunner:
             "verification_state": j.verification_state, "has_live_official_page": j.has_live_official_page,
             "is_fetchable": j.is_fetchable, "source_family": j.source_family,
             "canonical_id": j.canonical_id, "url": j.url,
+            "record_class": j.record_class, "primary_source": j.primary_source,
+            "discovery_channels": list(j.discovery_channels),
+            "official_requisition_id": j.official_requisition_id,
         }
 
     @staticmethod
@@ -325,6 +395,9 @@ class DailyRunner:
             has_live_official_page=bool(row.get("has_live_official_page", False)),
             is_fetchable=bool(row.get("is_fetchable", True)), source_family=row.get("source_family", ""),
             canonical_id=row.get("canonical_id"), url=row.get("url"),
+            record_class=row.get("record_class", ""), primary_source=row.get("primary_source", ""),
+            discovery_channels=tuple(row.get("discovery_channels", [])),
+            official_requisition_id=row.get("official_requisition_id", ""),
         )
 
     def _persist_leads(self) -> None:
@@ -350,20 +423,47 @@ class DailyRunner:
         builder = ApplicationPackBuilder(self.candidate, controller=self.controller, write_docx=self.build_docx)
         built = 0
         self.pack_results = []
-        for key in self.result.selected:
+        apply_recs = ("PRIORITY_APPLY", "STRONG_APPLY", "APPLY_AFTER_TAILORING")
+        # Primary: build packs for apply-family recommendations.
+        pack_keys = []
+        for k in self.result.selected:
+            ev = self.result.by_key(k)
+            if ev is not None and ev.recommendation in apply_recs:
+                pack_keys.append(k)
+        allow_review_fallback = False
+        # Fallback: if NO job reached an apply recommendation, build ONE grounded
+        # REVIEW package for the best-fit hydrated official job (honest fit + gaps).
+        # We try official jobs in fit order and keep the FIRST that passes factual
+        # grounding, so an operator always gets at least one official review pack.
+        if not pack_keys:
+            allow_review_fallback = True
+            scored = []
+            for k in self.result.selected:
+                ev = self.result.by_key(k)
+                job = self.jobs_by_key.get(k)
+                if ev is None or job is None or ev.candidate_fit is None:
+                    continue
+                if job.record_class not in ("OFFICIAL_DIRECT", "PORTAL_OFFICIAL_LINKED"):
+                    continue
+                if not job.mandatory_requirements:
+                    continue
+                scored.append((ev.candidate_fit, k))
+            scored.sort(key=lambda t: -t[0])
+            pack_keys = [k for _, k in scored]
+        for key in pack_keys:
             job = self.jobs_by_key.get(key)
             evaluation = self.result.by_key(key)
             if job is None or evaluation is None:
-                continue
-            # only build packs for apply-family recommendations
-            if evaluation.recommendation not in ("PRIORITY_APPLY", "STRONG_APPLY", "APPLY_AFTER_TAILORING"):
                 continue
             try:
                 res = builder.build(job, evaluation, packs_root=self.paths.application_packs_dir)
                 self.pack_results.append(res)
                 built += 1
-            except Exception as exc:  # noqa: BLE001 - one pack failure is not fatal to the run
-                state.setdefault("notes", []).append(f"pack failed for {key}: {exc}")
+                if allow_review_fallback:
+                    break  # one grounded review package is enough for the fallback
+            except Exception as exc:  # noqa: BLE001 - a rejected/failed pack is not fatal
+                state.setdefault("notes", []).append(f"pack skipped for {key}: {exc}")
+                continue
         state["packs_built"] = built
         self._record_phase_run(DailyPhase.BUILD_PACKS)
         return state
@@ -378,6 +478,7 @@ class DailyRunner:
         self._ensure_pipeline()
         evaluations = list(self.result.evaluations)
         sheet_data = sheet_data_from_evaluations(evaluations, self.jobs_by_key)
+        all_jobs_rows = sheet_data.get("All_Jobs", [])
         relevant = sum(1 for e in evaluations
                        if e.recommendation in ("PRIORITY_APPLY", "STRONG_APPLY", "APPLY_AFTER_TAILORING"))
         sheet_data["Run_Summary"] = [{
@@ -385,6 +486,42 @@ class DailyRunner:
             "Run_Status": "COMPLETE", "Raw_Discoveries": len(self.jobs),
             "Relevant_Discoveries": relevant, "Remaining_Work": "",
         }]
+
+        # -- Section 8 manifest metrics --------------------------------------
+        # Job-level metrics are derived from the DURABLE job set so a fresh-process
+        # resume reports the exact same counts; company-level metrics come from the
+        # official universe result when present.
+        om = self.official_result.metrics() if self.official_result is not None else {}
+        official_jobs = [j for j in self.jobs if getattr(j, "record_class", "") == "OFFICIAL_DIRECT"]
+        linked_jobs = [j for j in self.jobs if getattr(j, "record_class", "") == "PORTAL_OFFICIAL_LINKED"]
+        route_families = sorted({(j.primary_source or j.source_family) for j in official_jobs
+                                 if (j.primary_source or j.source_family)})
+        generic_http = sum(1 for j in official_jobs if (j.source_family or "") == "company_career")
+        generic_browser = sum(1 for j in official_jobs if (j.source_family or "") == "company_career_browser")
+        portal_only_in_all = sum(1 for r in all_jobs_rows if r.get("record_class") == "PORTAL_ONLY")
+        non_official_urls = sum(1 for r in all_jobs_rows if _is_portal_host(r.get("official_apply_url", "")))
+        metrics = {
+            "official_companies_planned": om.get("official_companies_planned", 0),
+            "official_companies_terminal": om.get("official_companies_terminal", 0),
+            "official_companies_with_results": om.get("official_companies_with_results", 0),
+            "direct_official_jobs": len(official_jobs),
+            "portal_official_linked_jobs": len(linked_jobs),
+            "portal_only_leads": len(self.portal_only_leads),
+            "portal_only_rows_in_all_jobs": portal_only_in_all,
+            "official_route_families_with_results": route_families,
+            "official_generic_http_jobs": generic_http,
+            "official_generic_browser_jobs": generic_browser,
+            "all_jobs_rows": len(all_jobs_rows),
+        }
+        # Structural latest gate: a workbook with ANY portal-only row or a
+        # non-official (portal-host) apply URL in All_Jobs can NEVER update latest.
+        structural_ok = (portal_only_in_all == 0 and non_official_urls == 0)
+        eligible = bool(self.eligible_for_latest and structural_ok)
+        portal_leads_payload = {
+            "count": len(self.portal_only_leads),
+            "leads": [_serialize_portal_lead(x) for x in self.portal_only_leads[:5000]],
+        }
+
         status = "COMPLETE"
         try:
             source_health = {"mode": "live" if self.live else "offline"}
@@ -396,6 +533,8 @@ class DailyRunner:
                 except Exception as exc:  # noqa: BLE001
                     source_health["provider_error"] = str(exc)
             verification_summary = {"selected": len(self.result.selected)}
+            if self.official_result is not None and hasattr(self.official_result, "to_dict"):
+                verification_summary["official_universe"] = self.official_result.to_dict()
             if self.followup_result is not None and hasattr(self.followup_result, "to_dict"):
                 fr = self.followup_result.to_dict()
                 verification_summary["official_followup"] = fr
@@ -406,10 +545,12 @@ class DailyRunner:
                 coverage={"jobs": len(self.jobs)},
                 source_health=source_health,
                 recommendations=recommendations_payload(evaluations),
-                portal_leads={"count": 0},
+                portal_leads=portal_leads_payload,
                 verification_summary=verification_summary,
                 manifest_extra={"packs": [p.to_dict() for p in self.pack_results]},
-                eligible_for_latest=self.eligible_for_latest,
+                metrics=metrics,
+                candidate=self.candidate_mode_info,
+                eligible_for_latest=eligible,
             )
             state["report_valid"] = self.publish_result.report_valid
             state["status"] = self.publish_result.status

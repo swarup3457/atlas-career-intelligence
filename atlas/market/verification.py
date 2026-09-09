@@ -100,18 +100,28 @@ class PortalOfficialVerifier:
         self.title_threshold = title_threshold
 
     def _official_observations(self, run_id: str) -> list[_OfficialObs]:
-        out: list[_OfficialObs] = []
+        # Collapse multiple REVISIONS of the same job (a SEARCH row and its
+        # hydrated DETAIL row share a canonical id) to ONE candidate, so a lead
+        # is not falsely marked ambiguous by two revisions of a single official
+        # job. Rows without a canonical id yet are keyed by observation id.
+        by_key: dict[str, _OfficialObs] = {}
         for row in self.store.list_raw_observations(run_id):
             fam = (row["source_family"] or "").lower()
             if fam in _PORTAL_FAMILIES:
                 continue  # portal observations are not official evidence
-            out.append(_OfficialObs(
+            key = row["canonical_id"] or row["observation_id"]
+            obs = _OfficialObs(
                 observation_id=row["observation_id"], canonical_id=row["canonical_id"],
                 source_family=fam, source_job_id=row["source_job_id"], canonical_url=row["canonical_url"],
                 company=row["company"], title=row["title"], location=row["location"],
                 is_active=(row["is_active"] or "").upper() or None,
-            ))
-        return out
+            )
+            prev = by_key.get(key)
+            if prev is None:
+                by_key[key] = obs
+            elif obs.source_job_id and not prev.source_job_id:
+                by_key[key] = obs  # prefer the revision that carries a source job id
+        return list(by_key.values())
 
     def _match_lead(self, lead: PortalJobLead, official: list[_OfficialObs]) -> LinkResult:
         # 1. Strongest: official apply URL / requisition id alignment.

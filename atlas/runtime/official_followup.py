@@ -29,10 +29,14 @@ from typing import Any, Callable, Optional, Sequence
 
 from atlas.config import Settings
 from atlas.persistence.sqlite import StateStore
+from atlas.runtime.canonicalize import canonicalize_run
+from atlas.runtime.official_universe import project_run_official_jobs
 from atlas.sources.adapter import AdapterError
 from atlas.sources.ats.ashby import AshbyAdapter
 from atlas.sources.ats.greenhouse import GreenhouseAdapter
 from atlas.sources.ats.lever import LeverAdapter
+from atlas.sources.detail_hydration import DetailHydrator
+from atlas.sources.generic import build_careers_registry
 from atlas.sources.http_client import ReadOnlyHttpClient
 from atlas.sources.models import (
     SearchRequest,
@@ -94,10 +98,22 @@ class CompanyFollowup:
 class FollowupResult:
     run_id: str
     companies: list[CompanyFollowup] = field(default_factory=list)
-    jobs: list = field(default_factory=list)   # RankableJobs for the run-scoped leads
+    jobs: list = field(default_factory=list)          # PORTAL_OFFICIAL_LINKED official RankableJobs
+    portal_only: list = field(default_factory=list)   # portal-only lead rows (NEVER in All_Jobs)
 
     def rankable_jobs(self) -> list:
         return list(self.jobs)
+
+    def portal_only_leads(self) -> list:
+        return list(self.portal_only)
+
+    @property
+    def portal_only_count(self) -> int:
+        return len(self.portal_only)
+
+    @property
+    def linked_official_jobs(self) -> int:
+        return len(self.jobs)
 
     @property
     def official_attempts(self) -> int:
@@ -112,6 +128,8 @@ class FollowupResult:
             "run_id": self.run_id,
             "official_attempts": self.official_attempts,
             "linked_verified_total": self.linked_verified_total,
+            "portal_official_linked_jobs": self.linked_official_jobs,
+            "portal_only_leads": self.portal_only_count,
             "companies": [c.to_dict() for c in self.companies],
         }
 
@@ -132,6 +150,7 @@ class LiveOfficialFollowup:
         max_official: int = 200,
         portal_adapter_factory: Optional[Callable[[str], Any]] = None,
         official_adapter_factory: Optional[Callable[[KnownOfficialSource], Any]] = None,
+        registry=None,
         store_path=None,
     ) -> None:
         self.settings = settings
@@ -144,6 +163,7 @@ class LiveOfficialFollowup:
         self.max_official = max(1, max_official)
         self._portal_factory = portal_adapter_factory
         self._official_factory = official_adapter_factory
+        self.registry = registry or build_careers_registry()
         self.store_path = store_path or settings.state_db
 
     # -- adapters -----------------------------------------------------------
@@ -211,17 +231,33 @@ class LiveOfficialFollowup:
             oid = f"off::{self.run_id}::{src.family}::{r.source_job_id or r.canonical_url or staged}"
             store.stage_raw_observation(
                 oid, self.run_id, r.source_instance or f"{src.family}-{src.board_token}",
-                r.content_hash(), source_family=r.source_type.value if hasattr(r.source_type, "value") else src.family,
+                r.content_hash(), source_family=src.family,
                 source_job_id=r.source_job_id, source_url=r.source_url, canonical_url=r.canonical_url,
                 company=src.company_name, title=r.title, location=r.location,
+                posted_at=r.posted_at,
                 is_active=r.is_active.value if hasattr(r.is_active, "value") else str(r.is_active),
                 source_identity=r.source_job_id or r.canonical_url, adapter_version=r.adapter_version,
-                parser_version=r.parser_version)
+                parser_version=r.parser_version,
+                detail={"verification_level": r.verification_level.value if hasattr(r.verification_level, "value") else None,
+                        "requisition_id": (r.provenance or {}).get("requisition_id"),
+                        "date_provenance": (r.provenance or {}).get("date_provenance")})
             staged += 1
         cf.official_status = "COMPLETED" if staged else "ZERO"
         return staged
 
     # -- run ----------------------------------------------------------------
+    def _hydration_instances(self) -> dict:
+        fam_enum = {"greenhouse": SourceFamily.GREENHOUSE, "lever": SourceFamily.LEVER,
+                    "ashby": SourceFamily.ASHBY}
+        instances: dict[str, SourceInstance] = {}
+        for src in self.known_sources:
+            cls, stype = _ATS[src.family]
+            iid = f"{src.family}-{src.board_token}"
+            instances[iid] = SourceInstance(
+                instance_id=iid, source_type=stype, source_family=fam_enum.get(src.family),
+                company_id=src.board_token, metadata={"board_token": src.board_token})
+        return instances
+
     def run(self) -> FollowupResult:
         result = FollowupResult(run_id=self.run_id)
         self._rankable_jobs = []
@@ -233,6 +269,16 @@ class LiveOfficialFollowup:
                 cf.official_jobs = self._discover_official(src, store, cf)
                 result.companies.append(cf)
 
+            # Hydrate + canonicalize the run's STAGED official observations so the
+            # linked official jobs carry real requirements and a canonical id
+            # BEFORE linkage attaches portal leads to them.
+            try:
+                DetailHydrator(store, self.registry, self._hydration_instances(),
+                               run_id=self.run_id, max_details=self.max_official).hydrate()
+            except Exception:  # noqa: BLE001 - hydration failure is not fatal to linkage
+                pass
+            canonicalize_run(store, self.run_id)
+
             # Deterministic linkage across ALL run-scoped leads vs official obs.
             links = PortalOfficialVerifier(store).link_run(self.run_id)
 
@@ -243,14 +289,17 @@ class LiveOfficialFollowup:
                 company_identity_key(c.company_name): c for c in result.companies
             }
             lead_rows = {row["lead_id"]: row for row in store.list_portal_leads(self.run_id)}
+            linked_canonicals: set[str] = set()
             for lk in links:
                 row = lead_rows.get(lk.lead_id)
                 if row is None:
                     continue
+                state = lk.verification_state.value
+                if state == "LINKED_OFFICIAL_VERIFIED" and lk.canonical_id:
+                    linked_canonicals.add(lk.canonical_id)
                 cf = by_key.get(company_identity_key(row["company_name"] or ""))
                 if cf is None:
                     continue
-                state = lk.verification_state.value
                 if state == "LINKED_OFFICIAL_VERIFIED":
                     cf.linked_verified += 1
                 elif state == "CLOSED_POSITIVE_EVIDENCE":
@@ -266,32 +315,30 @@ class LiveOfficialFollowup:
                         "ACCESS_LIMITED", "AUTH_REQUIRED", "RATE_LIMITED", "SOURCE_UNAVAILABLE"):
                     cf.official_status = cf.official_status or "OFFICIAL_SOURCE_UNRESOLVED"
 
-            # Collect the run-scoped leads (with their FINAL verification state) as
-            # RankableJobs so the daily pipeline can rank/report real linked leads.
-            self._rankable_jobs = [self._lead_row_to_job(row) for row in store.list_portal_leads(self.run_id)]
-            result.jobs = list(self._rankable_jobs)
+            # LINKED leads become OFFICIAL canonical jobs (PORTAL_OFFICIAL_LINKED):
+            # the official source/url/requisition is PRIMARY; the portal channel is
+            # retained only as provenance. A lead with no official match stays a
+            # PORTAL_ONLY lead (persisted, never promoted into All_Jobs).
+            linked_jobs, _ = project_run_official_jobs(
+                store, self.run_id, canonical_filter=linked_canonicals,
+                record_class="PORTAL_OFFICIAL_LINKED", extra_channels=("linkedin",))
+            self._rankable_jobs = linked_jobs
+            result.jobs = list(linked_jobs)
+            result.portal_only = [
+                self._lead_row_to_portal_only(row)
+                for row in store.list_portal_leads(self.run_id)
+                if (row["verification_state"] or "PORTAL_CURRENT_LEAD") != "LINKED_OFFICIAL_VERIFIED"
+            ]
         return result
 
     @staticmethod
-    def _lead_row_to_job(row) -> "RankableJob":
-        from atlas.candidate.eligibility import RankableJob
-        from atlas.candidate.jobkey import job_key_for
-
-        company = (row["company_name"] or "").strip() or "(unknown)"
-        title = (row["title"] or "").strip()
-        location = (row["location"] or "").strip()
-        key = job_key_for(company=company, title=title, location=location,
-                          source_family=row["source_family"], source_job_id=row["portal_job_id"],
-                          official=False)
-        return RankableJob(
-            job_key=key, company=company, title=title, location=location, lane="JAVA_BACKEND",
-            work_mode=row["work_mode"] or "UNKNOWN", description="",
-            mandatory_requirements=(), preferred_requirements=(),
-            experience_text="", eligibility_text=location, posted_date=None,
-            verification_state=row["verification_state"] or "PORTAL_CURRENT_LEAD",
-            has_live_official_page=(row["verification_state"] == "LINKED_OFFICIAL_VERIFIED"),
-            is_fetchable=True, source_family=row["source_family"], url=row["canonical_url"],
-        )
+    def _lead_row_to_portal_only(row) -> dict:
+        return {
+            "lead_id": row["lead_id"], "source_family": row["source_family"],
+            "company": row["company_name"], "title": row["title"], "location": row["location"],
+            "url": row["canonical_url"], "verification_state": row["verification_state"] or "PORTAL_CURRENT_LEAD",
+            "record_class": "PORTAL_ONLY",
+        }
 
     def rankable_jobs(self) -> list:
         return list(getattr(self, "_rankable_jobs", []))

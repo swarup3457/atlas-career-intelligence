@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -88,11 +89,28 @@ def _atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _atomic_copy(src: Path, dst: Path) -> None:
+def _atomic_copy(src: Path, dst: Path, *, retries: int = 6, backoff: float = 0.5) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_suffix(dst.suffix + f".tmp-{os.getpid()}")
     shutil.copyfile(src, tmp)
-    os.replace(tmp, dst)
+    # os.replace over a Windows-locked destination raises PermissionError; retry
+    # with backoff so a transient lock (e.g. the file briefly open in Excel) does
+    # not fail the copy. The caller degrades gracefully if it never clears.
+    last_exc: Optional[Exception] = None
+    for attempt in range(max(1, retries)):
+        try:
+            os.replace(tmp, dst)
+            return
+        except PermissionError as exc:  # destination locked
+            last_exc = exc
+            time.sleep(backoff * (attempt + 1))
+    # Give up cleanly: remove our temp and re-raise so the caller can classify.
+    try:
+        if tmp.exists():
+            os.remove(tmp)
+    except OSError:
+        pass
+    raise last_exc if last_exc is not None else RuntimeError("atomic copy failed")
 
 
 @dataclass(frozen=True)
@@ -182,6 +200,8 @@ class ProductionOutputPublisher:
         portal_leads: Optional[Mapping[str, Any]] = None,
         verification_summary: Optional[Mapping[str, Any]] = None,
         manifest_extra: Optional[Mapping[str, Any]] = None,
+        metrics: Optional[Mapping[str, Any]] = None,
+        candidate: Optional[Mapping[str, Any]] = None,
         eligible_for_latest: bool = True,
     ) -> PublishResult:
         paths = ProductionRunPaths(self.root, run_id)
@@ -247,14 +267,29 @@ class ProductionOutputPublisher:
             "files": files,
             "problems": problems,
         }
+        if metrics is not None:
+            manifest["metrics"] = dict(metrics)
+        if candidate is not None:
+            manifest["candidate"] = dict(candidate)
         if manifest_extra:
             manifest["extra"] = dict(manifest_extra)
         _atomic_write_text(paths.manifest, json.dumps(manifest, indent=2, sort_keys=True, default=str))
 
-        # 4) latest pointer — only for a validated, operator-eligible COMPLETE run
+        # 4) latest pointer — only for a validated, operator-eligible COMPLETE run.
+        # A locked latest workbook (e.g. open in Excel) must NEVER crash the run —
+        # the immutable run directory is the authoritative output; latest is a
+        # convenience pointer that is retried and, if it cannot be written,
+        # recorded as a truthful problem.
         latest_updated = False
         if effective_status == "COMPLETE" and report_valid and eligible_for_latest:
-            latest_updated = self._update_latest(run_id, paths, effective_status)
+            try:
+                latest_updated = self._update_latest(run_id, paths, effective_status)
+            except Exception as exc:  # noqa: BLE001 - latest is a convenience pointer
+                problems.append(f"latest pointer update failed (retried): {type(exc).__name__}: {exc}")
+                # rewrite the manifest so the problem is durable
+                manifest["problems"] = problems
+                _atomic_write_text(paths.manifest,
+                                   json.dumps(manifest, indent=2, sort_keys=True, default=str))
 
         return PublishResult(
             run_id=run_id, status=effective_status, run_dir=str(paths.run_dir),
@@ -273,6 +308,20 @@ class ProductionOutputPublisher:
         _atomic_write_text(latest.latest_run_json, json.dumps(payload, indent=2, sort_keys=True))
         _atomic_write_text(latest.latest_run_txt, run_id + "\n")
         return True
+
+    def promote_to_latest(self, run_id: str) -> bool:
+        """Point ``latest`` at an already-published COMPLETE, eligible run. Used
+        to (re)complete the latest pointer when the original publish reached
+        COMPLETE but the latest copy was transiently blocked (locked file)."""
+        manifest = self.show_run(run_id) or {}
+        if manifest.get("status") != "COMPLETE" or not manifest.get("report_valid"):
+            return False
+        if not manifest.get("eligible_for_latest", False):
+            return False
+        paths = ProductionRunPaths(self.root, run_id)
+        if not paths.workbook.exists():
+            return False
+        return self._update_latest(run_id, paths, "COMPLETE")
 
     # -- read helpers -------------------------------------------------------
     def list_runs(self) -> list[dict[str, Any]]:
@@ -309,6 +358,7 @@ class ProductionOutputPublisher:
 # --------------------------------------------------------------------------- #
 _APPLY_RECS = {"PRIORITY_APPLY", "STRONG_APPLY", "APPLY_AFTER_TAILORING"}
 _CLOSED_RECS = {"REJECT", "CLOSED"}
+_RECORD_CLASS_RANK = {"OFFICIAL_DIRECT": 0, "PORTAL_OFFICIAL_LINKED": 1}
 
 
 def recommendations_payload(evaluations: Sequence[Any]) -> dict[str, Any]:
@@ -326,24 +376,45 @@ def recommendations_payload(evaluations: Sequence[Any]) -> dict[str, Any]:
     }
 
 
+def _all_jobs_sort_key(row: Mapping[str, Any]) -> tuple:
+    """Section 8 sort: apply-family first, then OFFICIAL_DIRECT, then
+    PORTAL_OFFICIAL_LINKED, then remaining official/manual rows; ties by score."""
+    apply_first = 0 if row.get("recommendation") in _APPLY_RECS else 1
+    record_rank = _RECORD_CLASS_RANK.get(row.get("record_class", ""), 2)
+    score = row.get("match_score")
+    score_val = score if isinstance(score, (int, float)) else -1
+    return (apply_first, record_rank, -score_val, row.get("company", ""), row.get("role_title", ""))
+
+
 def sheet_data_from_evaluations(
     evaluations: Sequence[Any], jobs_by_key: Mapping[str, Any]
 ) -> dict[str, list[dict[str, Any]]]:
     """Build All_Jobs / Closed_or_Rejected / Resume_Tailoring canonical rows from
-    ranking evaluations. NOT_EVALUATED rows stay VISIBLE in All_Jobs."""
+    ranking evaluations (Phase 2A official-first §8). A PORTAL_ONLY record is
+    NEVER emitted into All_Jobs; only OFFICIAL_DIRECT and PORTAL_OFFICIAL_LINKED
+    rows appear. NOT_EVALUATED official rows stay VISIBLE in All_Jobs."""
     all_jobs: list[dict[str, Any]] = []
     closed: list[dict[str, Any]] = []
     tailoring: list[dict[str, Any]] = []
     for e in evaluations:
         d = e.to_dict() if hasattr(e, "to_dict") else dict(e)
         job = jobs_by_key.get(d["job_key"])
+        record_class = getattr(job, "record_class", "") if job else ""
+        # PORTAL_ONLY leads are never promoted into the primary All_Jobs sheet.
+        if record_class == "PORTAL_ONLY":
+            continue
+        channels = getattr(job, "discovery_channels", ()) if job else ()
         all_jobs.append({
+            "record_class": record_class or "OFFICIAL_DIRECT",
             "company": d.get("company", ""), "role_title": d.get("title", ""),
             "location": getattr(job, "location", "") if job else "",
             "lane": d.get("lane") or "",
             "work_mode": getattr(job, "work_mode", "") if job else "",
-            "discovery_source": getattr(job, "source_family", "") if job else "",
+            "primary_source": (getattr(job, "primary_source", "") or getattr(job, "source_family", "")) if job else "",
+            "discovery_channels": ", ".join(channels) if channels else (
+                getattr(job, "source_family", "") if job else ""),
             "official_apply_url": getattr(job, "url", "") if job else "",
+            "official_requisition_id": getattr(job, "official_requisition_id", "") if job else "",
             "freshness_band": d.get("freshness", ""),
             "verification_level": d.get("verification", ""),
             "match_score": d.get("candidate_fit") if d.get("candidate_fit") is not None else "",
@@ -366,6 +437,7 @@ def sheet_data_from_evaluations(
                 "Genuine_Gaps": ", ".join(d.get("gaps", [])),
                 "Suggested_Resume_Filename": f"resume_{d.get('job_key','')}.docx",
             })
+    all_jobs.sort(key=_all_jobs_sort_key)
     return {"All_Jobs": all_jobs, "Closed_or_Rejected": closed, "Resume_Tailoring": tailoring}
 
 

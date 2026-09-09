@@ -123,9 +123,10 @@ def test_auth_expired_yields_waiting_for_human(settings, candidate):
 
 
 def test_live_market_exec_crash_resume_reloads_persisted_leads(settings, candidate):
-    """A live-style run seeds leads via market_exec (non-deterministic in
-    reality). After a crash before publish, a FRESH runner with NO seed jobs and
-    NO market_exec must resume EXACTLY from the durably persisted lead set."""
+    """A live-style run seeds SUPPLEMENTAL portal leads via market_exec. Under the
+    official-first contract those are PORTAL_ONLY (never All_Jobs); after a crash
+    before publish, a FRESH runner with NO market_exec must resume EXACTLY from
+    the durably persisted portal-only lead set (not re-discover them)."""
     from atlas.runtime.live_sources import LivePortalDiscovery
     from tests.test_live_sources import FakeAdapter, _result
 
@@ -140,16 +141,23 @@ def test_live_market_exec_crash_resume_reloads_persisted_leads(settings, candida
                      stop_after_phase=DailyPhase.DEEP_EVALUATE, live=True)
     r1.run()
     from pathlib import Path
-    leads_file = Path(r1.paths.run_dir) / "discovered_leads.json"
-    assert leads_file.is_file()  # leads durably persisted at CANONICALIZE
+    portal_file = Path(r1.paths.run_dir) / "portal_only_leads.json"
+    assert portal_file.is_file()  # portal-only leads durably persisted at CANONICALIZE
 
-    # process 2: fresh runner, NO seed jobs, NO market_exec -> reloads persisted leads
+    # process 2: fresh runner, NO market_exec -> reloads persisted portal-only leads
     r2 = DailyRunner(settings, "DAILY_LIVE_RESUME", jobs=[], candidate=candidate,
                      market_exec=None, build_docx=False, live=True)
     res2 = r2.resume()
     assert res2.terminal_state == "COMPLETE"
-    assert res2.jobs_discovered == 4  # exact same 4 leads, not re-discovered
-    assert res2.latest_updated is True
+    # portal leads are PORTAL_ONLY: they are NOT ranked discoveries / All_Jobs rows
+    assert res2.jobs_discovered == 0
+    assert len(r2.portal_only_leads) == 4  # exact same 4 leads, reloaded not re-discovered
+    # the published run manifest counts them as portal-only, zero in All_Jobs
+    manifest = r2.publisher.show_run("DAILY_LIVE_RESUME") or {}
+    metrics = manifest.get("metrics", {})
+    assert metrics.get("portal_only_leads") == 4
+    assert metrics.get("portal_only_rows_in_all_jobs") == 0
+    assert metrics.get("all_jobs_rows") == 0
     # EXECUTE_MARKET ran exactly once (only in process 1); never rerun on resume
     assert r2.phase_run_counts().get("EXECUTE_MARKET") == 1
 

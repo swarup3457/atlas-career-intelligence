@@ -780,13 +780,18 @@ class ProductionSearchRuntime:
         for j in jobs[:500]:
             if j["verification_level"] == "VERIFIED_OFFICIAL":
                 verified_count += 1
+            official = j["verification_level"] in ("VERIFIED_OFFICIAL", "OFFICIAL_SEARCH_LIVE")
             rows.append({
-                "company": j["company"], "role_title": j["title"],
-                "source_job_id": j["source_job_id"], "location": j["location"],
+                "record_class": "OFFICIAL_DIRECT" if official else "MANUAL_VERIFICATION",
+                "company": j["company"], "role_title": j["title"], "location": j["location"],
+                "lane": "", "work_mode": "",
+                "primary_source": "", "discovery_channels": "",
                 "official_apply_url": j["url"] or "",
+                "official_requisition_id": j["source_job_id"] or "",
+                "freshness_band": j["freshness_band"],
                 "verification_level": j["verification_level"],
-                "job_lifecycle_status": j["lifecycle"],
-                "recommendation": j["recommendation"], "freshness_band": j["freshness_band"],
+                "match_score": "", "requirements_matched": "", "missing_requirements": "",
+                "recommendation": j["recommendation"],
             })
         counters = state.get("counters", {})
         return {

@@ -78,6 +78,11 @@ class RankableJob:
     source_family: str = ""
     canonical_id: Optional[str] = None
     url: Optional[str] = None
+    # Phase 2A official-first record classification + provenance.
+    record_class: str = ""               # OFFICIAL_DIRECT | PORTAL_OFFICIAL_LINKED | PORTAL_ONLY
+    primary_source: str = ""             # the authoritative source family (official for linked)
+    discovery_channels: tuple[str, ...] = ()  # every channel the job was seen on
+    official_requisition_id: str = ""    # official requisition id when available
 
 
 @dataclass(frozen=True)

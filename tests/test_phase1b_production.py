@@ -258,15 +258,17 @@ def test_partial_saves_continuation_and_resume_completes(tmp_path):
 def test_report_mapping_maps_synthetic_data(tmp_path):
     mapping = load_report_mapping()
     assert set(REQUIRED_SHEETS) <= set(mapping.sheets)
-    # canonical field -> workbook column
+    # canonical field -> workbook column (Phase 2A official-first §8 schema)
     row = mapping.map_record("All_Jobs", {
+        "record_class": "OFFICIAL_DIRECT",
         "company": "Acme", "verification_level": "VERIFIED_OFFICIAL",
         "official_apply_url": "https://x.invalid", "recommendation": "STRONG_APPLY",
     })
     assert row["Company"] == "Acme"
-    assert row["Verification_Status"] == "VERIFIED_OFFICIAL"      # canonical verification_level
+    assert row["Record_Class"] == "OFFICIAL_DIRECT"
+    assert row["Verification_Level"] == "VERIFIED_OFFICIAL"       # canonical verification_level
     assert row["Official_Apply_URL"] == "https://x.invalid"
-    assert row["Application_Recommendation"] == "STRONG_APPLY"
+    assert row["Recommendation"] == "STRONG_APPLY"
 
 
 def test_report_writes_all_eight_sheets_and_revalidates(tmp_path):
