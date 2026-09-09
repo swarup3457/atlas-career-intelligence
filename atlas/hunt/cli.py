@@ -185,7 +185,8 @@ def _hunt_run(args: argparse.Namespace) -> int:
                          created_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
     runtime = HuntRuntime(intent=intent, policy=policy, provider=provider, candidate=candidate,
                           campaign=campaign, output_root=output_root, run_id=run_id, lineage=lineage,
-                          candidate_years=2.0, allow_extension=not args.no_extension)
+                          candidate_years=2.0, allow_extension=not args.no_extension,
+                          max_hydrate_per_company=getattr(args, "max_hydrate", None))
     outcome = run_hunt(runtime)
     _print({"run_id": run_id, "mode": "live" if args.live else "offline", "provider": note,
             "outcome": outcome.outcome, "relevant_jobs": outcome.relevant_jobs,
@@ -229,6 +230,7 @@ def register_hunt_commands(subparsers) -> None:
     p_run.add_argument("--cohort", type=int, default=30)
     p_run.add_argument("--max-batch", type=int, default=60)
     p_run.add_argument("--max-pages", type=int, default=2)
+    p_run.add_argument("--max-hydrate", type=int, default=None)
     p_run.add_argument("--timeout", type=float, default=15.0)
     p_run.add_argument("--no-extension", action="store_true")
     p_run.add_argument("--run-id", default=None)

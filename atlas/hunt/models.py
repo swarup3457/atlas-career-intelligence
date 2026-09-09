@@ -43,12 +43,33 @@ def as_dict(obj: Any) -> Any:
     return obj
 
 
-def canonical_job_key(company: str, title: str, location: str = "", requisition_id: str = "") -> str:
-    """Canonical identity: official requisition id when present, else normalized
-    company + title + location (build spec 12, V1 New Text Document)."""
-    if requisition_id and requisition_id.strip():
-        return f"req:{identity_token(company)}:{identity_token(requisition_id)}"
+def canonical_job_key(company: str, title: str, location: str = "", requisition_id: str = "", source_job_id: str = "") -> str:
+    """Canonical identity: the unique ATS job id when present (build spec 12, V1
+    New Text Document). ``requisition_id`` is often a placeholder ("See
+    openings") that collapses distinct postings, so it is used only when it
+    looks unique; otherwise fall back to the ATS job id, then to normalized
+    company + title + location."""
+    if source_job_id and str(source_job_id).strip():
+        return f"job:{identity_token(company)}:{identity_token(source_job_id)}"
+    req = (requisition_id or "").strip()
+    if req and _looks_unique_req(req):
+        return f"req:{identity_token(company)}:{identity_token(req)}"
     return "ctl:" + ":".join(identity_token(x) for x in (company, title, location))
+
+
+# Requisition placeholders seen on public boards that must NOT be used as an
+# identity (they are shared across every posting).
+_PLACEHOLDER_REQ = frozenset(
+    {"see opening", "see openings", "see open", "n/a", "na", "none", "tbd", "various", ""}
+)
+
+
+def _looks_unique_req(req: str) -> bool:
+    tok = identity_token(req)
+    if tok in _PLACEHOLDER_REQ:
+        return False
+    # a usable requisition id contains at least one digit or is reasonably long
+    return any(c.isdigit() for c in tok) or len(tok) >= 6
 
 
 @dataclass(frozen=True)
@@ -132,7 +153,7 @@ class JobDetailRevision:
 
     @property
     def canonical_key(self) -> str:
-        return canonical_job_key(self.company, self.title, self.location, self.requisition_id)
+        return canonical_job_key(self.company, self.title, self.location, self.requisition_id, self.source_job_id)
 
 
 @dataclass(frozen=True)

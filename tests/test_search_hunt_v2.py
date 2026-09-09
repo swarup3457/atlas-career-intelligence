@@ -84,6 +84,29 @@ def test_sdet_excluded_from_development(intent, exp_policy):
     assert r.primary_lane is None
 
 
+@pytest.mark.parametrize(
+    "title,family",
+    [
+        ("Android Engineer, Terminal", RoleFamily.MOBILE.value),
+        ("Android BSP Engineer", RoleFamily.MOBILE.value),
+        ("iOS Engineer", RoleFamily.MOBILE.value),
+        ("Senior Consulting Engineer", RoleFamily.FUNCTIONAL_CONSULTING.value),
+        ("Solutions Engineer", RoleFamily.SALES_BPO.value),
+        ("Sales Engineer", RoleFamily.SALES_BPO.value),
+        ("Partner Engineer", RoleFamily.SALES_BPO.value),
+        ("Support Engineer", RoleFamily.SUPPORT_HELPDESK.value),
+        ("Technical Services Engineer", RoleFamily.SUPPORT_HELPDESK.value),
+        ("Cloud Operations Engineer", RoleFamily.DEVOPS_SRE_INFRA.value),
+    ],
+)
+def test_excluded_engineer_titles(intent, exp_policy, title, family):
+    # noisy real-world "<X> Engineer" titles are NOT software development even
+    # when the JD mentions Java/React (live-canary precision fix).
+    assert classify_role_family(title).family == family
+    r = _q(intent, exp_policy, title, "Work with Java, React, TypeScript and REST APIs.")
+    assert r.primary_lane is None
+
+
 def test_generic_backend_api_sql_not_java(intent, exp_policy):
     r = _q(intent, exp_policy, "Backend Engineer",
            "Build REST APIs, SQL and microservices for our platform.")

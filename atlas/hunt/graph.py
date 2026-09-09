@@ -63,6 +63,7 @@ class HuntRuntime:
     candidate_years: Optional[float] = None
     today: Optional[datetime.date] = None
     allow_extension: bool = True
+    max_hydrate_per_company: Optional[int] = None
     result: HuntPipelineResult = field(init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _source_seen: dict = field(default_factory=dict, init=False)
@@ -104,6 +105,8 @@ def _make_process_company(runtime: HuntRuntime):
         snapshot = runtime.provider.fetch_board(runtime.campaign.campaign_id, company)
         prefilter = prefilter_snapshot(snapshot, runtime.intent)
         union = hydration_union(prefilter)
+        if runtime.max_hydrate_per_company is not None:
+            union = union[: runtime.max_hydrate_per_company]
         details = []
         for sid in union:
             d = runtime.provider.hydrate(snapshot, sid)
