@@ -288,6 +288,8 @@ _SOFTWARE = (
     "application engineer",
     "programmer analyst",
     "programmer",
+    "software development engineering",
+    "development engineering",
     "member of technical staff",
     "development engineer",
     "product engineer",
