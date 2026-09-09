@@ -57,6 +57,20 @@ _PREF_AFTER_RE = re.compile(
     re.I,
 )
 _SINGLE_RE = re.compile(rf"(\d+(?:\.\d+)?)\s*{_YEARS}", re.I)
+# Label-PREFIXED experience, where the "experience/years" word comes BEFORE the
+# figure — a very common structured shape (e.g. "Years of Experience: 6 - 7",
+# "Experience: 5-10 years", "Experience Required: 8+"). The V3/pass-4 gap: none
+# of the number-then-"years" patterns match "Years of Experience:6 - 7", so a
+# hard 6-7y senior role fell through as ambiguous -> eligible. Range wins; then
+# a single "N" or "N+".
+_LABEL_EXP_PREFIX = r"(?:minimum\s+|min\.?\s+|required\s+|total\s+)?(?:years?|yrs?)(?:\s+of)?\s+experience\s*(?:required|reqd|needed)?\s*[:\-–]?\s*"
+_LABEL_EXP_RANGE_RE = re.compile(
+    rf"{_LABEL_EXP_PREFIX}(\d+(?:\.\d+)?)\s*(?:-|–|to|through)\s*(\d+(?:\.\d+)?)\s*\+?", re.I)
+_LABEL_EXP_SINGLE_RE = re.compile(
+    rf"{_LABEL_EXP_PREFIX}(\d+(?:\.\d+)?)\s*\+?(?!\s*(?:-|–|to|through)\s*\d)", re.I)
+# The reverse label form: "Experience: 5-10 years" (label, range, THEN years).
+_LABEL_EXP_THEN_YEARS_RE = re.compile(
+    rf"experience\s*(?:required|reqd|needed)?\s*[:\-–]?\s*(\d+(?:\.\d+)?)\s*(?:(?:-|–|to|through)\s*(\d+(?:\.\d+)?))?\s*\+?\s*{_YEARS}", re.I)
 # A preferred/desirable figure written as "N+ preferred" (no "years" token) — a
 # common Workday shape (e.g. "2+ years required, 5+ preferred"). It must be
 # captured as PREFERRED, never as a mandatory minimum.
@@ -108,12 +122,29 @@ def extract_experience(text: Optional[str]) -> ExtractedExperience:
         return ExtractedExperience(
             min_years=min(lo, hi), max_years=max(lo, hi), preferred_years=preferred_years, raw=s
         )
+    # Label-PREFIXED experience ("Years of Experience: 6 - 7", "Experience: 5-10
+    # years", "Experience Required: 8+") — the word precedes the figure. Checked
+    # before the loose single-number fallback so a structured senior requirement
+    # is never missed (pass-4 fix: IBM "Years of Experience:6 - 7").
+    for rx in (_LABEL_EXP_RANGE_RE, _LABEL_EXP_THEN_YEARS_RE):
+        m = rx.search(s)
+        if m:
+            lo = float(m.group(1))
+            hi = float(m.group(2)) if m.lastindex and m.group(2) else lo
+            return ExtractedExperience(
+                min_years=min(lo, hi), max_years=max(lo, hi), preferred_years=preferred_years, raw=s
+            )
     m = _MIN_RE.search(s)
     if m:
         return ExtractedExperience(
             min_years=float(m.group(1)), max_years=max_only, preferred_years=preferred_years, raw=s
         )
     m = _PLUS_RE.search(s)
+    if m:
+        return ExtractedExperience(
+            min_years=float(m.group(1)), max_years=max_only, preferred_years=preferred_years, raw=s
+        )
+    m = _LABEL_EXP_SINGLE_RE.search(s)
     if m:
         return ExtractedExperience(
             min_years=float(m.group(1)), max_years=max_only, preferred_years=preferred_years, raw=s

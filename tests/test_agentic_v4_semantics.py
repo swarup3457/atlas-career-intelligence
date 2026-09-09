@@ -72,6 +72,53 @@ def test_numeric_entity_experience_minimum(raw, expected_min):
     assert ex.min_years == expected_min, f"{raw!r} -> {ex}"
 
 
+@pytest.mark.parametrize(
+    "raw,expected_min,expected_max",
+    [
+        # The exact live IBM shapes that pass-4 JD capture surfaced (label-prefixed).
+        ("...scalability, and automation. Years of Experience:6 - 7 ABOUT BUSINESS", 6.0, 7.0),
+        ("...automation. Years of Experience:5 - 10 ABOUT BUSINESS UNIT", 5.0, 10.0),
+        ("Years of Experience: 8+", 8.0, None),
+        ("Experience: 5-10 years", 5.0, 10.0),
+        ("Experience Required: 6 years", 6.0, None),
+        ("Minimum Years of Experience: 4", 4.0, None),
+    ],
+)
+def test_label_prefixed_experience_minimum(raw, expected_min, expected_max):
+    ex = extract_experience(raw)
+    assert ex.min_years == expected_min, f"{raw!r} -> {ex}"
+    if expected_max is not None:
+        assert ex.max_years == expected_max, f"{raw!r} -> {ex}"
+
+
+def test_label_prefixed_senior_role_rejected_via_gate():
+    """A live-IBM-style '6 - 7 years' full-stack role must REJECT on experience for
+    the early-career candidate (0 false positives, prompt s.15)."""
+    import datetime
+    from atlas.hunt.models import JobDetailRevision
+    from atlas.hunt.pipeline import evaluate_detail
+    from atlas.hunt.qualification import QualificationStatus
+    from atlas.hunt.role_intent import load_role_intent_policy
+    from atlas.policy.loader import load_policy
+
+    today = datetime.date(2026, 9, 9)
+    d = JobDetailRevision(
+        revision_id="R", snapshot_id="S", source_job_id="J", company="IBM",
+        title="Software Engineering Application Developer-Cloud FullStack Professional",
+        description=("Work with multiple technologies, including Angular, React, CSS3, HTML5, Java, "
+                     "JEE, Spring, Hibernate, REST services for scalability and automation. "
+                     "Years of Experience:6 - 7 ABOUT BUSINESS UNIT."),
+        mandatory_requirements=("Java", "Spring", "React"),
+        experience_text="Years of Experience:6 - 7",
+        location="Bangalore, India", posted_date=today,
+        official_url="https://careers.ibm.com/job/1", requisition_id="R1",
+        verification_state="VERIFIED_OFFICIAL", has_live_official_page=True,
+        eligibility_text="Bangalore, India.", source_family="OFFICIAL_CAREERS_BROWSER",
+    )
+    ev = evaluate_detail(d, load_role_intent_policy(), load_policy(), candidate_years=2.0, today=today)
+    assert ev.final_status == QualificationStatus.REJECT_EXPERIENCE.value, ev.final_status
+
+
 def test_preferred_plus_not_read_as_mandatory():
     ex = extract_experience("2&#43; years required, 5&#43; preferred")
     assert ex.min_years == 2.0
