@@ -101,9 +101,12 @@ def write_agentic_report(
 ) -> AgenticReport:
     output_root = Path(output_root)
     run_dir = output_root / "agentic_pilots" / run_id
-    if run_dir.exists():
-        raise FileExistsError(f"refusing to overwrite existing agentic run dir: {run_dir}")
-    run_dir.mkdir(parents=True, exist_ok=False)
+    # Immutability: refuse to overwrite a COMPLETED run (one whose manifest exists).
+    # The run dir itself may already exist holding only _partial/checkpoints from an
+    # interrupted run — finalize is allowed to publish into that dir exactly once.
+    if (run_dir / "run_manifest.json").exists():
+        raise FileExistsError(f"refusing to overwrite completed agentic run: {run_dir}")
+    run_dir.mkdir(parents=True, exist_ok=True)
     ts = timestamp or datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
     # -- JSON artifacts ------------------------------------------------------
