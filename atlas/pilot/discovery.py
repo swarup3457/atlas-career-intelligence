@@ -185,6 +185,11 @@ def discover_careers_entry(
         result.source_family = f"OFFICIAL_ATS_{provider.upper()}"
 
     entry = entry_hint or CAREERS_ENTRY_HINTS.get(key) or f"https://www.{domain}/careers"
+    # Guard against a relative / malformed entry hint (e.g. the model passing
+    # "careers"): a fetch of a scheme-less URL fails with a confusing CONFIG_ERROR.
+    # Require an absolute HTTPS URL; otherwise fall back to the curated/derived one.
+    if not str(entry).lower().startswith("https://"):
+        entry = CAREERS_ENTRY_HINTS.get(key) or f"https://www.{domain}/careers"
     result.career_entry_url = entry
     result.evidence_urls.append(entry)
     try:

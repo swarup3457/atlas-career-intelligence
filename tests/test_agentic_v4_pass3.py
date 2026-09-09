@@ -133,19 +133,30 @@ def test_robust_lane_search_survives_overlay_click_timeout(spa2_server, config):
 
 
 @pytest.mark.browser
-def test_all_five_lanes_via_robust_search_is_genuinely_searched(spa2_server, config):
-    tb = AgenticCompanyToolbox(company="Globex", config=config, task_id="t3", browser_factory=_factory)
+def test_deterministic_lane_completion_finishes_checklist(spa2_server, config):
+    """The LLM may submit after 1 lane; Python's deterministic completion pass
+    finishes the remaining lanes on the still-open browser -> genuinely searched."""
+    from atlas.pilot.agentic_worker import AgenticCompanySearchWorker, AgenticCompanyTask
+    from atlas.pilot.usage import UsageMeter
+
+    worker = AgenticCompanySearchWorker(config=config, mode="deterministic", headless=True,
+                                        browser_factory=_factory)
+    tb = worker._toolbox(AgenticCompanyTask(company="Globex", task_id="t"))
+    # a browser-only discovery result (no ATS): the deterministic completion runs
+    from atlas.pilot.discovery import DiscoveryResult
+    tb.base.discovery = DiscoveryResult(company="Globex", official_domain="127.0.0.1",
+                                        career_entry_url=spa2_server, route="GENERIC_BROWSER",
+                                        status="UNSUPPORTED_SITE")
+    tb.browser_start(spa2_server)
+    # simulate the LLM having covered only ONE lane then stopping
+    tb.browser_search_lane("JAVA_BACKEND", "Java", "India")
+    assert not tb.base.lanes["DOTNET"].attempted
+    # Python completes the remaining lanes deterministically on the open browser
+    worker._complete_lanes_deterministically(tb)
     try:
-        tb.browser_start(spa2_server)
-        for lane in config.primary_lanes:
-            q = (config.query_for(lane) or ["Java"])[0]
-            tb.browser_search_lane(lane, q, "India")
+        assert all(tb.base.lanes[l].attempted for l in config.primary_lanes)
         out = tb.submit_company_search_result()
-        # all five lanes genuinely searched -> genuinely searched + lanes complete
-        # (NO_MATCHES here because this sub-test does not open a job detail)
-        assert out["status"] in (CompanySearchStatus.SEARCHED_COMPLETE_WITH_MATCHES.value,
-                                 CompanySearchStatus.SEARCHED_COMPLETE_NO_MATCHES.value)
-        assert is_genuinely_searched(out["status"])
         assert out["lanes_complete"] is True
+        assert is_genuinely_searched(out["status"])
     finally:
         tb.cleanup()

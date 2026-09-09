@@ -97,6 +97,13 @@ class AgenticCompanySearchWorker:
         try:
             if self.mode == "llm":
                 model_used = self._run_llm(task, tb, usage)
+                # Deterministic lane-completion: the LLM directs the search, but if
+                # it submitted before covering all five lanes (and the site is not
+                # blocked), Python finishes the checklist on the STILL-OPEN browser
+                # using the same read-only tools. Zero extra LLM cost; observed
+                # searches only (prompt s.6: the governor/validators decide
+                # completeness, not the model).
+                self._complete_lanes_deterministically(tb)
             else:
                 self._run_deterministic(task, tb)
         except Exception as exc:  # noqa: BLE001 - live SDK failure => truthful fallback
@@ -113,6 +120,42 @@ class AgenticCompanySearchWorker:
         for _ in range(tb.tool_calls):
             usage.record_tool_call(model_used)
         return result
+
+    # -- deterministic lane completion on the open browser (LLM mode) --------
+    def _complete_lanes_deterministically(self, tb: AgenticCompanyToolbox) -> None:
+        primary = self.config.primary_lanes
+        remaining = [l for l in primary
+                     if not (tb.base.lanes.get(l) and
+                             (tb.base.lanes[l].attempted or tb.base.lanes[l].board_snapshot_evaluated))]
+        if not remaining:
+            return
+        # Never override a truthful block; only finish when the browser is usable.
+        if tb._browser_access_limited or tb._auth_confirmed:
+            return
+        d = tb.base.discovery
+        # Fast path already covered by the LLM's ATS searches; only the browser
+        # path needs deterministic completion. Require a started browser.
+        if not tb._browser_started or tb.actor is None:
+            return
+        entry = (d.career_entry_url if d else "") or ""
+        details_budget = self.config.max_job_details_per_company
+        for lane in remaining:
+            # re-anchor on the careers entry so a search input is present
+            if entry:
+                nav = tb.browser_goto_search(entry) if "?" in entry else tb.browser_start(entry)
+                if not nav.get("ok") and tb._browser_access_limited:
+                    return
+            for q in (self.config.query_for(lane) or ["Java"])[:1]:
+                res = tb.browser_search_lane(lane, q, "India")
+                if not res.get("observed"):
+                    continue
+                for c in (res.get("cards") or [])[:2]:
+                    if len(tb.base.details) >= details_budget:
+                        break
+                    if c.get("handle"):
+                        tb.browser_open_job_detail(handle=c["handle"], lane_hint=lane)
+                        tb.browser_back()
+        tb.submit_company_search_result()
 
     # -- deterministic driver -----------------------------------------------
     def _run_deterministic(self, task: AgenticCompanyTask, tb: AgenticCompanyToolbox) -> None:

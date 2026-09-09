@@ -248,6 +248,7 @@ class CompanyBrowserActor:
         action_budget: int = 60,
         action_timeout_s: float = _DEFAULT_ACTION_TIMEOUT_S,
         nav_timeout_ms: int = _DEFAULT_NAV_TIMEOUT_MS,
+        click_timeout_ms: int = 6000,
     ) -> None:
         self.actor_id = actor_id
         self.company = company
@@ -256,6 +257,11 @@ class CompanyBrowserActor:
         self.action_budget = action_budget
         self.action_timeout_s = action_timeout_s
         self.nav_timeout_ms = nav_timeout_ms
+        # Interaction (click/fill/select/press) timeout is deliberately SHORTER
+        # than the navigation timeout: a fragile control that does not respond in
+        # a few seconds should fail FAST and let the agent recover (Enter / URL /
+        # next lane) instead of burning ~15s per stuck click (pass-2 lesson).
+        self.click_timeout_ms = click_timeout_ms
         self.trusted_hosts = tuple(h.lower() for h in trusted_hosts)
         # Test-only seam: hosts (e.g. 127.0.0.1) allowed over plain HTTP for
         # offline fixture tests. Empty in production, so real runs stay HTTPS-only.
@@ -409,23 +415,24 @@ class CompanyBrowserActor:
     # -- tool 3: fill --------------------------------------------------------
     def fill(self, handle: str, value: str) -> dict:
         self.action_count += 1
-        return self._submit(self._fill(handle, value))
+        return self._submit(self._fill(handle, value),
+                            timeout=min(self.action_timeout_s, self.click_timeout_ms / 1000 + 3))
 
     async def _fill(self, handle: str, value: str) -> dict:
         loc = self._locator(handle)
-        await loc.fill(str(value), timeout=self.nav_timeout_ms)
+        await loc.fill(str(value), timeout=self.click_timeout_ms)
         return {"ok": True, "handle": handle, "value": value}
 
     # -- tool 4: click -------------------------------------------------------
     def click(self, handle: str, *, timeout_ms: Optional[int] = None) -> dict:
         self.action_count += 1
-        return self._submit(self._click(handle, timeout_ms),
-                            timeout=(self.action_timeout_s if timeout_ms is None
-                                     else min(self.action_timeout_s, timeout_ms / 1000 + 3)))
+        eff = timeout_ms if timeout_ms is not None else self.click_timeout_ms
+        return self._submit(self._click(handle, eff),
+                            timeout=min(self.action_timeout_s, eff / 1000 + 3))
 
     async def _click(self, handle: str, timeout_ms: Optional[int] = None) -> dict:
         loc = self._locator(handle)
-        await loc.click(timeout=timeout_ms if timeout_ms is not None else self.nav_timeout_ms)
+        await loc.click(timeout=timeout_ms if timeout_ms is not None else self.click_timeout_ms)
         return {"ok": True, "handle": handle}
 
     # -- direct search-URL navigation (reliable for query-param SPAs) --------
@@ -447,11 +454,12 @@ class CompanyBrowserActor:
     # -- tool 5: press -------------------------------------------------------
     def press(self, key: str, handle: str = "") -> dict:
         self.action_count += 1
-        return self._submit(self._press(key, handle))
+        return self._submit(self._press(key, handle),
+                            timeout=min(self.action_timeout_s, self.click_timeout_ms / 1000 + 3))
 
     async def _press(self, key: str, handle: str) -> dict:
         if handle:
-            await self._locator(handle).press(key, timeout=self.nav_timeout_ms)
+            await self._locator(handle).press(key, timeout=self.click_timeout_ms)
         else:
             await self._page.keyboard.press(key)
         return {"ok": True, "key": key}
@@ -459,14 +467,15 @@ class CompanyBrowserActor:
     # -- tool 6: select_option ----------------------------------------------
     def select_option(self, handle: str, value: str) -> dict:
         self.action_count += 1
-        return self._submit(self._select(handle, value))
+        return self._submit(self._select(handle, value),
+                            timeout=min(self.action_timeout_s, self.click_timeout_ms / 1000 + 3))
 
     async def _select(self, handle: str, value: str) -> dict:
         loc = self._locator(handle)
         try:
-            await loc.select_option(value=str(value), timeout=self.nav_timeout_ms)
+            await loc.select_option(value=str(value), timeout=self.click_timeout_ms)
         except Exception:  # noqa: BLE001 - fall back to label match
-            await loc.select_option(label=str(value), timeout=self.nav_timeout_ms)
+            await loc.select_option(label=str(value), timeout=self.click_timeout_ms)
         return {"ok": True, "handle": handle, "value": value}
 
     # -- tool 7: wait --------------------------------------------------------
