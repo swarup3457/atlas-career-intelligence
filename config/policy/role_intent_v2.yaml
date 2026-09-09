@@ -29,6 +29,7 @@ display_defaults:
 lanes:
   JAVA_BACKEND:
     priority: 1
+    selection_specificity: 1
     display_name: "Java / backend / Spring / API / microservices"
     allowed_role_families:
       - SOFTWARE_DEVELOPMENT
@@ -106,6 +107,7 @@ lanes:
 
   JAVA_FULLSTACK:
     priority: 2
+    selection_specificity: 2
     display_name: "Java full stack"
     allowed_role_families:
       - SOFTWARE_DEVELOPMENT
@@ -157,6 +159,7 @@ lanes:
 
   REACT_FRONTEND:
     priority: 3
+    selection_specificity: 1
     display_name: "React / frontend"
     allowed_role_families:
       - SOFTWARE_DEVELOPMENT
@@ -205,6 +208,7 @@ lanes:
 
   DOTNET:
     priority: 4
+    selection_specificity: 1
     display_name: ".NET / ASP.NET / C#"
     allowed_role_families:
       - SOFTWARE_DEVELOPMENT
@@ -250,6 +254,7 @@ lanes:
 
   ENTERPRISE_HR_PAYROLL_INTEGRATION:
     priority: 5
+    selection_specificity: 2
     display_name: "Enterprise applications / payroll / HR tech / integration"
     allowed_role_families:
       - SOFTWARE_DEVELOPMENT
@@ -311,6 +316,7 @@ lanes:
 
   GENERAL_SOFTWARE:
     priority: 6
+    selection_specificity: 0
     display_name: "General software engineering (controlled fallback)"
     is_fallback: true
     allowed_role_families:

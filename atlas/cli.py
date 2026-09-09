@@ -1389,6 +1389,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="atlas", description="Atlas Career Intelligence platform CLI (foundation build).")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    from atlas.hunt.cli import register_hunt_commands
+    register_hunt_commands(subparsers)
+
     p_doctor = subparsers.add_parser("doctor", help="Run the offline health check.")
     p_doctor.set_defaults(func=_cmd_doctor)
 
