@@ -24,6 +24,25 @@ from atlas.pilot.usage import UsageMeter
 
 __all__ = ["AgenticCompanySearchWorker", "AgenticCompanyTask", "build_agentic_prompt"]
 
+_SENIOR_TITLE = ("senior", "sr.", "sr ", "lead", "principal", "staff", "architect", "advisor",
+                 "manager", "director", "head ", "iii", "iv", " ii", "specialist iv")
+_JUNIOR_TITLE = ("associate", "junior", "jr", "graduate", "trainee", "entry", "campus", "fresher",
+                 "developer", "engineer", "analyst", " i ", "professional i")
+_INDIA_TOK = ("india", "bengaluru", "bangalore", "hyderabad", "pune", "chennai", "mumbai", "noida",
+              "gurugram", "gurgaon", "delhi", "remote")
+
+
+def _prioritize_cards(cards: list) -> list:
+    """Order job cards so India + junior-looking titles come first, senior last —
+    so a small detail-open budget reaches candidate-fit early-career roles."""
+    def score(c: dict) -> tuple:
+        blob = (str(c.get("title", "")) + " " + str(c.get("location", "")) + " " + str(c.get("url", ""))).lower()
+        india = any(t in blob for t in _INDIA_TOK)
+        senior = any(t in blob for t in _SENIOR_TITLE)
+        junior = any(t in blob for t in _JUNIOR_TITLE)
+        return (1 if india else 0, 1 if junior and not senior else 0, 0 if senior else 1)
+    return sorted(cards, key=score, reverse=True)
+
 
 @dataclass
 class AgenticCompanyTask:
@@ -149,7 +168,10 @@ class AgenticCompanySearchWorker:
                 res = tb.browser_search_lane(lane, q, "India")
                 if not res.get("observed"):
                     continue
-                for c in (res.get("cards") or [])[:2]:
+                # Prioritize India cards whose title looks junior/relevant (not
+                # senior/lead) so limited detail-opens reach candidate-fit roles.
+                cards = _prioritize_cards(res.get("cards") or [])
+                for c in cards[:4]:
                     if len(tb.base.details) >= details_budget:
                         break
                     if c.get("handle"):

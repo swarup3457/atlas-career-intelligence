@@ -308,6 +308,18 @@ class AgenticCompanyToolbox:
         pre_card = dict(getattr(actor, "_last_cards", {}).get(handle, {})) if handle else {}
         out = self._guard(actor.open_job_detail, handle, url, is_navigation=True)
         if out.get("ok"):
+            # If the browser capture is thin (a share widget / pre-render shell on a
+            # hard SPA), try a read-only HTTP fetch of the SAME official job URL —
+            # some sites expose SSR/JSON-LD the browser render missed. Within rules.
+            text = (out.get("detail_text") or "")
+            if len(text) < 300:
+                job_url = out.get("url") or pre_card.get("url") or url
+                if job_url:
+                    fetched = self.web_fetch_official(job_url)
+                    ft = fetched.get("text") or ""
+                    if len(ft) > len(text):
+                        out["detail_text"] = ft
+                        out["detail_source"] = "web_fetch_official_fallback"
             self._capture_detail(out, card=pre_card, lane_hint=lane_hint)
         return out
 

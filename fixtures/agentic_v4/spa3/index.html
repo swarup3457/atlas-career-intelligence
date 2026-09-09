@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Initech Careers</title></head>
+<body>
+<header><h1>Initech Careers</h1><a id="signin" href="#/signin">Sign in</a></header>
+
+<section id="results">
+  <div class="job-card"><a class="job-link" href="?job=1">Java Backend Engineer</a><span class="location">Bengaluru, India</span></div>
+  <div class="job-card"><a class="job-link" href="?job=2">Senior Java Architect</a><span class="location">Pune, India</span></div>
+</section>
+
+<section id="detail" style="display:none">
+  <!-- A share widget sits ABOVE the JD (the pass-3 IBM trap: naive extraction
+       grabbed 'Email X LinkedIn' from here). -->
+  <div id="share"><a href="#">Email</a> X <a href="#">LinkedIn</a> <a href="#">Facebook</a></div>
+  <main id="jd"><p>loading...</p></main>
+</section>
+
+<script>
+const JOBS = {
+  "1": {title:"Java Backend Engineer", loc:"Bengaluru, India",
+        jd:"About the role: We are looking for a Java Backend Engineer in Bengaluru, India. " +
+           "Responsibilities: build Java Spring Boot microservices and REST APIs on MySQL. " +
+           "Minimum qualifications: 2 years of experience in Java development. " +
+           "Required skills: Java, Spring Boot, REST APIs, SQL. This is an early-career role."},
+  "2": {title:"Senior Java Architect", loc:"Pune, India",
+        jd:"About the role: Senior Java Architect in Pune, India. Responsibilities: own solution " +
+           "architecture. Minimum qualifications: 8+ years of experience. Required skills: Java, architecture."}
+};
+function route() {
+  const u = new URL(location.href);
+  const id = u.searchParams.get('job');
+  const detail = document.getElementById('detail'), results = document.getElementById('results');
+  if (id && JOBS[id]) {
+    detail.style.display = 'block'; results.style.display = 'none';
+    document.getElementById('jd').innerHTML = '<p>loading...</p>';
+    // The JD hydrates LATE (900ms) — naive early extraction would miss it.
+    setTimeout(() => {
+      const j = JOBS[id];
+      document.getElementById('jd').innerHTML = '<h2>' + j.title + '</h2><p class="location">' +
+        j.loc + '</p><div class="jdbody">' + j.jd + '</div>';
+    }, 900);
+  } else { detail.style.display = 'none'; results.style.display = 'block'; }
+}
+window.addEventListener('popstate', route);
+document.querySelectorAll('.job-link').forEach(a => a.addEventListener('click', e => {
+  e.preventDefault(); history.pushState({}, '', a.getAttribute('href')); route();
+}));
+route();
+</script>
+</body>
+</html>

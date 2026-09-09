@@ -140,6 +140,63 @@ def test_non_job_banner_titles_rejected():
     assert not looks_like_job_title("Search jobs by title")
 
 
+def _spa_factory(**kw):
+    from atlas.pilot.browser_actor import CompanyBrowserActor
+    kw.setdefault("action_timeout_s", 30.0)
+    kw.setdefault("nav_timeout_ms", 8000)
+    return CompanyBrowserActor(allow_http_hosts=("127.0.0.1",), **kw)
+
+
+@pytest.mark.browser
+def test_late_rendered_jd_captured_not_share_widget(config):
+    """A detail page whose JD hydrates late, with a share widget ('Email X
+    LinkedIn') above it, must yield the FULL JD — not the widget (the exact
+    pass-3 IBM/Oracle thin-capture bug)."""
+    import functools as _f, http.server as _h, threading as _t
+    spa3 = Path(__file__).resolve().parents[1] / "fixtures" / "agentic_v4" / "spa3"
+    handler = _f.partial(_h.SimpleHTTPRequestHandler, directory=str(spa3))
+    httpd = _h.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    port = httpd.server_address[1]
+    th = _t.Thread(target=httpd.serve_forever, daemon=True)
+    th.start()
+    url = f"http://127.0.0.1:{port}/index.html"
+    tb = AgenticCompanyToolbox(company="Initech", config=config, task_id="t", browser_factory=_spa_factory)
+    try:
+        tb.browser_start(url)
+        cards = tb.browser_collect_job_cards(lane="JAVA_BACKEND")
+        jc = cards["job_cards"]
+        assert jc, "expected job cards"
+        # open the first (junior) India role's detail
+        detail = tb.browser_open_job_detail(handle=jc[0]["handle"], lane_hint="JAVA_BACKEND")
+        assert detail["ok"] is True
+        text = detail["detail_text"].lower()
+        # the FULL JD is captured (not the 'Email X LinkedIn' share widget)
+        assert "responsibilities" in text and "spring boot" in text
+        assert "2 years" in text
+        assert "email x linkedin" not in text
+        assert len(detail["detail_text"]) > 200
+        # and it became typed evidence
+        assert len(tb.base.details) == 1
+        assert "spring boot" in tb.base.details[0].description.lower()
+    finally:
+        tb.cleanup()
+        httpd.shutdown()
+
+
+def test_prioritize_cards_orders_india_junior_first():
+    from atlas.pilot.agentic_worker import _prioritize_cards
+    cards = [
+        {"title": "Senior Java Architect", "location": "Pune, India", "url": "u1", "handle": "h1"},
+        {"title": "Java Backend Engineer", "location": "Bengaluru, India", "url": "u2", "handle": "h2"},
+        {"title": "Staff Engineer", "location": "London, UK", "url": "u3", "handle": "h3"},
+        {"title": "Associate Software Engineer", "location": "Hyderabad, India", "url": "u4", "handle": "h4"},
+    ]
+    ordered = [c["title"] for c in _prioritize_cards(cards)]
+    # India + junior first; the UK staff role last
+    assert ordered[0] in ("Associate Software Engineer", "Java Backend Engineer")
+    assert ordered[-1] == "Staff Engineer"
+
+
 def test_thin_capture_rejected(config):
     """A job-like title with nav-junk detail text (e.g. 'Email X LinkedIn') must
     NOT be recorded as evidence — it is thin/low-signal, not a real JD."""

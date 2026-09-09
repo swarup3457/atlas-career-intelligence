@@ -232,6 +232,38 @@ _OBSERVE_JS = r"""
 """ % (_MAX_CARDS, _MAX_LINKS, _MAX_INPUTS)
 
 
+# Extract the densest JOB-CONTENT block on a detail page. Instead of blindly
+# taking main/article/body (which grabs a share widget or nav on many SPAs), it
+# scores candidate containers by text length AND the presence of job-content
+# markers (responsibilities / qualifications / experience / skills), then returns
+# the best block's text. Falls back to <main>/<article>/<body> if nothing scores.
+_DETAIL_EXTRACT_JS = r"""
+() => {
+  const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  const MARKERS = /(responsib|qualif|requirement|experience|skills|what you|who you|about the (role|job)|job description|minimum|preferred|years of|we are looking|role overview|your (role|profile)|key duties|day to day)/i;
+  const NOISE = /^(email|share|linkedin|facebook|twitter|apply now|save job|print|back to (results|search)|sign in|log ?in|cookie)/i;
+  const nodes = Array.from(document.querySelectorAll('main,[role=main],article,section,div'));
+  let best = '', bestScore = -1;
+  for (const n of nodes) {
+    let t = clean(n.innerText || n.textContent || '');
+    if (t.length < 200 || t.length > 20000) continue;
+    if (NOISE.test(t)) continue;
+    let score = Math.min(t.length, 6000);
+    if (MARKERS.test(t)) score += 4000;
+    // prefer a block that is not mostly links/nav
+    const links = n.querySelectorAll('a').length;
+    if (links > 40) score -= 2000;
+    if (score > bestScore) { bestScore = score; best = t; }
+  }
+  if (!best) {
+    const m = document.querySelector('main,[role=main],article') || document.body;
+    best = clean(m && (m.innerText || m.textContent) || '');
+  }
+  return best.slice(0, 6000);
+}
+"""
+
+
 class CompanyBrowserActor:
     """One persistent async browser session for ONE company, driven by a private
     actor thread + event loop. Public methods are synchronous and thread-safe."""
@@ -532,19 +564,29 @@ class CompanyBrowserActor:
             await self._page.goto(target, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
         elif handle:
             # same-document (hash-routed SPA) or click-through detail
-            await self._locator(handle).click(timeout=self.nav_timeout_ms)
+            await self._locator(handle).click(timeout=self.click_timeout_ms)
             await self._page.wait_for_timeout(500)
         else:
             raise BrowserActorError("open_job_detail needs a card handle or a trusted url")
-        obs = await self._observe()
-        # bounded detail evidence: the visible main text
+        # Wait for a JS SPA detail to hydrate: settle the network, then poll until
+        # the densest job-content block stops growing (bounded), so we never
+        # extract a pre-render shell or a share widget ("Email X LinkedIn").
         try:
-            main = await self._page.evaluate(
-                "() => { const m = document.querySelector('main,[role=main],article') || document.body;"
-                " return (m.innerText||'').replace(/\\s+/g,' ').trim().slice(0, 6000); }"
-            )
+            await self._page.wait_for_load_state("networkidle", timeout=6000)
         except Exception:  # noqa: BLE001
-            main = ""
+            pass
+        main = ""
+        for _ in range(6):
+            try:
+                cand = await self._page.evaluate(_DETAIL_EXTRACT_JS)
+            except Exception:  # noqa: BLE001
+                cand = ""
+            if cand and len(cand) >= len(main):
+                main = cand
+            if len(main) >= 400:
+                break
+            await self._page.wait_for_timeout(500)
+        obs = await self._observe()
         return {
             "url": obs.url, "title": obs.title, "headings": list(obs.headings),
             "detail_text": main, "challenge": obs.challenge, "observation": obs.to_dict(),
