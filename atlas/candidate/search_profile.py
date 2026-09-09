@@ -96,6 +96,16 @@ class CandidateSearchProfile:
     synthetic: bool = False
     clarifications_pending: tuple[str, ...] = ()
 
+    @property
+    def gate_mode(self) -> str:
+        """Canonical candidate-gate mode string for evidence/machine-gate reporting.
+
+        The pilot loads the real PRIVATE, LOCAL candidate profile (config/private via the
+        approved importer), so a real profile reports ``PRIVATE_LOCAL``. A synthetic
+        fallback (offline tests only) reports ``SYNTHETIC``.
+        """
+        return "SYNTHETIC" if self.synthetic else "PRIVATE_LOCAL"
+
     def to_hunt_candidate(self) -> HuntCandidate:
         evidence = {
             identity_token(skill): EvidenceClass(cls)

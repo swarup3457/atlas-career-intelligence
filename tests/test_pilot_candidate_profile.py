@@ -43,6 +43,17 @@ def test_real_private_profile_is_loaded_not_synthetic(tmp_path):
     assert "Bengaluru" in p.preferred_locations
 
 
+def test_gate_mode_is_private_local_for_real_profile(tmp_path):
+    # The candidate-gate mode string must be the canonical PRIVATE_LOCAL for a real profile
+    # (machine-gate contract) and SYNTHETIC only for the offline synthetic fallback.
+    p = load_candidate_search_profile(live=True, private_out=tmp_path / "p.json")
+    assert p.gate_mode == "PRIVATE_LOCAL"
+    s = load_candidate_search_profile(
+        live=False, allow_synthetic=True, source=tmp_path / "nope.md", private_out=tmp_path / "s.json"
+    )
+    assert s.gate_mode == "SYNTHETIC"
+
+
 def test_redacted_profile_has_no_pii(tmp_path):
     p = load_candidate_search_profile(live=True, private_out=tmp_path / "p.json")
     blob = json.dumps(p.redacted_dict()).lower()

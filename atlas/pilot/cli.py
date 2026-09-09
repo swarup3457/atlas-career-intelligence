@@ -128,6 +128,7 @@ def _summarize(runtime: PilotRuntime, outcome, models_note: str) -> dict:
         "validation_passed": val.passed if val else None,
         "validation_failures": (val.failures if val else None),
         "candidate_synthetic": getattr(runtime.profile, "synthetic", None),
+        "candidate_mode": getattr(runtime.profile, "gate_mode", "MISSING"),
         "usage_totals": runtime.usage.snapshot().get("totals", {}),
     }
 
@@ -201,6 +202,8 @@ def _pilot_reevaluate(args: argparse.Namespace) -> int:
         "run_dir_relative": (str(outcome.report.run_dir).replace("\\", "/") if outcome.report else None),
         "validation_passed": outcome.validation.passed if outcome.validation else None,
         "validation_failures": outcome.validation.failures if outcome.validation else None,
+        "candidate_synthetic": getattr(profile, "synthetic", None),
+        "candidate_mode": getattr(profile, "gate_mode", "MISSING"),
     }, args.json)
     return 0 if outcome.outcome in ("PASS", "COMPLETE_NO_MATCHES") else 1
 
