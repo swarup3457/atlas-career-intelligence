@@ -17,6 +17,7 @@ from atlas.hunt.matching import APPLY_FAMILY
 from atlas.hunt.role_family import RoleFamily, classify_role_family
 from atlas.hunt.signals import signal_present, strip_alternative_language_enumerations
 from atlas.hunt.stack_evidence import analyze_technology_evidence
+from atlas.pilot.agentic_tools import looks_like_job_title as _is_job_title
 from atlas.pilot.config import PilotConfig
 from atlas.pilot.normalize import normalize_source_text
 from atlas.pilot.status_v4 import is_genuinely_searched, is_internal_retryable
@@ -78,6 +79,8 @@ def validate_agentic_run(evaluation, results, config: PilotConfig, *, outcome: s
 
         check("accepted_geography_india", a.geography_decision == "INDIA_ELIGIBLE",
               f"{tag} geography={a.geography_decision}")
+        check("accepted_is_real_job_title", _is_job_title(a.title),
+              f"{tag} title does not read like a job posting (possible banner/non-job capture)")
         check("accepted_not_hard_min",
               not (exp.min_years is not None and exp.min_years >= _HARD_MIN),
               f"{tag} min_years={exp.min_years}")

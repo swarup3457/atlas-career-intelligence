@@ -37,9 +37,36 @@ from atlas.pilot.status_v4 import (
 )
 from atlas.pilot.tools import CompanySearchToolbox
 
-__all__ = ["AgenticCompanyToolbox", "build_v4_sdk_tools", "V4_TOOL_NAMES"]
+__all__ = ["AgenticCompanyToolbox", "build_v4_sdk_tools", "V4_TOOL_NAMES", "looks_like_job_title"]
 
 _EXPERIENCE_HINT = ("experience", "years", "yrs")
+
+# A captured "job detail" is only a real posting when its title reads like a role.
+# The live browser/web path can otherwise capture a page banner (e.g. ADP's
+# "YOU ARE ONE STEP CLOSER TO FINDING YOUR NEXT JOB") as a job — such non-jobs
+# must never become candidate evidence.
+_ROLE_TITLE_TOKENS = (
+    "developer", "engineer", "architect", "analyst", "consultant", "programmer", "specialist",
+    "administrator", "scientist", "designer", "tester", "sde", "lead", "manager", "software",
+    "full stack", "fullstack", "frontend", "backend", "front end", "back end", "qa", "devops",
+    "sre", "technologist", "associate", "professional", "intern", "trainee", "principal", "staff",
+    "member of technical staff", "development", "dev ", " dev", "engineering", "coder", "technician",
+)
+_NON_JOB_PHRASES = (
+    "one step closer", "find your", "next job", "job search", "search jobs", "welcome",
+    "sign in", "log in", "your next", "explore", "life at", "why ", "benefits", "careers",
+    "cookie", "privacy", "results for", "no results", "loading", "apply now",
+)
+
+
+def looks_like_job_title(title: object) -> bool:
+    t = (str(title or "")).strip()
+    low = t.lower()
+    if not t or len(t) > 120 or len(t) < 3:
+        return False
+    if any(p in low for p in _NON_JOB_PHRASES):
+        return False
+    return any(tok in low for tok in _ROLE_TITLE_TOKENS)
 
 
 def _host(url: str) -> str:
@@ -211,9 +238,12 @@ class AgenticCompanyToolbox:
 
     def browser_open_job_detail(self, handle: str = "", url: str = "", lane_hint: str = "") -> dict:
         actor = self._ensure_actor()
+        # Capture the card's title/location BEFORE navigating (the handle map is
+        # replaced by the detail page's observation once we navigate).
+        pre_card = dict(getattr(actor, "_last_cards", {}).get(handle, {})) if handle else {}
         out = self._guard(actor.open_job_detail, handle, url)
         if out.get("ok"):
-            self._capture_detail(out, handle=handle, lane_hint=lane_hint)
+            self._capture_detail(out, card=pre_card, lane_hint=lane_hint)
         return out
 
     def browser_back(self) -> dict:
@@ -274,15 +304,26 @@ class AgenticCompanyToolbox:
                 "cards": cards.get("job_cards", []) if cards.get("ok") else [],
                 "count": cards.get("count", 0) if cards.get("ok") else 0}
 
-    def _capture_detail(self, detail_out: dict, *, handle: str = "", lane_hint: str = "") -> None:
+    def _capture_detail(self, detail_out: dict, *, card: Optional[dict] = None, handle: str = "",
+                        lane_hint: str = "") -> None:
         text = normalize_source_text(detail_out.get("detail_text", ""))
         if not text:
             return
-        card = {}
-        if self.actor is not None:
-            card = getattr(self.actor, "_last_cards", {}).get(handle, {})
+        if card is None:
+            card = {}
+            if self.actor is not None:
+                card = getattr(self.actor, "_last_cards", {}).get(handle, {})
         headings = detail_out.get("headings") or []
-        title = (card.get("title") or (headings[0] if headings else "") or detail_out.get("title", ""))[:180]
+        # Prefer the card title (captured pre-navigation), else the FIRST heading that
+        # reads like a job title (the page header/banner is skipped).
+        title = (card.get("title")
+                 or next((h for h in headings if looks_like_job_title(h)), "")
+                 or detail_out.get("title", ""))
+        title = (title or "")[:180]
+        # Reject non-job captures (page banners / marketing headers) so they never
+        # become candidate evidence, even if the page text mentions India + a domain word.
+        if not looks_like_job_title(title):
+            return
         location = card.get("location", "")
         if not location:
             st = split_sections(text)

@@ -123,3 +123,17 @@ def test_web_leads_and_fetch_bound_to_official_domain(config):
     # web tools refuse an untrusted host regardless of what the model passes
     out = tb.web_fetch_official("https://randomjobboard.example/job/1")
     assert "error" in out
+
+
+def test_non_job_banner_titles_rejected():
+    from atlas.pilot.agentic_tools import looks_like_job_title
+    # real postings
+    assert looks_like_job_title("Senior Java Full Stack Developer")
+    assert looks_like_job_title("Software Development Engineering - Sr Professional I")
+    assert looks_like_job_title(".NET Core Dev with SQL and Azure || Pune")
+    # banners / non-jobs the live browser path can accidentally capture
+    assert not looks_like_job_title("YOU ARE ONE STEP CLOSER TO FINDING YOUR NEXT JOB")
+    assert not looks_like_job_title("IBM")
+    assert not looks_like_job_title("Taulia careers")
+    assert not looks_like_job_title("")
+    assert not looks_like_job_title("Search jobs by title")
