@@ -55,6 +55,10 @@ class PilotRuntime:
     prior_manifest_path: Optional[Path] = None
     repo_root: Optional[Path] = None
     today: Optional[datetime.date] = None
+    subdir: str = "llm_pilots"
+    report_fn: Optional[Callable] = None
+    domain_hints: dict = field(default_factory=dict)
+    entry_hints: dict = field(default_factory=dict)
     usage: UsageMeter = field(default_factory=lambda: UsageMeter(label="pilot"))
     results: dict[str, CompanySearchResult] = field(default_factory=dict)
     _sem: threading.Semaphore = field(init=False)
@@ -67,7 +71,7 @@ class PilotRuntime:
 
     @property
     def partial_dir(self) -> Path:
-        d = self.output_root / "llm_pilots" / self.run_id / "_partial"
+        d = self.output_root / self.subdir / self.run_id / "_partial"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -103,8 +107,8 @@ def _task_for(runtime: PilotRuntime, company: str, *, feedback: str = "", escala
     return CompanyTask(
         company=company,
         task_id=f"{runtime.run_id}::{company.replace(' ', '_')}",
-        domain_hint=OFFICIAL_DOMAIN_HINTS.get(key, ""),
-        entry_hint=CAREERS_ENTRY_HINTS.get(key, ""),
+        domain_hint=runtime.domain_hints.get(key, OFFICIAL_DOMAIN_HINTS.get(key, "")),
+        entry_hint=runtime.entry_hints.get(key, CAREERS_ENTRY_HINTS.get(key, "")),
         feedback=feedback, escalate=escalate,
     )
 
@@ -242,11 +246,14 @@ def _make_finalize(runtime: PilotRuntime):
         candidate_prov = {"synthetic": getattr(profile, "synthetic", True),
                           "source_sha256": getattr(profile, "provenance_sha256", "")[:16],
                           "source_id": getattr(profile, "source_id", "")}
-        report = write_pilot_report(
-            evaluation, results, usage_snapshot, runtime.config,
-            run_id=runtime.run_id, parent_run_id=runtime.parent_run_id,
-            output_root=runtime.output_root, outcome=outcome, candidate_provenance=candidate_prov,
-        )
+        if runtime.report_fn is not None:
+            report = runtime.report_fn(runtime, evaluation, results, usage_snapshot, outcome, candidate_prov)
+        else:
+            report = write_pilot_report(
+                evaluation, results, usage_snapshot, runtime.config,
+                run_id=runtime.run_id, parent_run_id=runtime.parent_run_id,
+                output_root=runtime.output_root, outcome=outcome, candidate_provenance=candidate_prov,
+            )
         validation = validate_evaluation(
             evaluation, results, usage_snapshot, runtime.config,
             candidate_synthetic=bool(candidate_prov["synthetic"]), outcome=outcome,
@@ -278,7 +285,7 @@ def build_pilot_graph(runtime: PilotRuntime):
 
 def run_pilot(runtime: PilotRuntime, *, checkpoint_db: Optional[Path] = None) -> PilotOutcome:
     builder = build_pilot_graph(runtime)
-    db = checkpoint_db or (runtime.output_root / "llm_pilots" / runtime.run_id / "pilot_checkpoints.sqlite")
+    db = checkpoint_db or (runtime.output_root / runtime.subdir / runtime.run_id / "pilot_checkpoints.sqlite")
     db.parent.mkdir(parents=True, exist_ok=True)
     with open_checkpointer(db) as saver:
         graph = builder.compile(checkpointer=saver)
