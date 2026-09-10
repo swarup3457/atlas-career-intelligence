@@ -103,7 +103,7 @@ def _cmd_bb_canary(args: argparse.Namespace) -> int:
 
     cfg = CliProcessConfig(model=getattr(args, "model", None) or "claude-sonnet-5",
                            max_ai_credits=getattr(args, "max_credits", None) or 250)
-    backend = CliPlaywrightBackend(run_dir, process_config=cfg)
+    backend = CliPlaywrightBackend(run_dir, process_config=cfg, agent=getattr(args, "agent", "") or "")
     router = HybridRouter(backend)
     ledger = CompletionLedger(run_dir / "completion_ledger.jsonl")
     result = run_company_with_policy(

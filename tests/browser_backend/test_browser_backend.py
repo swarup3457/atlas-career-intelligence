@@ -82,7 +82,9 @@ def test_default_run_is_headless_canary_is_headed(tmp_path):
     normal = mcp_config.build_mcp_config(CompanyTask(company="Acme"), tmp_path / "n", cli_path="/c.js")
     headed = mcp_config.build_mcp_config(CompanyTask(company="Acme"), tmp_path / "h", cli_path="/c.js", headed=True)
     assert "--headless" in normal.to_config_dict()["mcpServers"]["playwright"]["args"]
-    assert "--no-headless" in headed.to_config_dict()["mcpServers"]["playwright"]["args"]
+    # Headed is the default when --headless is omitted (there is no --no-headless).
+    headed_args = headed.to_config_dict()["mcpServers"]["playwright"]["args"]
+    assert "--headless" not in headed_args and "--no-headless" not in headed_args
 
 
 # --------------------------------------------------------------------------- #

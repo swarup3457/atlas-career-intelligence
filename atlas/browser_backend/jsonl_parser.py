@@ -69,15 +69,44 @@ def _extract_text(ev: dict) -> str:
 
 
 def final_assistant_text(events: list[dict]) -> str:
-    """Return the text of the last assistant-authored event."""
-    for ev in reversed(events):
+    """Return the text of the final assistant message.
+
+    Handles the Copilot ``--output-format json`` schema
+    (``type: "assistant.message"`` with ``data.content``, and streamed
+    ``type: "assistant.message_delta"`` with ``data.deltaContent`` keyed by
+    ``data.messageId``), then falls back to a generic role/text scan.
+    """
+    full_texts: list[str] = []
+    delta_order: list[str] = []
+    deltas: dict[str, list[str]] = {}
+    for ev in events:
         if not isinstance(ev, dict):
             continue
-        if _event_role(ev) in _ASSISTANT_TYPES:
+        t = str(ev.get("type") or ev.get("role") or ev.get("event") or "").lower()
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if t.endswith("assistant.message") or t == "assistant.message":
+            txt = data.get("content") or data.get("text") or _extract_text(ev)
+            if isinstance(txt, str) and txt.strip():
+                full_texts.append(txt)
+        elif t.endswith("message_delta"):
+            mid = str(data.get("messageId") or "default")
+            dc = data.get("deltaContent") or data.get("content") or ""
+            if isinstance(dc, str) and dc:
+                if mid not in deltas:
+                    deltas[mid] = []
+                    delta_order.append(mid)
+                deltas[mid].append(dc)
+    if full_texts:
+        return full_texts[-1]
+    if delta_order:
+        return "".join(deltas[delta_order[-1]])
+
+    # Generic fallback (other shapes / non-Copilot JSONL).
+    for ev in reversed(events):
+        if isinstance(ev, dict) and _event_role(ev) in _ASSISTANT_TYPES:
             text = _extract_text(ev)
             if text.strip():
                 return text
-    # Fallback: last event that carries any text at all.
     for ev in reversed(events):
         if isinstance(ev, dict):
             text = _extract_text(ev)

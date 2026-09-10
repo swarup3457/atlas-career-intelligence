@@ -68,24 +68,29 @@ class MCPConfig:
         """Render the ``mcpServers`` config consumed by Copilot CLI.
 
         The argument list is built here (never a shell string) and points at the
-        absolute MCP ``cli.js``. Normal runs are headless with image responses
-        omitted; explicit canaries/debug flip ``headless``.
+        absolute MCP ``cli.js`` using only flags valid for @playwright/mcp 0.0.80.
+        Headed is the default when ``--headless`` is omitted (there is no
+        ``--no-headless``). ``--isolated`` keeps the profile in memory, so a
+        persistent profile is never shared between concurrent companies.
         """
-        args = [
-            self.cli_path,
-            "--browser", self.browser_channel,
-            "--isolated" if self.isolated else "--no-isolated",
-            "--save-session" if self.save_session else "--no-save-session",
+        args = [self.cli_path, "--browser", self.browser_channel]
+        if self.output_dir:
+            args += ["--output-dir", self.output_dir]
+        args += [
             "--snapshot-mode", self.snapshot_mode,
             "--image-responses", self.image_responses,
             "--timeout-action", str(self.action_timeout_ms),
             "--timeout-navigation", str(self.navigation_timeout_ms),
+            "--timeout-settle", str(self.settle_timeout_ms),
         ]
-        if self.output_dir:
-            args += ["--output-dir", self.output_dir]
-        if self.user_data_dir:
+        if self.isolated:
+            args.append("--isolated")  # in-memory profile => isolated, never shared
+        elif self.user_data_dir:
             args += ["--user-data-dir", self.user_data_dir]
-        args.append("--headless" if self.headless else "--no-headless")
+        if self.save_session:
+            args.append("--save-session")
+        if self.headless:
+            args.append("--headless")  # omit entirely for a headed canary
         return {
             "mcpServers": {
                 "playwright": {

@@ -76,7 +76,7 @@ class CliPlaywrightBackend:
 
     def _task_dir(self, task: CompanyTask) -> Path:
         safe = "".join(c for c in task.company if c.isalnum() or c in ("-", "_")) or "company"
-        return self.output_root / f"{safe}-{task.task_id[:8]}"
+        return (self.output_root / f"{safe}-{task.task_id[:8]}").resolve()
 
     def search_company(self, task: CompanyTask) -> BackendResult:
         from atlas.browser_backend.cli_process import run_company_process
@@ -89,7 +89,8 @@ class CliPlaywrightBackend:
 
         cap = run_company_process(
             task, self.process_config, prompt=prompt, mcp_config_path=mcp_cfg_path,
-            output_dir=out_dir, copilot_path=self.copilot_path, agent=self.agent, add_dir=None,
+            output_dir=out_dir, copilot_path=self.copilot_path, agent=self.agent,
+            add_dir=Path(__file__).resolve().parents[2],  # repo root => discover .github skills/agents
         )
 
         result = BackendResult(task=task, route=ROUTE_CLI_PLAYWRIGHT,
@@ -106,6 +107,17 @@ class CliPlaywrightBackend:
             return self._finalize_invalid(task, cap, result, out_dir)
 
         objs = extract_result_objects(cap.final_assistant_text)
+        if len(objs) == 0:
+            # Fallback: parse the raw stdout directly (covers text-mode output or
+            # a JSONL schema our event parser did not recognize).
+            try:
+                raw = Path(cap.stdout_path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                raw = ""
+            if raw:
+                objs = extract_result_objects(raw)
+                if raw.strip() and not cap.final_assistant_text:
+                    cap.final_assistant_text = raw[-20000:]
         if len(objs) == 0:
             result.status = CompanySearchStatus.PARSER_ERROR.value
             result.error = "no machine-readable result object in final message"

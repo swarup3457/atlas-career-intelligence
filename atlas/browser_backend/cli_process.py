@@ -43,6 +43,31 @@ def resolve_copilot(explicit: Optional[str] = None) -> Optional[Path]:
     return None
 
 
+def _find_node_loader(shim: Path) -> Optional[Path]:
+    """Locate the Copilot Node entrypoint next to an npm shim, so we can invoke
+    ``node <loader>`` directly and bypass cmd.exe (which truncates a multiline
+    ``--prompt`` at the first newline and drops the trailing flags)."""
+    for rel in (
+        ("node_modules", "@github", "copilot", "npm-loader.js"),
+        ("node_modules", "@github", "copilot", "index.js"),
+    ):
+        cand = shim.parent.joinpath(*rel)
+        if cand.exists():
+            return cand
+    return None
+
+
+def resolve_copilot_prefix(shim: Path) -> Optional[list[str]]:
+    """Return a node-direct argv prefix (``[node, loader]``) when available, so
+    untrusted, multiline prompt text is passed verbatim as one argv element with
+    no shell involved. Returns ``None`` to fall back to :func:`finalize_argv`."""
+    loader = _find_node_loader(shim)
+    node = shutil.which("node")
+    if loader is not None and node:
+        return [node, str(loader)]
+    return None
+
+
 def build_copilot_args(
     task: CompanyTask,
     cfg: CliProcessConfig,
@@ -65,9 +90,9 @@ def build_copilot_args(
         "--output-format", "json",
         "--allow-all-tools",            # required for non-interactive; scope limited below
         "--disable-builtin-mcps",       # no github MCP
-        "--additional-mcp-config", f"@{mcp_config_path}",
-        "--usage-output-file", str(usage_path),
-        "--log-dir", str(log_dir),
+        "--additional-mcp-config", f"@{Path(mcp_config_path).resolve()}",
+        "--usage-output-file", str(Path(usage_path).resolve()),
+        "--log-dir", str(Path(log_dir).resolve()),
         "--log-level", "default",
         "--name", task.session_name,
         "--max-ai-credits", str(cfg.max_ai_credits),
@@ -166,7 +191,8 @@ def run_company_process(
 
     logical = build_copilot_args(task, cfg, prompt=prompt, mcp_config_path=mcp_config_path,
                                  usage_path=usage_path, log_dir=log_dir, agent=agent, add_dir=add_dir)
-    argv = finalize_argv(resolved, logical)
+    prefix = resolve_copilot_prefix(Path(resolved))
+    argv = (prefix + logical) if prefix is not None else finalize_argv(resolved, logical)
     cap.argv = argv
 
     creationflags = 0
