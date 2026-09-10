@@ -138,6 +138,58 @@ def _cmd_bb_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _git_commit() -> str:
+    import subprocess
+    try:
+        out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10)
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+
+
+def _cmd_bb_recover(args: argparse.Namespace) -> int:
+    """Offline recovery of a completed run — no browser, no network, no model."""
+    from atlas.browser_backend.recovery import recover
+
+    run_dir = getattr(args, "run_dir", None)
+    if getattr(args, "raw_zip", None):
+        run_dir = _extract_run_from_zip(args.raw_zip, getattr(args, "select_run", None))
+    if not run_dir:
+        _emit(args.json, {"ok": False, "error": "provide --run-dir or --raw-zip"},
+              ["ERROR: provide --run-dir or --raw-zip"])
+        return 2
+    outcome = recover(Path(run_dir), write_workbook=bool(getattr(args, "write_workbook", False)),
+                      git_commit=_git_commit(), force=bool(getattr(args, "force", False)))
+    payload = outcome.to_dict()
+    _emit(args.json, payload, [
+        f"RECOVERY_RUN_ID={outcome.recovery_run_id}",
+        f"PARENT={outcome.parent_run_id} STATUS={outcome.status} VALID={outcome.valid}",
+        f"COMPLETION_STATE={outcome.completion_state}",
+        f"USAGE corrected={outcome.usage_credits} original_recorded={outcome.original_usage_credits}",
+        f"WORKBOOK={outcome.workbook_path}",
+        f"RECOVERY_DIR={outcome.recovery_dir}",
+    ])
+    return 0 if (outcome.valid or outcome.reused_existing) else 1
+
+
+def _extract_run_from_zip(raw_zip: str, select_run) -> str:
+    """Extract one run directory from a raw archive into a temp dir (offline)."""
+    import tempfile
+    import zipfile
+    dest = Path(tempfile.mkdtemp(prefix="atlas-recover-"))
+    with zipfile.ZipFile(raw_zip) as zf:
+        names = zf.namelist()
+        zf.extractall(dest)
+    # Find the run dir: prefer a directory matching select_run, else the deepest
+    # dir containing copilot_events.jsonl's parent's parent (the run root).
+    ev = list(dest.rglob("copilot_events.jsonl"))
+    for e in ev:
+        run_root = e.parent.parent
+        if not select_run or select_run in run_root.name or select_run in str(e):
+            return str(run_root)
+    return str(ev[0].parent.parent) if ev else str(dest)
+
+
 def _cmd_bb_review_queue(args: argparse.Namespace) -> int:
     from atlas.browser_backend.review_queue import read_queue
     rows = read_queue()
@@ -180,6 +232,17 @@ def register_browser_backend_commands(subparsers) -> None:
     p_rq = sub.add_parser("review-queue", help="Show the internal browser review queue (offline).")
     p_rq.add_argument("--json", action="store_true")
     p_rq.set_defaults(func=_cmd_bb_review_queue)
+
+    p_rec = sub.add_parser(
+        "recover",
+        help="Offline recovery of a completed run (no browser/network/model).")
+    p_rec.add_argument("--run-dir", default=None, help="Path to the completed run directory.")
+    p_rec.add_argument("--raw-zip", default=None, help="Raw archive to extract a run from (offline).")
+    p_rec.add_argument("--select-run", default=None, help="Run id to select from --raw-zip.")
+    p_rec.add_argument("--write-workbook", action="store_true", help="Write the five-sheet recovery workbook.")
+    p_rec.add_argument("--force", action="store_true", help="Rebuild even if a recovery already exists.")
+    p_rec.add_argument("--json", action="store_true")
+    p_rec.set_defaults(func=_cmd_bb_recover)
 
 
 __all__ = ["register_browser_backend_commands"]

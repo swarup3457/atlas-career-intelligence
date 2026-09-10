@@ -208,7 +208,261 @@ def extract_result_objects(text: str) -> list[dict]:
     return results
 
 
+# ---------------------------------------------------------------------------
+# Event-aware completion extraction (result-handoff boundary).
+#
+# The final assistant *text* is not the authoritative business result. A
+# ``task_complete`` tool call carries the machine-readable Atlas object in its
+# ``arguments.summary`` and echoes it through several decoded event shapes. This
+# section decodes those shapes, extracts the object from each, de-duplicates the
+# same object repeated across events, and reports conflicts — without ever
+# trusting ``task_complete`` as proof that a job is valid (deterministic
+# validation still runs downstream).
+# ---------------------------------------------------------------------------
+
+PARSER_VERSION = 2
+
+TASK_COMPLETE_TOOL = "task_complete"
+
+# §8 incremental completion states.
+STATE_NO_EVIDENCE = "NO_EVIDENCE"
+STATE_BROWSER_EVIDENCE_CAPTURED = "BROWSER_EVIDENCE_CAPTURED"
+STATE_PROPOSAL_EMITTED = "PROPOSAL_EMITTED_IN_TASK_COMPLETE"
+STATE_VALIDATED = "VALIDATED"
+STATE_EVIDENCE_UNFINALIZED = "EVIDENCE_CAPTURED_UNFINALIZED"
+STATE_CONFLICTING = "CONFLICTING_RESULTS"
+
+
+def _event_type(ev: dict) -> str:
+    return str(ev.get("type") or ev.get("role") or ev.get("event") or "").lower()
+
+
+def _canonical(obj: dict) -> str:
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False)
+
+
+def _texts_from_value(value: Any) -> list[str]:
+    """Collect plain-text payloads from a str / list / dict content value."""
+    out: list[str] = []
+    if isinstance(value, str):
+        if value.strip():
+            out.append(value)
+    elif isinstance(value, list):
+        for item in value:
+            out.extend(_texts_from_value(item))
+    elif isinstance(value, dict):
+        for k in ("text", "content", "summary", "detailedContent", "value"):
+            v = value.get(k)
+            if isinstance(v, (str, list, dict)):
+                out.extend(_texts_from_value(v))
+    return out
+
+
+def completion_text_candidates(events: list[dict]) -> list[dict]:
+    """Return ordered decoded text candidates that may embed the Atlas object.
+
+    Each candidate is ``{"source", "text", "event_index", "event_id",
+    "timestamp", "success", "tool_call_id"}``. Sources cover the authoritative
+    decoded completion shapes (A-F in the patch spec):
+
+    * ``assistant.message`` content / assembled deltas;
+    * ``assistant.message.toolRequests[task_complete].arguments.summary``;
+    * ``tool.execution_start[task_complete].arguments.summary``;
+    * successful ``tool.execution_complete[task_complete].result.*``;
+    * ``session.task_complete.summary``;
+    * a future top-level ``result`` event's text.
+    """
+    out: list[dict] = []
+    # Track task_complete tool-call ids so we can match execution_complete events
+    # (which carry only the call id, not the tool name).
+    tc_call_ids: set[str] = set()
+
+    def add(source: str, text: str, ev: dict, idx: int, *,
+            success: Optional[bool] = None, call_id: str = "") -> None:
+        if isinstance(text, str) and text.strip():
+            out.append({
+                "source": source,
+                "text": text,
+                "event_index": idx,
+                "event_id": str(ev.get("id") or ev.get("event_id") or ""),
+                "timestamp": str(ev.get("timestamp") or ev.get("ts")
+                                  or (ev.get("data") or {}).get("timestamp") or ""),
+                "success": success,
+                "tool_call_id": call_id,
+            })
+
+    for idx, ev in enumerate(events):
+        if not isinstance(ev, dict):
+            continue
+        t = _event_type(ev)
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+
+        # (A) assistant message content.
+        if t.endswith("assistant.message"):
+            content = data.get("content") or data.get("text") or _extract_text(ev)
+            if isinstance(content, str):
+                add("assistant.message", content, ev, idx)
+            # (B) tool requests embedded on the assistant message.
+            for tr in (data.get("toolRequests") or []):
+                if isinstance(tr, dict) and tr.get("name") == TASK_COMPLETE_TOOL:
+                    cid = str(tr.get("toolCallId") or tr.get("id") or "")
+                    if cid:
+                        tc_call_ids.add(cid)
+                    summ = (tr.get("arguments") or {}).get("summary")
+                    add("assistant.message.toolRequest", summ, ev, idx, call_id=cid)
+
+        # (C) tool.execution_start for task_complete.
+        elif t.endswith("tool.execution_start"):
+            if data.get("toolName") == TASK_COMPLETE_TOOL or data.get("name") == TASK_COMPLETE_TOOL:
+                cid = str(data.get("toolCallId") or "")
+                if cid:
+                    tc_call_ids.add(cid)
+                summ = (data.get("arguments") or {}).get("summary")
+                add("tool.execution_start", summ, ev, idx, call_id=cid)
+
+        # (D) successful tool.execution_complete for task_complete. The complete
+        # event often carries only the call id (no toolName); match it to a known
+        # task_complete call, or fall back to a result that embeds an Atlas object.
+        elif t.endswith("tool.execution_complete"):
+            cid = str(data.get("toolCallId") or "")
+            name = data.get("toolName") or data.get("name")
+            is_tc = name == TASK_COMPLETE_TOOL or (cid and cid in tc_call_ids)
+            success = bool(data.get("success", True))
+            res = data.get("result")
+            for txt in _texts_from_value(res):
+                if is_tc or "atlas_result_version" in txt or ('"company"' in txt and '"status"' in txt):
+                    add("tool.execution_complete", txt, ev, idx,
+                        success=success, call_id=cid)
+
+        # (E) session.task_complete summary.
+        elif t.endswith("session.task_complete"):
+            add("session.task_complete", data.get("summary"), ev, idx,
+                success=bool(data.get("success", True)))
+
+        # (F) a future direct result event.
+        elif t == "result":
+            for txt in _texts_from_value(data or ev.get("result") or ev.get("content")):
+                add("result", txt, ev, idx)
+
+    return out
+
+
+def extract_result_objects_from_events(events: list[dict]) -> dict:
+    """Event-aware Atlas-object extraction across all completion sources.
+
+    Returns::
+
+        {
+          "objects": [<distinct Atlas objects, dedup by canonical form>],
+          "provenance": {<canonical>: [<candidate source records>]},
+          "primary": <the single agreed object or None>,
+          "conflict": <bool: two or more distinct objects>,
+          "candidates": <all completion_text_candidates>,
+        }
+
+    De-duplication collapses the identical object repeated across events. Two
+    genuinely distinct objects are a contract violation: ``conflict`` is set and
+    ``primary`` is ``None`` (the caller must not pick one arbitrarily).
+    """
+    candidates = completion_text_candidates(events)
+    provenance: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for cand in candidates:
+        for raw_obj in extract_result_objects(cand["text"]):
+            key = _canonical(raw_obj)
+            if key not in provenance:
+                provenance[key] = []
+                order.append(key)
+            provenance[key].append({
+                "source": cand["source"],
+                "event_index": cand["event_index"],
+                "event_id": cand["event_id"],
+                "timestamp": cand["timestamp"],
+                "success": cand["success"],
+                "tool_call_id": cand["tool_call_id"],
+            })
+    objects = [json.loads(k) for k in order]
+    conflict = len(objects) > 1
+    primary: Optional[dict] = None
+    if len(objects) == 1:
+        primary = objects[0]
+    return {
+        "objects": objects,
+        "provenance": provenance,
+        "primary": primary,
+        "conflict": conflict,
+        "candidates": candidates,
+    }
+
+
+def task_completion_records(events: list[dict]) -> list[dict]:
+    """Return one record per decoded ``task_complete`` completion signal.
+
+    Preserves event index / id / timestamp / success and whether an Atlas object
+    was embedded, for provenance and audit. ``task_complete`` being present is
+    never treated as proof a job is valid.
+    """
+    records: list[dict] = []
+    for cand in completion_text_candidates(events):
+        if cand["source"] in ("assistant.message", "result"):
+            # These are generic text channels; only include when they carry an
+            # Atlas object (a real completion signal, not narration).
+            if not extract_result_objects(cand["text"]):
+                continue
+        objs = extract_result_objects(cand["text"])
+        records.append({
+            "source": cand["source"],
+            "event_index": cand["event_index"],
+            "event_id": cand["event_id"],
+            "timestamp": cand["timestamp"],
+            "success": cand["success"],
+            "tool_call_id": cand["tool_call_id"],
+            "has_result_object": bool(objs),
+            "result_object_count": len(objs),
+        })
+    return records
+
+
+def _has_browser_evidence(events: list[dict]) -> bool:
+    """True when any tool execution used a Playwright/MCP/browser tool.
+
+    Robust to the Copilot schema where the tool name lives in ``data.toolName``
+    (which the generic :func:`count_tool_calls` does not inspect)."""
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        t = _event_type(ev)
+        if "tool" not in t:
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        name = str(data.get("toolName") or data.get("name")
+                   or ev.get("name") or ev.get("tool") or "").lower()
+        if name.startswith("playwright") or "browser" in name or "mcp" in name or name.startswith("page_"):
+            return True
+    return count_tool_calls(events, mcp_only=True) > 0
+
+
+def classify_completion_state(events: list[dict], *, validated: bool = False) -> str:
+    """Classify the incremental completion state (§8) from the event log."""
+    extraction = extract_result_objects_from_events(events)
+    if extraction["conflict"]:
+        return STATE_CONFLICTING
+    has_browser = _has_browser_evidence(events)
+    if extraction["primary"] is not None:
+        if validated:
+            return STATE_VALIDATED
+        return STATE_PROPOSAL_EMITTED
+    if has_browser:
+        # Tool evidence exists but no finalized proposal object was emitted.
+        return STATE_EVIDENCE_UNFINALIZED
+    return STATE_NO_EVIDENCE
+
+
 __all__ = [
     "iter_jsonl", "load_events", "final_assistant_text", "count_tool_calls",
-    "session_ids", "extract_result_objects",
+    "session_ids", "extract_result_objects", "PARSER_VERSION", "TASK_COMPLETE_TOOL",
+    "completion_text_candidates", "extract_result_objects_from_events",
+    "task_completion_records", "classify_completion_state",
+    "STATE_NO_EVIDENCE", "STATE_BROWSER_EVIDENCE_CAPTURED", "STATE_PROPOSAL_EMITTED",
+    "STATE_VALIDATED", "STATE_EVIDENCE_UNFINALIZED", "STATE_CONFLICTING",
 ]

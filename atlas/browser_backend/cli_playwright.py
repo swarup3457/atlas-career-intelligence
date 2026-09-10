@@ -13,7 +13,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from atlas.browser_backend.jsonl_parser import count_tool_calls, extract_result_objects
+from atlas.browser_backend.jsonl_parser import (
+    count_tool_calls, extract_result_objects, extract_result_objects_from_events,
+)
 from atlas.browser_backend.mcp_config import build_mcp_config, write_mcp_config
 from atlas.browser_backend.models import (
     BackendResult, CliProcessConfig, CompanyTask, ROUTE_CLI_PLAYWRIGHT,
@@ -24,32 +26,66 @@ from atlas.pilot.status_v4 import CompanySearchStatus
 
 
 def parse_usage_credits(usage_path: Path) -> float:
-    """Best-effort AI-credit total from the Copilot ``--usage-output-file`` JSON."""
+    """AI-credit total from the Copilot ``--usage-output-file`` JSON.
+
+    The Copilot usage JSON reports one authoritative *top-level* total and then
+    repeats hierarchical breakdowns (``modelMetrics`` / ``agentMetrics`` and
+    their own ``totalNanoAiu``). Summing recursively double- (or quadruple-)
+    counts the same spend, so a strict precedence is applied and parent and
+    child aggregates are never added together:
+
+    1. top-level ``totalNanoAiu`` / 1e9;
+    2. top-level explicit credit field (``ai_credits`` / ``credits`` /
+       ``total_credits`` / ``totalPremiumRequestCost``... only true credit keys);
+    3. exactly one selected aggregate child ``totalNanoAiu`` (the largest single
+       child) — only when no top-level total exists;
+    4. otherwise 0.0.
+    """
     if not usage_path.exists():
         return 0.0
     try:
         data = json.loads(usage_path.read_text(encoding="utf-8", errors="replace"))
     except (ValueError, OSError):
         return 0.0
+    return round(usage_credits_from_data(data), 4)
 
-    def _walk(obj) -> float:
-        total = 0.0
+
+_TOP_CREDIT_KEYS = ("ai_credits", "credits", "total_credits", "totalcredits")
+
+
+def usage_credits_from_data(data: object) -> float:
+    """Deterministic, non-double-counting credit total (see precedence above)."""
+    if not isinstance(data, dict):
+        return 0.0
+    # (1) top-level nano-AIU.
+    for k, v in data.items():
+        if str(k).lower() in ("totalnanoaiu", "total_nano_aiu") and isinstance(v, (int, float)):
+            return float(v) / 1e9
+    # (2) top-level explicit credit field.
+    for k, v in data.items():
+        if str(k).lower() in _TOP_CREDIT_KEYS and isinstance(v, (int, float)):
+            return float(v)
+    # (3) exactly one selected aggregate (the largest single nested nano-AIU
+    # value) — never the sum of siblings, so parent+child are never added.
+    best = 0.0
+    found = False
+
+    def _max_nano(obj) -> None:
+        nonlocal best, found
         if isinstance(obj, dict):
             for k, v in obj.items():
                 kl = str(k).lower()
-                if isinstance(v, (int, float)):
-                    if "nano_aiu" in kl or "nanoaiu" in kl:
-                        total += float(v) / 1e9
-                    elif kl in ("ai_credits", "credits", "total_credits"):
-                        total += float(v)
+                if isinstance(v, (int, float)) and ("nanoaiu" in kl or "nano_aiu" in kl):
+                    found = True
+                    best = max(best, float(v) / 1e9)
                 else:
-                    total += _walk(v)
+                    _max_nano(v)
         elif isinstance(obj, list):
             for item in obj:
-                total += _walk(item)
-        return total
+                _max_nano(item)
 
-    return round(_walk(data), 4)
+    _max_nano(data)
+    return best if found else 0.0
 
 
 class CliPlaywrightBackend:
@@ -107,6 +143,23 @@ class CliPlaywrightBackend:
             return self._finalize_invalid(task, cap, result, out_dir)
 
         objs = extract_result_objects(cap.final_assistant_text)
+        event_conflict = False
+        if len(objs) == 0:
+            # Event-aware extraction: the machine-readable object is carried by
+            # the task_complete tool call (arguments.summary) and echoed through
+            # tool.execution_start / tool.execution_complete / session.task_complete,
+            # even when the final assistant *text* is empty or a stall note.
+            extraction = extract_result_objects_from_events(cap.jsonl_events)
+            if extraction["conflict"]:
+                event_conflict = True
+                objs = extraction["objects"]
+            elif extraction["primary"] is not None:
+                objs = [extraction["primary"]]
+                if not cap.final_assistant_text:
+                    # Retain the recovered summary text for display/quarantine only.
+                    prov = extraction["candidates"]
+                    if prov:
+                        cap.final_assistant_text = prov[-1]["text"][-20000:]
         if len(objs) == 0:
             # Fallback: parse the raw stdout directly (covers text-mode output or
             # a JSONL schema our event parser did not recognize).
@@ -122,9 +175,11 @@ class CliPlaywrightBackend:
             result.status = CompanySearchStatus.PARSER_ERROR.value
             result.error = "no machine-readable result object in final message"
             return self._finalize_invalid(task, cap, result, out_dir)
-        if len(objs) > 1:
+        if event_conflict or len(objs) > 1:
             result.status = CompanySearchStatus.PARSER_ERROR.value
-            result.error = f"expected exactly one result object, found {len(objs)}"
+            result.error = (f"conflicting result objects across completion events: {len(objs)}"
+                            if event_conflict else
+                            f"expected exactly one result object, found {len(objs)}")
             result.proposed = objs[0]
             return self._finalize_invalid(task, cap, result, out_dir)
 
@@ -169,4 +224,4 @@ class CliPlaywrightBackend:
         return result
 
 
-__all__ = ["CliPlaywrightBackend", "parse_usage_credits"]
+__all__ = ["CliPlaywrightBackend", "parse_usage_credits", "usage_credits_from_data"]
