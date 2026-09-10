@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Atlas single-company search result",
+  "description": "The exactly-one machine-readable object the company agent must emit as its final message. Deterministic Atlas Python re-validates every field; the agent only proposes.",
+  "type": "object",
+  "required": [
+    "atlas_result_version", "company", "task_id", "run_id", "status",
+    "observed_result_state", "browser_evidence"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "atlas_result_version": {"const": 1},
+    "company": {"type": "string", "description": "Must match the target company exactly."},
+    "task_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "official_domain": {"type": "string"},
+    "career_entry_url": {"type": "string", "format": "uri"},
+    "route": {"type": "string", "enum": ["structured_ats", "cli_playwright"]},
+    "source_family": {"type": "string"},
+    "status": {
+      "type": "string",
+      "enum": [
+        "SEARCHED_COMPLETE_WITH_MATCHES",
+        "SEARCHED_COMPLETE_NO_MATCHES",
+        "ACCESS_LIMITED_EXTERNAL",
+        "AUTH_REQUIRED_CONFIRMED",
+        "OFFICIAL_SOURCE_UNRESOLVED"
+      ]
+    },
+    "observed_result_state": {"type": "string", "enum": ["results_observed", "no_results", "external_block"]},
+    "browser_evidence": {"type": "boolean", "description": "True only if you actually navigated with the browser."},
+    "external_block": {"type": "boolean"},
+    "external_block_evidence": {"type": "string"},
+    "queries_attempted": {"type": "array", "items": {"type": "string"}},
+    "lanes_attempted": {"type": "array", "items": {"type": "string"}},
+    "evidence_urls": {"type": "array", "items": {"type": "string", "format": "uri"},
+      "description": "Detail URLs you actually opened."},
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "location", "official_url", "description", "lane", "evidence_snippets"],
+        "properties": {
+          "title": {"type": "string"},
+          "location": {"type": "string"},
+          "work_mode": {"type": "string"},
+          "official_url": {"type": "string", "format": "uri", "description": "HTTPS canonical detail URL on the official/ATS host."},
+          "description": {"type": "string"},
+          "mandatory_requirements": {"type": "array", "items": {"type": "string"}},
+          "preferred_requirements": {"type": "array", "items": {"type": "string"}},
+          "experience_text": {"type": "string"},
+          "requisition_id": {"type": "string"},
+          "lane": {"type": "string",
+            "enum": ["JAVA_BACKEND", "JAVA_FULLSTACK", "REACT_FRONTEND", "DOTNET", "ENTERPRISE_HR_PAYROLL_INTEGRATION"]},
+          "evidence_snippets": {"type": "array", "items": {"type": "string"},
+            "description": "Short verbatim quotes copied from the detail page; each must appear in the captured source text."},
+          "posted_date": {"type": "string"},
+          "source_family": {"type": "string"}
+        }
+      }
+    },
+    "rejections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string"},
+          "lane": {"type": "string"},
+          "reason_code": {"type": "string"},
+          "detail": {"type": "string"},
+          "location": {"type": "string"},
+          "url": {"type": "string"}
+        }
+      }
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "recipe_candidate": {
+      "type": "object",
+      "description": "Optional general (never job-specific) navigation recipe inferred from live evidence.",
+      "properties": {
+        "company": {"type": "string"},
+        "official_domain": {"type": "string"},
+        "search_url_template": {"type": "string"},
+        "detail_url_pattern": {"type": "string"},
+        "query_param": {"type": "string"},
+        "location_param": {"type": "string"},
+        "navigation_strategy": {"type": "string"},
+        "result_observation_checks": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

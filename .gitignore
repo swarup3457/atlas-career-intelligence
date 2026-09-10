@@ -17,6 +17,9 @@ atlas_run.lock
 *.lock
 .pytest_cache/
 *.egg-info/
+
+# Reproducible Playwright MCP tool manifest: lock the version, never the tree.
+tools/playwright-mcp/node_modules/
 dist/
 build/
 .env

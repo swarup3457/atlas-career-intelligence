@@ -1,0 +1,13 @@
+{
+  "name": "atlas-playwright-mcp-tool",
+  "version": "0.0.80",
+  "private": true,
+  "description": "Pinned, reproducible Microsoft Playwright MCP server used by the Atlas Copilot-CLI browser backend. This manifest exists only to lock the exact server version; node_modules is never committed.",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@playwright/mcp": "0.0.80"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
