@@ -14,6 +14,34 @@ SHEETS = (
     "Session_Audit", "Run_Summary",
 )
 
+V3_SHEETS = SHEETS + ("Selection_Audit", "Discovery_Funnel")
+
+
+def build_discovery_v3_workbook(*, evidence_root: Path, live_root: Path, run_id: str, output_root: Path) -> Path:
+    """Build the V3 workbook from the existing Discovery V2 evidence only."""
+    output = build_discovery_workbook(evidence_root=evidence_root, live_root=live_root, run_id=run_id, output_root=output_root)
+    from openpyxl import load_workbook
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    v3 = Path(output_root) / run_id / f"Atlas_VSCode_DiscoveryV3_{timestamp}_{run_id}.xlsx"
+    wb = load_workbook(output)
+    for sheet in ("Selection_Audit", "Discovery_Funnel"):
+        wb.create_sheet(sheet)
+    wb["Selection_Audit"].append(["company", "selected", "reason"])
+    verification = _load(evidence_root / "official_verification.json", [])
+    for candidate in verification:
+        wb["Selection_Audit"].append([candidate.get("company", ""), candidate.get("selected", False), candidate.get("selection_reason", candidate.get("deferral_reason", ""))])
+    wb["Discovery_Funnel"].append(["stage", "count"])
+    raw = _load(evidence_root / "freehire_raw.json", [])
+    queued = _load(evidence_root / "freehire_queued.json", [])
+    wb["Discovery_Funnel"].append(["raw_leads", len(raw)])
+    wb["Discovery_Funnel"].append(["unique_leads", len({_lead_identity(lead) for lead in raw})])
+    wb["Discovery_Funnel"].append(["prefiltered_queued", len(queued)])
+    wb["Discovery_Funnel"].append(["companies_verified", len(verification)])
+    wb["Discovery_Funnel"].append(["companies_selected", sum(1 for item in verification if item.get("selected"))])
+    wb.save(v3)
+    load_workbook(v3).close()
+    return v3
+
 
 def reconcile_metrics(*, raw: int, deduped: int, queued: int, verified_companies: int, selected_companies: int, primary_attempts: int, correction_attempts: int, total_attempts: int, validated: int, rejected: int, foreign: int) -> list[str]:
     problems: list[str] = []
