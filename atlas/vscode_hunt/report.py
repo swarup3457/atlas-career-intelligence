@@ -33,6 +33,8 @@ def build_workbook(root: Path, run_id: str, conn: Any) -> Path:
         final = results[-1] if results else {}
         workbook["Company_Coverage"].append([task["task_id"], task["company_id"], task["company_name"], task["official_domain"], task["status"], len(task_attempts), len(final.get("detail_urls", [])), len(final.get("browser_errors", []))])
         for job in final.get("jobs", []):
+            if str(job.get("proposed_decision", "accept")).lower() not in {"accept", "accepted", "validate"}:
+                continue
             workbook["Validated_Jobs"].append([task["company_name"], job.get("title", ""), job.get("location", ""), job.get("canonical_url", job.get("official_url", "")), job.get("requisition_id", ""), job.get("lane", ""), ", ".join(job.get("stack", [])) if isinstance(job.get("stack"), list) else job.get("stack", ""), job.get("experience", job.get("experience_text", "")), job.get("posted_date", ""), "MANUAL_REVIEW", "", "", "PYTHON_VALIDATED"])
         for rejection in final.get("rejections", []):
             workbook["Rejected_Jobs"].append([task["company_name"], rejection.get("title", ""), rejection.get("location", ""), rejection.get("url", ""), rejection.get("lane", ""), rejection.get("reason_code", ""), rejection.get("detail", rejection.get("reason", ""))])
