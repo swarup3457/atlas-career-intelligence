@@ -77,6 +77,11 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
+def _is_volatile(name: str) -> bool:
+    """Transient runtime state that must not be hashed as a deliverable artifact."""
+    return name.startswith("pilot_checkpoints.sqlite")
+
+
 def _write_sheet(ws, columns: Sequence[str], rows: Sequence[Sequence]) -> None:
     ws.append(list(columns))
     for r in rows:
@@ -301,10 +306,12 @@ def write_product_pilot_report(
         "update_latest": product_config.update_latest, "usage_totals": totals,
     })
 
-    # hash every artifact (prompt s.9)
+    # hash every deliverable artifact (prompt s.9). The LangGraph checkpoint SQLite (and its
+    # -wal/-shm sidecars) is transient runtime state that mutates after finalize, so it is not
+    # a hashable deliverable and is excluded from the manifest.
     artifact_hashes: dict[str, str] = {}
     for f in sorted(run_dir.rglob("*")):
-        if f.is_file() and f.name != "artifact_hashes.json":
+        if f.is_file() and f.name != "artifact_hashes.json" and not _is_volatile(f.name):
             artifact_hashes[str(f.relative_to(run_dir)).replace("\\", "/")] = \
                 hashlib.sha256(f.read_bytes()).hexdigest()
     _dump(run_dir / "artifact_hashes.json", artifact_hashes)
