@@ -15,7 +15,7 @@ from .service import VscodeHuntService
 def _service() -> tuple[StateStore, VscodeHuntService]:
     settings = load_settings()
     settings.ensure_directories()
-    root = settings.output_dir / "vscode_hunt"
+    root = settings.output_dir
     store = StateStore(settings.state_db)
     return store, VscodeHuntService(store, root)
 
@@ -59,7 +59,7 @@ def register_vscode_hunt_commands(subparsers: argparse._SubParsersAction) -> Non
     p = children.add_parser("doctor"); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)
     p = children.add_parser("create-run"); p.add_argument("--companies-file", required=True); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)
     p = children.add_parser("next-tasks"); p.add_argument("--run-id", required=True); p.add_argument("--limit", type=int, default=2); p.add_argument("--materialize", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)
-    p = children.add_parser("record-attempt"); p.add_argument("--run-id", required=True); p.add_argument("--task-id", required=True); p.add_argument("--attempt-id", required=True); p.add_argument("--backend", required=True, choices=[b.value for b in Backend]); p.add_argument("--parent-attempt-id"); p.set_defaults(func=command)
+    p = children.add_parser("record-attempt"); p.add_argument("--run-id", required=True); p.add_argument("--task-id", required=True); p.add_argument("--attempt-id", required=True); p.add_argument("--backend", required=True, choices=[b.value for b in Backend]); p.add_argument("--parent-attempt-id"); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)
     p = children.add_parser("ingest-result"); p.add_argument("--run-id", required=True); p.add_argument("--task-id", required=True); p.add_argument("--attempt-id", required=True); p.add_argument("--file", required=True); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)
     p = children.add_parser("validate-task"); p.add_argument("--run-id", required=True); p.add_argument("--task-id", required=True); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)
     for name in ("status", "build-workbook", "resume"):

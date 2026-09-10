@@ -13,13 +13,14 @@ from atlas.vscode_hunt.service import VscodeHuntService
 
 def _result(run_id: str, task_id: str, attempt_id: str, lanes: list[str], *, incomplete: bool = False) -> dict:
     return {
-        "run_id": run_id, "task_id": task_id, "attempt_id": attempt_id,
+        "schema_version": 2, "run_id": run_id, "task_id": task_id, "attempt_id": attempt_id,
         "company_id": "fixture-a", "worker_invocation_id": "worker-1",
         "official_domain": "fixture.example", "career_url": "https://fixture.example/careers",
         "queries": ["java India"], "lanes_attempted": [] if incomplete else lanes,
         "result_states": ["NO_MATCH"], "detail_urls": [], "jobs": [],
         "rejections": [], "foreign_leads": [], "browser_errors": [],
-        "evidence_quotes": [], "completion_claim": not incomplete,
+        "evidence_quotes": [], "source_health": {"state": "OK"},
+        "external_block_evidence": "", "completion_claim": not incomplete,
     }
 
 

@@ -36,6 +36,9 @@ class HuntTask:
     official_domain: str
     careers_url: str | None
     lanes: tuple[str, ...]
+    query_families: tuple[str, ...] = ()
+    india_policy: str = "INDIA_ONLY_EXPLICIT_LOCATION"
+    experience_policy: str = "HARD_REJECT_MANDATORY_4_PLUS"
     status: str = "PENDING"
     attempt_number: int = 0
 
@@ -51,3 +54,7 @@ class WorkerAttempt:
 
 def result_identity(result: dict[str, Any]) -> tuple[str, str, str]:
     return (str(result.get("run_id", "")), str(result.get("task_id", "")), str(result.get("attempt_id", "")))
+
+
+RESULT_SCHEMA_VERSION = 2
+TASK_SCHEMA_VERSION = 2

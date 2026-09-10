@@ -9,7 +9,7 @@ from typing import Any
 
 from atlas.persistence.sqlite import StateStore
 
-from .models import Action, Backend, HuntTask, WorkerAttempt
+from .models import Action, Backend, RESULT_SCHEMA_VERSION, TASK_SCHEMA_VERSION, HuntTask, WorkerAttempt
 from .validation import missing_obligations, validate_result
 
 
@@ -50,7 +50,7 @@ class VscodeHuntService:
             task_dir.mkdir(parents=True, exist_ok=True)
             package_path = task_dir / "task.json"
             result_path = task_dir / "result.json"
-            package = {"run_id": run_id, "task_id": row["task_id"], "company_id": row["company_id"], "company_name": row["company_name"], "official_domain": row["official_domain"], "careers_url": row["careers_url"], "lanes": json.loads(row["lanes_json"]), "allowed_output_path": str(result_path), "safety": ["read-only", "no-login", "no-apply"], "completion_checklist": ["detail evidence", "India eligibility", "lane coverage"]}
+            package = {"schema_version": TASK_SCHEMA_VERSION, "run_id": run_id, "task_id": row["task_id"], "company_id": row["company_id"], "company_name": row["company_name"], "official_domain": row["official_domain"], "careers_url": row["careers_url"], "lanes": json.loads(row["lanes_json"]), "query_families": ["Java", "Java Backend", "Java Full Stack", "React Frontend", ".NET", "C#", "enterprise applications", "HCM payroll integration"], "india_policy": "INDIA_ONLY_EXPLICIT_LOCATION", "experience_policy": "HARD_REJECT_MANDATORY_4_PLUS", "candidate_profile": {"redacted": True, "target_lanes": json.loads(row["lanes_json"]), "experience_years": "policy-gated"}, "allowed_output_path": str(result_path), "safety": ["read-only", "no-login", "no-apply", "no-external-sites-other-than-assigned-company"], "completion_checklist": ["official career navigation", "real result state per lane", "canonical detail evidence", "India eligibility", "source health"]}
             if materialize:
                 package_path.write_text(json.dumps(package, indent=2), encoding="utf-8")
             output.append({**package, "task_package_path": str(package_path), "result_path": str(result_path)})
@@ -82,7 +82,7 @@ class VscodeHuntService:
         with self.conn:
             self.conn.execute("UPDATE vscode_hunt_attempts SET status=?,result_hash=?,result_path=?,missing_json=? WHERE attempt_id=?", (action.value, result_hash, str(path), json.dumps(missing), attempt_id))
             self.conn.execute("UPDATE vscode_hunt_tasks SET status=? WHERE task_id=?", (action.value, task_id))
-        response = {"action": action.value, "run_id": run_id, "task_id": task_id, "attempt_id": attempt_id, "result_path": str(path), "result_hash": result_hash, "missing_obligations": missing}
+        response = {"action": action.value, "run_id": run_id, "task_id": task_id, "attempt_id": attempt_id, "result_path": str(path), "result_hash": result_hash, "missing_obligations": missing, "prior_result_reference": {"path": str(path), "sha256": result_hash}}
         if action is Action.FOLLOW_UP_REQUIRED:
             response["new_attempt_id"] = f"attempt-{secrets.token_hex(12)}"
             response["correction_prompt"] = f"Correct the same task {task_id}. Resolve exactly: {', '.join(missing)}. Return one typed JSON object."
@@ -91,4 +91,4 @@ class VscodeHuntService:
     def status(self, run_id: str) -> dict[str, Any]:
         rows = self.conn.execute("SELECT status,COUNT(*) AS n FROM vscode_hunt_tasks WHERE run_id=? GROUP BY status", (run_id,)).fetchall()
         counts = {row["status"]: row["n"] for row in rows}
-        return {"run_id": run_id, "counts": counts, "all_tasks_terminal": not any(k in counts for k in ("PENDING", "LEASED", "FOLLOW_UP_REQUIRED"))}
+        return {"run_id": run_id, "counts": counts, "all_tasks_terminal": not any(k in counts for k in ("PENDING", "LEASED", "FOLLOW_UP_REQUIRED", "REJECTED_INVALID_RESULT", "NEEDS_REPAIR"))}

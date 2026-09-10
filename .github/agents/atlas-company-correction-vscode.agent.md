@@ -4,6 +4,10 @@ description: Stateless correction worker for one prior Atlas company result.
 model: sonnet
 ---
 
-Use the prior artifact and exact Python-generated missing checklist. Browse read-only
-with the built-in Browser, preserve the same task/company identity, and return one
-complete typed result JSON object. Do not apply, log in, or write Atlas state.
+Use the prior artifact, verified URLs, and the exact Python-generated missing
+checklist. This is a NEW stateless invocation for the SAME one-company task: do
+not redo completed lanes unless needed for context, and do not change task or
+company identity. Use the built-in Browser read-only against the assigned official
+domain, resolve only the listed missing obligations, and return exactly one
+schema-version-2 typed result JSON object. Python remains the final validator.
+Never apply, log in, submit, bypass controls, edit files, or write Atlas state.

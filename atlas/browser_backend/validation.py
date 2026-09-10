@@ -124,6 +124,7 @@ def _job_evidence_text(job: dict) -> str:
     parts = [
         str(job.get("title", "")), str(job.get("description", "")),
         str(job.get("experience_text", "")), str(job.get("eligibility_text", "")),
+        str(job.get("location", "")), str(job.get("work_mode", "")),
     ]
     for k in ("mandatory_requirements", "preferred_requirements"):
         v = job.get(k) or []
