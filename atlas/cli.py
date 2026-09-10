@@ -1401,6 +1401,9 @@ def build_parser() -> argparse.ArgumentParser:
     from atlas.browser_backend.cli import register_browser_backend_commands
     register_browser_backend_commands(subparsers)
 
+    from atlas.vscode_hunt.cli import register_vscode_hunt_commands
+    register_vscode_hunt_commands(subparsers)
+
     p_doctor = subparsers.add_parser("doctor", help="Run the offline health check.")
     p_doctor.set_defaults(func=_cmd_doctor)
 

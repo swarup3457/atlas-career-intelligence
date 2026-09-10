@@ -1009,6 +1009,49 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             """,
         ],
     ),
+    (
+        13,
+        "stateless VS Code hunt control plane",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS vscode_hunt_runs (
+                run_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                company_count INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS vscode_hunt_tasks (
+                task_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES vscode_hunt_runs(run_id),
+                company_id TEXT NOT NULL,
+                company_name TEXT NOT NULL,
+                official_domain TEXT NOT NULL,
+                careers_url TEXT,
+                lanes_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(run_id, company_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS vscode_hunt_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL REFERENCES vscode_hunt_tasks(task_id),
+                attempt_number INTEGER NOT NULL,
+                backend TEXT NOT NULL,
+                parent_attempt_id TEXT,
+                status TEXT NOT NULL,
+                result_hash TEXT,
+                result_path TEXT,
+                missing_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_vscode_hunt_tasks_run ON vscode_hunt_tasks(run_id)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)

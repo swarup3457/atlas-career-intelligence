@@ -266,7 +266,7 @@ def test_v9_schema_and_backup_restore_retains_both_runs(tmp_path):
 
     db = tmp_path / "s.sqlite"
     store = StateStore(db)
-    assert store.schema_version() == 12
+    assert store.schema_version() == 13
     store.create_run("A", "none"); store.create_run("B", "none")
     LeaseManager(store, "A", clock=ManualUTCClock()).ensure("c1", source_instance="i1")
     LeaseManager(store, "B", clock=ManualUTCClock()).ensure("c1", source_instance="i1")
@@ -278,7 +278,7 @@ def test_v9_schema_and_backup_restore_retains_both_runs(tmp_path):
     dest = tmp_path / "restored.sqlite"
     backup_sqlite_database(db, dest)
     restored = StateStore(dest)
-    assert restored.schema_version() == 12
+    assert restored.schema_version() == 13
     assert restored.get_coverage("c1", "A")["status"] == "COMPLETED_WITH_RESULTS"
     assert restored.get_coverage("c1", "B")["status"] == "NOT_ATTEMPTED"
     assert restored.get_coverage_lease("c1", "A")["run_id"] == "A"
