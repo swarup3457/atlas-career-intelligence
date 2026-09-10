@@ -38,6 +38,12 @@ class JobLead:
         key = "|".join(_norm(value) for value in (self.company, self.title, self.location, self.posted_date or ""))
         return "lead:" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
 
+    def to_record(self) -> dict[str, Any]:
+        record = dataclasses.asdict(self)
+        record["identity"] = self.identity
+        record["skills"] = list(self.skills)
+        return record
+
 
 @dataclasses.dataclass(frozen=True)
 class DiscoveryBatch:

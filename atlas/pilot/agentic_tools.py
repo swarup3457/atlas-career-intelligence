@@ -295,6 +295,11 @@ class AgenticCompanyToolbox:
 
     def browser_collect_job_cards(self, lane: str = "") -> dict:
         out = self._guard(self._ensure_actor().collect_job_cards)
+        # Keep the browser-tool contract stable on actor errors so callers can
+        # treat an unavailable card set as an empty observation instead of
+        # crashing while inspecting the response shape.
+        out.setdefault("job_cards", [])
+        out.setdefault("count", len(out.get("job_cards", [])))
         if out.get("ok") and lane and lane in self.base.lanes:
             cov = self.base.lanes[lane]
             cov.attempted = True
