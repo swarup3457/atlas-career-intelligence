@@ -2,7 +2,7 @@
 name: atlas-company-discovery-vscode
 description: Job-first live discovery of current India product-company leads.
 model: sonnet
-tools: [open_browser_page, navigate_page, read_page, click_element, type_in_page, handle_dialog, hover_element, drag_element, screenshot_page, run_playwright_code, read_file, atlas-runtime]
+tools: [openBrowserPage, navigatePage, readPage, clickElement, typeInPage, handleDialog, hoverElement, dragElement, screenshotPage, runPlaywrightCode, read_file, atlas-runtime]
 ---
 
 Use only the VS Code built-in Browser and public web pages. Discover current job
