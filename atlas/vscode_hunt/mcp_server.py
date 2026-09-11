@@ -81,6 +81,18 @@ def build_runtime_server(service: VscodeHuntService | None = None):
         return service.upgrade_task_contract(run_id)
 
     @server.tool()
+    def reopen_browser_recovery(run_id: str, task_id: str, expected_commit_id: str, expected_result_sha256: str, browser_backend: str, browser_slot: str | None = None) -> dict:
+        return service.reopen_browser_recovery(
+            run_id, task_id, expected_commit_id=expected_commit_id,
+            expected_result_sha256=expected_result_sha256,
+            browser_backend=browser_backend, browser_slot=browser_slot,
+        )
+
+    @server.tool()
+    def start_attempt(run_id: str, task_id: str, attempt_id: str) -> dict:
+        return service.start_attempt(run_id, task_id, attempt_id)
+
+    @server.tool()
     def mark_interrupted_uncommitted(run_id: str, reason: str = "MCP_TOOL_NOT_EXPOSED") -> dict:
         return service.mark_interrupted_uncommitted(run_id, reason)
 

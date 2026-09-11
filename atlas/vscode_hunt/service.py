@@ -178,7 +178,20 @@ class VscodeHuntService:
             output.append({**package, "task_package_path": str(package_path), "result_path": str(result_path)})
         return output
 
-    def record_attempt(self, run_id: str, task_id: str, attempt_id: str | None, backend: Backend, parent_attempt_id: str | None = None) -> WorkerAttempt:
+    def record_attempt(
+        self,
+        run_id: str,
+        task_id: str,
+        attempt_id: str | None,
+        backend: Backend,
+        parent_attempt_id: str | None = None,
+        *,
+        attempt_kind: str = "PRIMARY",
+        parent_commit_id: str | None = None,
+        browser_backend: str | None = None,
+        browser_slot: str | None = None,
+        worker_invocation_id: str | None = None,
+    ) -> WorkerAttempt:
         row = self.conn.execute("SELECT attempt_number,status FROM vscode_hunt_tasks WHERE run_id=? AND task_id=?", (run_id, task_id)).fetchone()
         if row is None: raise ValueError("unknown task")
         if row["status"] == "COMPLETE": raise ValueError("completed task cannot be rerun")
@@ -186,8 +199,101 @@ class VscodeHuntService:
         number = int(row["attempt_number"]) + 1
         with self.conn:
             self.conn.execute("UPDATE vscode_hunt_tasks SET status='RUNNING',attempt_number=? WHERE task_id=?", (number, task_id))
-            self.conn.execute("INSERT INTO vscode_hunt_attempts(attempt_id,task_id,attempt_number,backend,parent_attempt_id,status) VALUES(?,?,?,?,?,?)", (attempt_id, task_id, number, backend.value, parent_attempt_id, "OPEN"))
+            self.conn.execute(
+                """INSERT INTO vscode_hunt_attempts(
+                    attempt_id,task_id,attempt_number,backend,parent_attempt_id,status,
+                    attempt_kind,parent_commit_id,browser_backend,browser_slot,
+                    worker_invocation_id,started_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+                (attempt_id, task_id, number, backend.value, parent_attempt_id, "OPEN",
+                 attempt_kind, parent_commit_id, browser_backend, browser_slot,
+                 worker_invocation_id),
+            )
         return WorkerAttempt(attempt_id, task_id, number, backend, parent_attempt_id)
+
+    def reopen_browser_recovery(
+        self,
+        run_id: str,
+        task_id: str,
+        *,
+        expected_commit_id: str,
+        expected_result_sha256: str,
+        browser_backend: str,
+        browser_slot: str | None = None,
+    ) -> dict[str, Any]:
+        """Reopen only a retryable BROWSER_UNAVAILABLE terminal task.
+
+        The prior attempt and commit remain immutable; the new attempt is linked to both.
+        Infrastructure recovery is intentionally distinct from content correction.
+        """
+        task = self.conn.execute(
+            "SELECT * FROM vscode_hunt_tasks WHERE run_id=? AND task_id=?", (run_id, task_id)
+        ).fetchone()
+        commit = self.conn.execute(
+            """SELECT * FROM vscode_result_commits
+               WHERE run_id=? AND task_id=? AND commit_id=? AND result_sha256=?""",
+            (run_id, task_id, expected_commit_id, expected_result_sha256),
+        ).fetchone()
+        if task is None or commit is None:
+            raise ValueError("expected task/commit identity or hash does not match")
+        if task["status"] != "NEEDS_REPAIR":
+            raise ValueError("only NEEDS_REPAIR tasks may be reopened for browser recovery")
+        result = json.loads(Path(commit["result_path"]).read_text(encoding="utf-8"))
+        errors = result.get("browser_errors") or []
+        error_text = json.dumps(errors).upper()
+        if "BROWSER_UNAVAILABLE" not in error_text:
+            raise ValueError("latest result is not an explicitly retryable BROWSER_UNAVAILABLE failure")
+        previous_attempt = self.conn.execute(
+            "SELECT attempt_id FROM vscode_hunt_attempts WHERE attempt_id=? AND task_id=?",
+            (commit["attempt_id"], task_id),
+        ).fetchone()
+        if previous_attempt is None:
+            raise ValueError("committed attempt is missing")
+        new_attempt_id = f"attempt-recovery-{secrets.token_hex(12)}"
+        number = int(task["attempt_number"]) + 1
+        with self.conn:
+            self.conn.execute("UPDATE vscode_hunt_tasks SET status='PENDING',attempt_number=? WHERE task_id=?", (number, task_id))
+            self.conn.execute(
+                """INSERT INTO vscode_hunt_attempts(
+                    attempt_id,task_id,attempt_number,backend,parent_attempt_id,status,
+                    attempt_kind,parent_commit_id,browser_backend,browser_slot,
+                    worker_invocation_id,started_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)""",
+                (new_attempt_id, task_id, number, Backend.VSCODE_SUBAGENT.value,
+                 commit["attempt_id"], "PENDING", "BROWSER_BACKEND_RECOVERY",
+                 expected_commit_id, browser_backend, browser_slot, None),
+            )
+            self._task_event(run_id, task_id, "TASK_REOPENED_FOR_BROWSER_RECOVERY", {
+                "previous_attempt_id": commit["attempt_id"],
+                "previous_commit_id": expected_commit_id,
+                "previous_result_sha256": expected_result_sha256,
+                "browser_backend": browser_backend,
+                "browser_slot": browser_slot,
+                "new_attempt_id": new_attempt_id,
+            })
+        return {
+            "run_id": run_id, "task_id": task_id, "new_attempt_id": new_attempt_id,
+            "parent_attempt_id": commit["attempt_id"], "parent_commit_id": expected_commit_id,
+            "browser_backend": browser_backend, "browser_slot": browser_slot,
+            "attempt_kind": "BROWSER_BACKEND_RECOVERY", "status": "PENDING",
+        }
+
+    def start_attempt(self, run_id: str, task_id: str, attempt_id: str) -> dict[str, Any]:
+        """Activate a pre-created recovery attempt without creating a duplicate."""
+        row = self.conn.execute(
+            "SELECT a.*, t.status AS task_status FROM vscode_hunt_attempts a "
+            "JOIN vscode_hunt_tasks t ON t.task_id=a.task_id "
+            "WHERE a.attempt_id=? AND a.task_id=? AND t.run_id=?",
+            (attempt_id, task_id, run_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("unknown attempt")
+        if row["status"] != "PENDING" or row["attempt_kind"] != "BROWSER_BACKEND_RECOVERY":
+            raise ValueError("only a pending browser-recovery attempt may be started")
+        with self.conn:
+            self.conn.execute("UPDATE vscode_hunt_attempts SET status='OPEN',started_at=CURRENT_TIMESTAMP WHERE attempt_id=?", (attempt_id,))
+            self.conn.execute("UPDATE vscode_hunt_tasks SET status='RUNNING' WHERE task_id=?", (task_id,))
+        return {"run_id": run_id, "task_id": task_id, "attempt_id": attempt_id, "status": "OPEN", "task_status": "RUNNING"}
 
     def heartbeat(self, run_id: str, task_id: str, attempt_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         attempt = self.conn.execute("SELECT attempt_id FROM vscode_hunt_attempts WHERE attempt_id=? AND task_id=?", (attempt_id, task_id)).fetchone()

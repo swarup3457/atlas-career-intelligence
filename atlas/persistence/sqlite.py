@@ -1087,6 +1087,21 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_vscode_commits_run ON vscode_result_commits(run_id, committed_at)",
         ],
     ),
+    (
+        15,
+        "typed VS Code browser recovery attempt metadata",
+        [
+            "ALTER TABLE vscode_hunt_attempts ADD COLUMN attempt_kind TEXT NOT NULL DEFAULT 'PRIMARY'",
+            "ALTER TABLE vscode_hunt_attempts ADD COLUMN parent_commit_id TEXT",
+            "ALTER TABLE vscode_hunt_attempts ADD COLUMN browser_backend TEXT",
+            "ALTER TABLE vscode_hunt_attempts ADD COLUMN browser_slot TEXT",
+            "ALTER TABLE vscode_hunt_attempts ADD COLUMN worker_invocation_id TEXT",
+            "ALTER TABLE vscode_hunt_attempts ADD COLUMN lease_owner TEXT",
+            "ALTER TABLE vscode_hunt_attempts ADD COLUMN lease_expires_at TEXT",
+            "ALTER TABLE vscode_hunt_attempts ADD COLUMN started_at TEXT",
+            "ALTER TABLE vscode_hunt_attempts ADD COLUMN finished_at TEXT",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)

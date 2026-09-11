@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from atlas.persistence.sqlite import StateStore
+from atlas.vscode_hunt.models import Backend
+from atlas.vscode_hunt.service import VscodeHuntService
+
 AGENTS_DIR = Path(__file__).resolve().parents[1] / ".github" / "agents"
 WORKER_AGENTS = [
     "atlas-company-search-vscode.agent.md",
@@ -60,3 +64,73 @@ def test_worker_has_no_prohibited_tools(agent: str) -> None:
     tools = _tools(agent)
     for tool_id in PROHIBITED:
         assert tool_id not in tools, f"{agent} must not grant prohibited tool {tool_id}"
+
+
+def _browser_failure(run_id: str, task_id: str, attempt_id: str) -> dict:
+    lanes = ["JAVA_BACKEND", "JAVA_FULLSTACK", "REACT_FRONTEND", "DOTNET", "ENTERPRISE_HR_PAYROLL_INTEGRATION"]
+    return {
+        "schema_version": 2, "run_id": run_id, "task_id": task_id, "attempt_id": attempt_id,
+        "company_id": "co", "worker_invocation_id": "worker-v32",
+        "official_domain": "co.example", "career_url": "https://co.example/careers",
+        "queries": [], "lanes_attempted": lanes,
+        "result_states": [{"lane": lane, "state": "INTERNAL_FAILURE"} for lane in lanes],
+        "detail_urls": [], "jobs": [], "rejections": [], "foreign_leads": [],
+        "browser_errors": ["BROWSER_UNAVAILABLE: native Browser tools missing"],
+        "evidence_quotes": [], "source_health": {"status": "unusable"},
+        "external_block_evidence": "", "completion_claim": False,
+    }
+
+
+def test_browser_recovery_preserves_parent_and_requires_matching_commit(tmp_path: Path) -> None:
+    with StateStore(tmp_path / "state.sqlite") as store:
+        service = VscodeHuntService(store, tmp_path / "out")
+        run_id = service.create_run([{"company_id": "co", "name": "Co", "official_domain": "co.example"}])
+        task = service.next_tasks(run_id, materialize=True)[0]
+        attempt = service.record_attempt(run_id, task["task_id"], "attempt-v32", Backend.VSCODE_SUBAGENT)
+        ack = service.commit_result_payload(run_id, task["task_id"], attempt.attempt_id, _browser_failure(run_id, task["task_id"], attempt.attempt_id))
+        assert ack["task_status"] == "NEEDS_REPAIR"
+
+        with pytest.raises(ValueError, match="identity or hash"):
+            service.reopen_browser_recovery(
+                run_id, task["task_id"], expected_commit_id=ack["commit_id"],
+                expected_result_sha256="wrong", browser_backend="VSCODE_NATIVE_BROWSER",
+            )
+
+        reopened = service.reopen_browser_recovery(
+            run_id, task["task_id"], expected_commit_id=ack["commit_id"],
+            expected_result_sha256=ack["result_sha256"], browser_backend="VSCODE_NATIVE_BROWSER",
+        )
+        assert reopened["attempt_kind"] == "BROWSER_BACKEND_RECOVERY"
+        assert reopened["parent_attempt_id"] == attempt.attempt_id
+        assert reopened["parent_commit_id"] == ack["commit_id"]
+        assert store._conn.execute("SELECT status FROM vscode_hunt_tasks WHERE task_id=?", (task["task_id"],)).fetchone()["status"] == "PENDING"
+
+        started = service.start_attempt(run_id, task["task_id"], reopened["new_attempt_id"])
+        assert started["status"] == "OPEN"
+        assert service.get_task_status(run_id, task["task_id"])["status"] == "RUNNING"
+
+        parent = store._conn.execute("SELECT status,result_hash FROM vscode_hunt_attempts WHERE attempt_id=?", (attempt.attempt_id,)).fetchone()
+        assert parent["status"] == "RESULT_COMMITTED"
+        assert parent["result_hash"] == ack["result_sha256"]
+        event = store._conn.execute("SELECT payload_json FROM vscode_worker_events WHERE event_type='TASK_REOPENED_FOR_BROWSER_RECOVERY'").fetchone()
+        assert event is not None
+        assert reopened["new_attempt_id"] in event["payload_json"]
+
+
+def test_browser_recovery_rejects_non_retryable_terminal_result(tmp_path: Path) -> None:
+    with StateStore(tmp_path / "state.sqlite") as store:
+        service = VscodeHuntService(store, tmp_path / "out")
+        run_id = service.create_run([{"company_id": "co", "name": "Co", "official_domain": "co.example"}])
+        task = service.next_tasks(run_id, materialize=True)[0]
+        attempt = service.record_attempt(run_id, task["task_id"], "attempt-real", Backend.VSCODE_SUBAGENT)
+        result = _browser_failure(run_id, task["task_id"], attempt.attempt_id)
+        result["browser_errors"] = []
+        result["completion_claim"] = True
+        result["source_health"] = {"status": "healthy"}
+        ack = service.commit_result_payload(run_id, task["task_id"], attempt.attempt_id, result)
+        assert ack["task_status"] == "COMPLETE"
+        with pytest.raises(ValueError, match="NEEDS_REPAIR"):
+            service.reopen_browser_recovery(
+                run_id, task["task_id"], expected_commit_id=ack["commit_id"],
+                expected_result_sha256=ack["result_sha256"], browser_backend="VSCODE_NATIVE_BROWSER",
+            )
