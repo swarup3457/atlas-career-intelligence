@@ -106,8 +106,11 @@ def evaluate_verification_batch_completion(result: Mapping[str, Any], task: Mapp
     observed = {str(item.get("lead_id", "")) for item in outcomes if isinstance(item, Mapping)}
     missing = sorted(assigned - observed)
     errors = validate_verification_batch_result(result, task)
-    identity_errors = [error for error in errors if "mismatch" in error or "unknown lead" in error or "duplicate" in error]
-    if identity_errors:
+    structural_errors = [
+        error for error in errors
+        if any(token in error for token in ("missing field:", "unsupported", "mismatch", "unknown lead", "duplicate", "assigned lead IDs"))
+    ]
+    if structural_errors:
         action = "REJECTED_INVALID_RESULT"
     elif errors or missing:
         action = "FOLLOW_UP_REQUIRED"
