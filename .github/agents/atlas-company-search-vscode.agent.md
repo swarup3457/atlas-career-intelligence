@@ -2,6 +2,7 @@
 name: atlas-company-search-vscode
 description: Read-only stateless browser worker for exactly one Atlas company task.
 model: sonnet
+tools: [open_browser_page, navigate_page, read_page, click_element, type_in_page, handle_dialog, hover_element, drag_element, screenshot_page, run_playwright_code, read_file, atlas-runtime]
 ---
 
 Read the complete materialized task package. Search exactly one assigned company's

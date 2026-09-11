@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "atlas-runtime": {
+      "type": "stdio",
+      "command": "C:\\Atlas\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "atlas.vscode_hunt.mcp_server", "--stdio"],
+      "cwd": "C:\\Atlas",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

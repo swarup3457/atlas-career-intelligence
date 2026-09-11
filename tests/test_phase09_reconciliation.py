@@ -8,6 +8,8 @@ intact), and transaction rollback. All offline, tmp_path only.
 
 from __future__ import annotations
 
+from atlas.persistence.sqlite import SCHEMA_VERSION
+
 import random
 
 import pytest
@@ -44,14 +46,14 @@ def _write_scenario(code, tmp_path, mapping, base=None):
 def test_migration_v3_present_and_v1_v2_intact(tmp_path):
     store = StateStore(tmp_path / "s.sqlite")
     try:
-        assert store.schema_version() == 13
+        assert store.schema_version() == SCHEMA_VERSION
         versions = [
             r[0]
             for r in store._conn.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
         ]
-        assert versions == list(range(1, 14))
+        assert versions == list(range(1, SCHEMA_VERSION + 1))
         # v1/v2 tables still work
         store.create_run("run-1", controller="none")
         assert store.get_run("run-1")["status"] == "RUNNING"
@@ -74,7 +76,7 @@ def test_reopen_does_not_rerun_migrations(tmp_path):
     store.close()
     store2 = StateStore(db)
     try:
-        assert store2.schema_version() == 13
+        assert store2.schema_version() == SCHEMA_VERSION
         assert store2.get_canonical_job("job::x|1") is not None
     finally:
         store2.close()

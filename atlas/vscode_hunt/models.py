@@ -58,3 +58,52 @@ def result_identity(result: dict[str, Any]) -> tuple[str, str, str]:
 
 RESULT_SCHEMA_VERSION = 2
 TASK_SCHEMA_VERSION = 2
+
+# Canonical five-lane search contract (supersedes the obsolete three-lane one).
+TASK_CONTRACT_VERSION = 3
+
+CANONICAL_LANES: tuple[str, ...] = (
+    "JAVA_BACKEND",
+    "JAVA_FULLSTACK",
+    "REACT_FRONTEND",
+    "DOTNET",
+    "ENTERPRISE_HR_PAYROLL_INTEGRATION",
+)
+
+# Obsolete lane names must never remain active canonical obligations.
+LEGACY_LANE_ALIASES: dict[str, str] = {
+    "DOTNET_BACKEND": "DOTNET",
+    "REACT_ENTERPRISE": "REACT_FRONTEND",
+}
+
+
+def map_lane(lane: str) -> str:
+    """Translate a single legacy lane alias to its canonical name."""
+    return LEGACY_LANE_ALIASES.get(lane, lane)
+
+
+def normalize_lanes(lanes: Any) -> tuple[str, ...]:
+    """Map any legacy aliases to canonical names, de-duplicating in canonical order.
+
+    An empty/absent input yields the full canonical five-lane set.
+    """
+    if not lanes:
+        return CANONICAL_LANES
+    mapped = {map_lane(str(lane)) for lane in lanes}
+    ordered = [lane for lane in CANONICAL_LANES if lane in mapped]
+    extra = [lane for lane in dict.fromkeys(map_lane(str(lane)) for lane in lanes) if lane not in CANONICAL_LANES]
+    return tuple(ordered + extra)
+
+
+def canonical_contract_lanes(_lanes: Any = None) -> tuple[str, ...]:
+    """The full canonical obligation set every company task must carry."""
+    return CANONICAL_LANES
+
+
+def contract_hash(lanes: Any) -> str:
+    """Stable content hash of a lane set, order-independent."""
+    import hashlib
+    import json as _json
+
+    payload = _json.dumps(sorted(str(lane) for lane in (lanes or ())), separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

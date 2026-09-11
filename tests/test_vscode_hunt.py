@@ -5,7 +5,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from atlas.persistence.sqlite import StateStore
+from atlas.persistence.sqlite import SCHEMA_VERSION, StateStore
 from atlas.vscode_hunt.models import Action, Backend
 from atlas.vscode_hunt.report import SHEETS, build_workbook
 from atlas.vscode_hunt.service import VscodeHuntService
@@ -47,9 +47,9 @@ def test_stateless_follow_up_and_workbook(tmp_path: Path) -> None:
 def test_identity_and_schema_migration_are_idempotent(tmp_path: Path) -> None:
     db = tmp_path / "state.sqlite"
     with StateStore(db) as store:
-        assert store.schema_version() == 13
+        assert store.schema_version() == SCHEMA_VERSION
     with StateStore(db) as store:
-        assert store.schema_version() == 13
+        assert store.schema_version() == SCHEMA_VERSION
         service = VscodeHuntService(store, tmp_path / "evidence")
         run_id = service.create_run([{"company_id": "fixture-a", "name": "Fixture A", "official_domain": "fixture.example"}])
         task = service.next_tasks(run_id)[0]

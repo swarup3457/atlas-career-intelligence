@@ -7,7 +7,7 @@ from pathlib import Path
 from atlas.config import load_settings
 from atlas.persistence.sqlite import StateStore
 
-from .models import Backend
+from .models import Backend, TASK_CONTRACT_VERSION
 from .report import build_workbook
 from .service import VscodeHuntService
 
@@ -43,6 +43,15 @@ def command(args: argparse.Namespace) -> int:
         elif args.vscode_command == "build-workbook":
             path = build_workbook(service.root, args.run_id, store._conn)
             payload = {"run_id": args.run_id, "path": str(path), "sheets": list(__import__("atlas.vscode_hunt.report", fromlist=["SHEETS"]).SHEETS)}
+        elif args.vscode_command == "upgrade-contract":
+            payload = service.upgrade_task_contract(args.run_id)
+        elif args.vscode_command == "mark-interrupted":
+            payload = service.mark_interrupted_uncommitted(args.run_id, args.reason)
+        elif args.vscode_command == "get-task-status":
+            payload = service.get_task_status(args.run_id, args.task_id)
+        elif args.vscode_command == "build-audit-workbook":
+            context = {"status": args.status, "note": args.note, "task_contract_version": TASK_CONTRACT_VERSION, "discovery_reused_from_parent_run": True}
+            payload = service.build_audit_workbook(args.run_id, context)
         elif args.vscode_command == "resume":
             payload = service.status(args.run_id)
         else:
@@ -64,3 +73,7 @@ def register_vscode_hunt_commands(subparsers: argparse._SubParsersAction) -> Non
     p = children.add_parser("validate-task"); p.add_argument("--run-id", required=True); p.add_argument("--task-id", required=True); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)
     for name in ("status", "build-workbook", "resume"):
         p = children.add_parser(name); p.add_argument("--run-id", required=True); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)
+    p = children.add_parser("upgrade-contract"); p.add_argument("--run-id", required=True); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)
+    p = children.add_parser("mark-interrupted"); p.add_argument("--run-id", required=True); p.add_argument("--reason", default="MCP_TOOL_NOT_EXPOSED"); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)
+    p = children.add_parser("get-task-status"); p.add_argument("--run-id", required=True); p.add_argument("--task-id", required=True); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)
+    p = children.add_parser("build-audit-workbook"); p.add_argument("--run-id", required=True); p.add_argument("--status", default=""); p.add_argument("--note", default=""); p.add_argument("--json", action="store_true"); p.set_defaults(func=command)

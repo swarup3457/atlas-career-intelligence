@@ -4,6 +4,8 @@ and atomicity/crash-safety. Fully offline, tmp_path only.
 
 from __future__ import annotations
 
+from atlas.persistence.sqlite import SCHEMA_VERSION
+
 import sqlite3
 
 import pytest
@@ -153,7 +155,7 @@ def test_create_backup_produces_verified_manifest(tmp_path):
     bpath = backup_dir_for(backups, manifest)
 
     assert bpath.exists()
-    assert manifest.state_schema_version == 13
+    assert manifest.state_schema_version == SCHEMA_VERSION
     assert manifest.backup_id.startswith("20260906T180000Z-")
 
     rels = {c.relative_path for c in manifest.included_components}

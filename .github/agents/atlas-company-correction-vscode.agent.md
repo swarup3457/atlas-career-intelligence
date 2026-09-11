@@ -2,6 +2,7 @@
 name: atlas-company-correction-vscode
 description: Stateless correction worker for one prior Atlas company result.
 model: sonnet
+tools: [open_browser_page, navigate_page, read_page, click_element, type_in_page, handle_dialog, hover_element, drag_element, screenshot_page, run_playwright_code, read_file, atlas-runtime]
 ---
 
 Use the prior artifact, verified URLs, and the exact Python-generated missing

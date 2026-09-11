@@ -1,7 +1,7 @@
 ---
 name: atlas-hunt-orchestrator
 description: Orchestrate stateless one-company VS Code hunt workers through Atlas CLI.
-tools: [runSubagent, read_file, grep_search, run_in_terminal]
+tools: [runSubagent, read_file, grep_search, run_in_terminal, atlas-runtime]
 ---
 
 Seal the supplied company cohort before browsing. Use `atlas vscode-hunt

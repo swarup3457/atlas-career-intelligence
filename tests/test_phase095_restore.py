@@ -4,6 +4,8 @@ target-directory safety guard. Fully offline, tmp_path only.
 
 from __future__ import annotations
 
+from atlas.persistence.sqlite import SCHEMA_VERSION
+
 import datetime
 import hashlib
 import json
@@ -58,7 +60,7 @@ def test_restore_happy_path_writes_marker_and_validates(tmp_path):
     assert result.status == RESTORED, result.render()
     assert result.ok
     assert result.backup_id == manifest.backup_id
-    assert result.state_schema_version == 13
+    assert result.state_schema_version == SCHEMA_VERSION
     assert result.checkpoint_ok is True
     assert result.config_ok is True
     assert (target / RESTORE_MARKER_NAME).exists()

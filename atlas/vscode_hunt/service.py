@@ -11,7 +11,18 @@ from typing import Any
 
 from atlas.persistence.sqlite import StateStore
 
-from .models import Action, Backend, RESULT_SCHEMA_VERSION, TASK_SCHEMA_VERSION, HuntTask, WorkerAttempt
+from .models import (
+    Action,
+    Backend,
+    CANONICAL_LANES,
+    RESULT_SCHEMA_VERSION,
+    TASK_CONTRACT_VERSION,
+    TASK_SCHEMA_VERSION,
+    HuntTask,
+    WorkerAttempt,
+    contract_hash,
+    normalize_lanes,
+)
 from .validation import missing_obligations, validate_result
 from .completion_evaluator import evaluate_completion
 
@@ -38,11 +49,113 @@ class VscodeHuntService:
             for company in companies:
                 task_id = f"{run_id}::{company['company_id']}"
                 payload = dict(company)
-                payload["lanes"] = list(company.get("lanes", ("JAVA_BACKEND", "DOTNET_BACKEND", "REACT_ENTERPRISE")))
+                payload["lanes"] = list(normalize_lanes(company.get("lanes")))
                 self.conn.execute("""INSERT INTO vscode_hunt_tasks
                     (task_id,run_id,company_id,company_name,official_domain,careers_url,lanes_json,status,attempt_number)
                     VALUES(?,?,?,?,?,?,?,?,0)""", (task_id, run_id, company["company_id"], company.get("name", company["company_id"]), company["official_domain"], company.get("careers_url"), json.dumps(payload["lanes"]), "PENDING"))
         return run_id
+
+    def _task_event(self, run_id: str, task_id: str, event_type: str, payload: dict[str, Any]) -> str:
+        # vscode_worker_events.attempt_id is NOT NULL; task-level events use "".
+        event_id = f"event-{uuid.uuid4().hex}"
+        self.conn.execute(
+            "INSERT INTO vscode_worker_events(event_id,run_id,task_id,attempt_id,event_type,payload_json) VALUES(?,?,?,?,?,?)",
+            (event_id, run_id, task_id, "", event_type, json.dumps(payload)),
+        )
+        return event_id
+
+    def upgrade_task_contract(self, run_id: str, target_lanes: tuple[str, ...] = CANONICAL_LANES) -> dict[str, Any]:
+        """Replace obsolete uncommitted lane obligations with the canonical five.
+
+        A task that already carries a durable result commit is never rewritten; it is
+        preserved and reported instead. Each upgrade appends a TASK_CONTRACT_UPGRADED
+        event recording the old and new contract hashes.
+        """
+        tasks = self.conn.execute("SELECT task_id, lanes_json FROM vscode_hunt_tasks WHERE run_id=?", (run_id,)).fetchall()
+        upgraded: list[dict[str, Any]] = []
+        preserved: list[dict[str, Any]] = []
+        new = tuple(target_lanes)
+        with self.conn:
+            for task in tasks:
+                task_id = task["task_id"]
+                old = tuple(json.loads(task["lanes_json"]))
+                committed = self.conn.execute("SELECT 1 FROM vscode_result_commits WHERE task_id=? LIMIT 1", (task_id,)).fetchone()
+                if committed is not None:
+                    preserved.append({"task_id": task_id, "reason": "has_durable_commit", "lanes": list(old)})
+                    continue
+                if old == new:
+                    preserved.append({"task_id": task_id, "reason": "already_canonical", "lanes": list(old)})
+                    continue
+                self.conn.execute("UPDATE vscode_hunt_tasks SET lanes_json=? WHERE task_id=?", (json.dumps(list(new)), task_id))
+                self._task_event(run_id, task_id, "TASK_CONTRACT_UPGRADED", {
+                    "contract_version": TASK_CONTRACT_VERSION,
+                    "from_lanes": list(old), "to_lanes": list(new),
+                    "from_hash": contract_hash(old), "to_hash": contract_hash(new),
+                })
+                upgraded.append({"task_id": task_id, "from": list(old), "to": list(new)})
+        return {"run_id": run_id, "contract_version": TASK_CONTRACT_VERSION, "upgraded": upgraded, "preserved": preserved}
+
+    def mark_interrupted_uncommitted(self, run_id: str, reason: str = "MCP_TOOL_NOT_EXPOSED") -> dict[str, Any]:
+        """Transition OPEN attempts with no durable result commit to INTERRUPTED_UNCOMMITTED.
+
+        Chat-only worker output is never promoted. Attempt identity is preserved and the
+        owning task returns to PENDING so a fresh resume attempt can be created later.
+        """
+        rows = self.conn.execute(
+            """SELECT a.attempt_id AS attempt_id, a.task_id AS task_id
+               FROM vscode_hunt_attempts a
+               JOIN vscode_hunt_tasks t ON t.task_id = a.task_id
+               WHERE t.run_id = ? AND a.status = 'OPEN'""",
+            (run_id,),
+        ).fetchall()
+        transitioned: list[dict[str, Any]] = []
+        with self.conn:
+            for row in rows:
+                attempt_id, task_id = row["attempt_id"], row["task_id"]
+                committed = self.conn.execute("SELECT 1 FROM vscode_result_commits WHERE attempt_id=? LIMIT 1", (attempt_id,)).fetchone()
+                if committed is not None:
+                    continue
+                self.conn.execute("UPDATE vscode_hunt_attempts SET status='INTERRUPTED_UNCOMMITTED' WHERE attempt_id=?", (attempt_id,))
+                task = self.conn.execute("SELECT status FROM vscode_hunt_tasks WHERE task_id=?", (task_id,)).fetchone()
+                if task is not None and task["status"] not in {"COMPLETE", "EXTERNAL_ACCESS_LIMITED"}:
+                    self.conn.execute("UPDATE vscode_hunt_tasks SET status='PENDING' WHERE task_id=?", (task_id,))
+                self._task_event(run_id, task_id, "ATTEMPT_INTERRUPTED_UNCOMMITTED", {"attempt_id": attempt_id, "reason": reason})
+                transitioned.append({"attempt_id": attempt_id, "task_id": task_id, "reason": reason})
+        return {"run_id": run_id, "reason": reason, "interrupted": transitioned}
+
+    def get_task_status(self, run_id: str, task_id: str) -> dict[str, Any]:
+        task = self.conn.execute("SELECT * FROM vscode_hunt_tasks WHERE run_id=? AND task_id=?", (run_id, task_id)).fetchone()
+        if task is None:
+            raise ValueError("unknown task")
+        attempts = self.conn.execute("SELECT attempt_id,status,attempt_number FROM vscode_hunt_attempts WHERE task_id=? ORDER BY attempt_number", (task_id,)).fetchall()
+        commit = self.conn.execute("SELECT commit_id,completion_action,missing_json FROM vscode_result_commits WHERE task_id=? ORDER BY committed_at DESC LIMIT 1", (task_id,)).fetchone()
+        return {
+            "run_id": run_id, "task_id": task_id, "status": task["status"],
+            "lanes": json.loads(task["lanes_json"]),
+            "attempts": [dict(row) for row in attempts],
+            "latest_commit": {"commit_id": commit["commit_id"], "completion_action": commit["completion_action"], "missing_obligations": json.loads(commit["missing_json"])} if commit else None,
+        }
+
+    def commit_result_payload(self, run_id: str, task_id: str, attempt_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Commit an inline result dict so a worker never needs filesystem-write access."""
+        safe_task_id = "".join("_" if char in '<>:"/\\|?*' else char for char in task_id)
+        inbound = Path(self.root) / run_id / safe_task_id / "inbound"
+        inbound.mkdir(parents=True, exist_ok=True)
+        source = inbound / f"{attempt_id}.json"
+        source.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+        return self.commit_result(run_id, task_id, attempt_id, source)
+
+    def build_audit_workbook(self, run_id: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        from .report import build_v32_workbook
+        return {"run_id": run_id, "kind": "Audit", "path": str(build_v32_workbook(self.root, run_id, self.conn, kind="Audit", context=context))}
+
+    def build_checkpoint_workbook(self, run_id: str, sequence: int = 1, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        from .report import build_v32_workbook
+        return {"run_id": run_id, "kind": "Checkpoint", "path": str(build_v32_workbook(self.root, run_id, self.conn, kind="Checkpoint", sequence=sequence, context=context))}
+
+    def build_final_workbook(self, run_id: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        from .report import build_v32_workbook
+        return {"run_id": run_id, "kind": "Final", "path": str(build_v32_workbook(self.root, run_id, self.conn, kind="Final", context=context))}
 
     def next_tasks(self, run_id: str, limit: int = 2, materialize: bool = False) -> list[dict[str, Any]]:
         rows = self.conn.execute("SELECT * FROM vscode_hunt_tasks WHERE run_id=? AND status='PENDING' ORDER BY task_id LIMIT ?", (run_id, limit)).fetchall()
