@@ -92,6 +92,18 @@ def recommendation_tier(job: dict[str, Any]) -> str:
     return "REVIEWABLE"
 
 
+def load_results_by_task(live_root: Path) -> list[dict[str, Any]]:
+    """Latest worker result per task from a live run root (result/correction/final)."""
+    result_paths = sorted(live_root.rglob("result.json"))
+    result_paths += sorted(live_root.rglob("correction-result.json"))
+    result_paths += sorted(live_root.rglob("final-result.json"))
+    by_task: dict[str, dict[str, Any]] = {}
+    for path in result_paths:
+        result = _load(path, {})
+        by_task[str(result.get("task_id", path.parent.name))] = result
+    return list(by_task.values())
+
+
 def build_discovery_workbook(*, evidence_root: Path, live_root: Path, run_id: str, output_root: Path) -> Path:
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = Path(output_root) / run_id / f"Atlas_VSCode_DiscoveryV2_{timestamp}_{run_id}.xlsx"
@@ -109,12 +121,7 @@ def build_discovery_workbook(*, evidence_root: Path, live_root: Path, run_id: st
     result_paths += sorted(live_root.rglob("correction-result.json"))
     result_paths += sorted(live_root.rglob("final-result.json"))
     all_result_paths = list(result_paths)
-    result_by_task: dict[str, dict[str, Any]] = {}
-    for path in result_paths:
-        result = _load(path, {})
-        task_key = str(result.get("task_id", path.parent.name))
-        result_by_task[task_key] = result
-    results = list(result_by_task.values())
+    results = load_results_by_task(live_root)
     attempt_by_id: dict[str, dict[str, Any]] = {}
     for path in all_result_paths:
         attempt = _load(path, {})
