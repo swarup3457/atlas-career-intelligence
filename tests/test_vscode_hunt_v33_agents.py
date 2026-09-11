@@ -180,3 +180,24 @@ def test_invalid_recovery_retry_preserves_invalid_commit_and_parent(tmp_path: Pa
         assert retry["parent_commit_id"] == parent["commit_id"]
         preserved = store._conn.execute("SELECT validation_state FROM vscode_result_commits WHERE commit_id=?", (rejected["commit_id"],)).fetchone()
         assert preserved["validation_state"] == "INVALID"
+
+
+def test_interrupted_recovery_can_resume_with_linked_attempt(tmp_path: Path) -> None:
+    with StateStore(tmp_path / "state.sqlite") as store:
+        service = VscodeHuntService(store, tmp_path / "out")
+        run_id = service.create_run([{"company_id": "co", "name": "Co", "official_domain": "co.example"}])
+        task = service.next_tasks(run_id, materialize=True)[0]
+        first = service.record_attempt(run_id, task["task_id"], "attempt-v32", Backend.VSCODE_SUBAGENT)
+        parent = service.commit_result_payload(run_id, task["task_id"], first.attempt_id, _browser_failure(run_id, task["task_id"], first.attempt_id))
+        reopened = service.reopen_browser_recovery(
+            run_id, task["task_id"], expected_commit_id=parent["commit_id"],
+            expected_result_sha256=parent["result_sha256"], browser_backend="VSCODE_NATIVE_BROWSER",
+        )
+        service.start_attempt(run_id, task["task_id"], reopened["new_attempt_id"])
+        service.mark_interrupted_uncommitted(run_id, "test interruption")
+        resumed = service.resume_interrupted_recovery(
+            run_id, task["task_id"], parent_attempt_id=reopened["new_attempt_id"],
+            browser_backend="VSCODE_NATIVE_BROWSER",
+        )
+        assert resumed["parent_attempt_id"] == reopened["new_attempt_id"]
+        assert store._conn.execute("SELECT status FROM vscode_hunt_attempts WHERE attempt_id=?", (reopened["new_attempt_id"],)).fetchone()["status"] == "INTERRUPTED_UNCOMMITTED"

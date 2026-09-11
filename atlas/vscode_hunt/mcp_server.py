@@ -97,6 +97,10 @@ def build_runtime_server(service: VscodeHuntService | None = None):
         return service.retry_invalid_recovery(run_id, task_id, expected_invalid_commit_id=expected_invalid_commit_id, browser_backend=browser_backend)
 
     @server.tool()
+    def resume_interrupted_recovery(run_id: str, task_id: str, parent_attempt_id: str, browser_backend: str) -> dict:
+        return service.resume_interrupted_recovery(run_id, task_id, parent_attempt_id=parent_attempt_id, browser_backend=browser_backend)
+
+    @server.tool()
     def mark_interrupted_uncommitted(run_id: str, reason: str = "MCP_TOOL_NOT_EXPOSED") -> dict:
         return service.mark_interrupted_uncommitted(run_id, reason)
 
