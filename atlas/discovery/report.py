@@ -7,6 +7,8 @@ from typing import Any
 
 from openpyxl import Workbook, load_workbook
 
+from atlas.reporting.trust_boundary import partition_jobs
+
 SHEETS = (
     "Validated_Jobs", "Rejected_Jobs", "Foreign_Leads", "Raw_Job_Leads",
     "Discovery_Providers", "Company_Candidates", "Official_Verification",
@@ -125,14 +127,19 @@ def build_discovery_workbook(*, evidence_root: Path, live_root: Path, run_id: st
 
     ws = wb["Validated_Jobs"]
     ws.append(["company", "title", "India location", "official_url", "requisition", "product_category", "discovery_source", "role_lane", "backend_stack", "frontend_stack", "experience", "posted_date", "recommendation", "strengths", "gaps", "verification_status"])
+    validated_total = 0
+    proposal_rejections_all: list[tuple[Any, Any]] = []
     for result in results:
-        for job in result.get("jobs", []):
-            if str(job.get("proposed_decision", "")).lower() not in {"accept", "accepted", "propose", "validate"}:
-                continue
-            stack = job.get("stack", [])
+        company_label = result.get("company_id", result.get("company", ""))
+        validated_jobs, proposal_rejections = partition_jobs(result.get("jobs", []), official_domain=str(result.get("official_domain", "")), company=str(result.get("company", result.get("company_id", ""))))
+        validated_total += len(validated_jobs)
+        proposal_rejections_all.extend((company_label, rej) for rej in proposal_rejections)
+        for vj in validated_jobs:
+            ev = vj.evidence
+            stack = vj.source.get("stack", []) or []
             frontend = [x for x in stack if str(x).lower() in {"react", "reactjs", "angular", "vue", "typescript", "javascript", "html", "css"}]
             backend = [x for x in stack if x not in frontend]
-            ws.append([result.get("company_id", result.get("company", "")), job.get("title", ""), job.get("location", ""), job.get("canonical_url", job.get("official_url", "")), job.get("requisition_id", job.get("requisition", "")), "", "; ".join(result.get("discovery_provenance", {}).values()), job.get("lane", ""), ", ".join(backend), ", ".join(frontend), job.get("experience_text", ""), job.get("posted_date", ""), recommendation_tier(job), "", "", "PYTHON_VALIDATED"])
+            ws.append([company_label, ev.title, ev.location, ev.official_url, ev.requisition_id, "", "; ".join(result.get("discovery_provenance", {}).values()), vj.lane, ", ".join(backend), ", ".join(frontend), ev.experience_text, ev.posted_date, vj.recommendation, "", "", vj.verification_status])
 
     for name, headers in {
         "Rejected_Jobs": ["company", "title", "location", "url", "lane", "reason_code", "detail"],
@@ -165,6 +172,9 @@ def build_discovery_workbook(*, evidence_root: Path, live_root: Path, run_id: st
                 seen_foreign.add(key)
                 wb["Foreign_Leads"].append([company, foreign.get("title", ""), foreign.get("location", ""), foreign.get("url", foreign.get("official_url", "")), foreign.get("reason", "NON_INDIA_LOCATION")])
 
+    for company_label, rej in proposal_rejections_all:
+        wb["Rejected_Jobs"].append([company_label, rej.title, rej.location, rej.url, rej.lane, rej.reason_code, rej.detail])
+
     for result in results:
         company = result.get("company", result.get("company_id", ""))
         states = result.get("result_states", {})
@@ -191,7 +201,7 @@ def build_discovery_workbook(*, evidence_root: Path, live_root: Path, run_id: st
         wb["Company_Candidates"].append([candidate.get("company", ""), candidate.get("official_domain", ""), candidate.get("category", ""), candidate.get("discovery_query", "job-first"), candidate.get("strongest_job", ""), candidate.get("india_evidence", ""), candidate.get("confidence", ""), candidate.get("freshness", ""), candidate.get("status", "")])
         wb["Official_Verification"].append([candidate.get("company", ""), candidate.get("company_id", ""), candidate.get("official_domain", ""), candidate.get("careers_url", ""), candidate.get("verified", True), candidate.get("verified_job_count", 0), candidate.get("strongest_job", ""), candidate.get("india_evidence", ""), candidate.get("role_stack_evidence", ""), candidate.get("experience_evidence", ""), json.dumps(candidate.get("source_health", {}), sort_keys=True), candidate.get("selected", False), candidate.get("selection_reason", ""), candidate.get("deferral_reason", "")])
     deduped_count = len({_lead_identity(lead) for lead in raw})
-    validated_count = sum(1 for r in results for j in r.get("jobs", []) if str(j.get("proposed_decision", "")).lower() in {"accept", "accepted", "propose", "validate"})
+    validated_count = validated_total
     rejected_count = sum(len(r.get("rejections", [])) for r in results)
     foreign_count = sum(len(r.get("foreign_leads", [])) for r in results)
     wb["Run_Summary"].append([run_id, len(raw), deduped_count, len(queued), len(results), validated_count, rejected_count, foreign_count, len(results)])

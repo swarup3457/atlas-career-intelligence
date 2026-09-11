@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import secrets
+import subprocess
 import uuid
 import datetime
 import shutil
@@ -16,6 +18,7 @@ from .models import (
     Backend,
     CANONICAL_LANES,
     RESULT_SCHEMA_VERSION,
+    RUNTIME_CONTRACT_VERSION,
     TASK_CONTRACT_VERSION,
     TASK_SCHEMA_VERSION,
     HuntTask,
@@ -41,12 +44,41 @@ IN_FLIGHT_TASK_STATUSES = ("PENDING", "CLAIMED", "RUNNING", "LEASED", "FOLLOW_UP
 PARTIAL_TERMINAL_STATUSES = ("NEEDS_REPAIR", "EXTERNAL_ACCESS_LIMITED")
 
 
+@functools.lru_cache(maxsize=1)
+def _code_version() -> str:
+    """Best-effort Git HEAD of the running code (empty when unavailable)."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(Path(__file__).resolve().parents[2]),
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def runtime_handshake_is_current(handshake: dict[str, Any], *, expected_schema_version: int | None = None) -> bool:
+    """True when the live runtime matches this code's contract (§5 staleness gate).
+
+    A stale server (older code still running, or a DB on an older migration) fails
+    this check, and the root must not start a live search until it is refreshed.
+    """
+    from atlas.persistence.sqlite import SCHEMA_VERSION
+
+    expected = SCHEMA_VERSION if expected_schema_version is None else expected_schema_version
+    return (
+        int(handshake.get("runtime_contract_version", -1)) == RUNTIME_CONTRACT_VERSION
+        and int(handshake.get("database_schema_version", -1)) == expected
+    )
+
+
 class VscodeHuntService:
     def __init__(self, store: StateStore, root: Path):
         self.store = store
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.conn = store._conn  # StateStore is the sole owner of this connection.
+        self._server_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def create_run(self, companies: list[dict[str, Any]], run_id: str | None = None) -> str:
         run_id = run_id or f"vscode-{uuid.uuid4().hex}"
@@ -484,4 +516,17 @@ class VscodeHuntService:
     def status(self, run_id: str) -> dict[str, Any]:
         rows = self.conn.execute("SELECT status,COUNT(*) AS n FROM vscode_hunt_tasks WHERE run_id=? GROUP BY status", (run_id,)).fetchall()
         counts = {row["status"]: row["n"] for row in rows}
-        return {"run_id": run_id, "counts": counts, "all_tasks_terminal": not any(status in counts for status in IN_FLIGHT_TASK_STATUSES)}
+        return {
+            "run_id": run_id, "counts": counts,
+            "all_tasks_terminal": not any(status in counts for status in IN_FLIGHT_TASK_STATUSES),
+            "runtime_handshake": self.runtime_handshake(),
+        }
+
+    def runtime_handshake(self) -> dict[str, Any]:
+        """Stable handshake (§5) so a session preflight can detect a stale server."""
+        return {
+            "runtime_contract_version": RUNTIME_CONTRACT_VERSION,
+            "code_version": _code_version(),
+            "database_schema_version": self.store.schema_version(),
+            "server_started_at": self._server_started_at,
+        }

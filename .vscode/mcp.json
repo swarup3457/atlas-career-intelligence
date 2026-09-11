@@ -8,6 +8,9 @@
       "env": {
         "PYTHONUNBUFFERED": "1",
         "PYTHONUTF8": "1"
+      },
+      "dev": {
+        "watch": "atlas/vscode_hunt/**/*.py"
       }
     }
   }

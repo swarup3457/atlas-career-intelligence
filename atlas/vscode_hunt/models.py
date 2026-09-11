@@ -62,6 +62,10 @@ TASK_SCHEMA_VERSION = 2
 # Canonical five-lane search contract (supersedes the obsolete three-lane one).
 TASK_CONTRACT_VERSION = 3
 
+# Runtime handshake contract (PRODUCTION R1 §5): bumped when the runtime tool
+# response contract changes, so a session preflight can detect a stale server.
+RUNTIME_CONTRACT_VERSION = 1
+
 CANONICAL_LANES: tuple[str, ...] = (
     "JAVA_BACKEND",
     "JAVA_FULLSTACK",

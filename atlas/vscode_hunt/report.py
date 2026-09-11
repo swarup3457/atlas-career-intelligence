@@ -8,6 +8,8 @@ from typing import Any
 
 from openpyxl import Workbook, load_workbook
 
+from atlas.reporting.trust_boundary import partition_jobs
+
 SHEETS = ("Validated_Jobs", "Rejected_Jobs", "Foreign_Leads", "Company_Coverage", "Lane_Coverage", "Evidence_Audit", "Session_Audit", "Run_Summary")
 
 # Full V3.2 audit/checkpoint/final workbook: 16 immutable sheets.
@@ -45,12 +47,15 @@ def build_workbook(root: Path, run_id: str, conn: Any) -> Path:
                 results.append(json.loads(Path(attempt["result_path"]).read_text(encoding="utf-8")))
         final = results[-1] if results else {}
         workbook["Company_Coverage"].append([task["task_id"], task["company_id"], task["company_name"], task["official_domain"], task["status"], len(task_attempts), len(final.get("detail_urls", [])), len(final.get("browser_errors", []))])
-        for job in final.get("jobs", []):
-            if str(job.get("proposed_decision", "accept")).lower() not in {"accept", "accepted", "validate"}:
-                continue
-            workbook["Validated_Jobs"].append([task["company_name"], job.get("title", ""), job.get("location", ""), job.get("canonical_url", job.get("official_url", "")), job.get("requisition_id", ""), job.get("lane", ""), ", ".join(job.get("stack", [])) if isinstance(job.get("stack"), list) else job.get("stack", ""), job.get("experience", job.get("experience_text", "")), job.get("posted_date", ""), "MANUAL_REVIEW", "", "", "PYTHON_VALIDATED"])
+        validated_jobs, proposal_rejections = partition_jobs(final.get("jobs", []), official_domain=task["official_domain"], company=task["company_name"])
+        for vj in validated_jobs:
+            ev = vj.evidence
+            stack = vj.source.get("stack")
+            workbook["Validated_Jobs"].append([task["company_name"], ev.title, ev.location, ev.official_url, ev.requisition_id, vj.lane, ", ".join(stack) if isinstance(stack, list) else (stack or ""), ev.experience_text, ev.posted_date, vj.recommendation, "", "", vj.verification_status])
         for rejection in final.get("rejections", []):
             workbook["Rejected_Jobs"].append([task["company_name"], rejection.get("title", ""), rejection.get("location", ""), rejection.get("url", ""), rejection.get("lane", ""), rejection.get("reason_code", ""), rejection.get("detail", rejection.get("reason", ""))])
+        for rej in proposal_rejections:
+            workbook["Rejected_Jobs"].append([task["company_name"], rej.title, rej.location, rej.url, rej.lane, rej.reason_code, rej.detail])
         for foreign in final.get("foreign_leads", []):
             workbook["Foreign_Leads"].append([task["company_name"], foreign.get("title", ""), foreign.get("location", ""), foreign.get("url", ""), foreign.get("reason", "NON_INDIA_LOCATION")])
     workbook["Lane_Coverage"].append(["task_id", "company", "lane", "result_state", "terminal"])
@@ -146,13 +151,15 @@ def build_v32_workbook(root: Path, run_id: str, conn: Any, *, kind: str = "Audit
         workbook["Official_Verification"].append([task["company_id"], task["company_name"], task["official_domain"], task["careers_url"] or "", result.get("verification_status", "PENDING_LIVE_VERIFICATION") if result else "PENDING_LIVE_VERIFICATION"])
         workbook["Selection_Audit"].append([task["company_id"], task["company_name"], True, "sealed_cohort_member", reused])
         workbook["Company_Candidates"].append([task["company_id"], task["company_name"], task["official_domain"], "parent_run", True, reused])
-        for job in result.get("jobs", []) or []:
-            if str(job.get("proposed_decision", "accept")).lower() not in {"accept", "accepted", "validate"}:
-                continue
-            stack = job.get("stack")
-            workbook["Validated_Jobs"].append([task["company_name"], job.get("title", ""), job.get("location", ""), job.get("canonical_url", job.get("official_url", "")), job.get("requisition_id", ""), job.get("lane", ""), ", ".join(stack) if isinstance(stack, list) else (stack or ""), job.get("experience", job.get("experience_text", "")), job.get("posted_date", ""), "MANUAL_REVIEW", "PYTHON_VALIDATED"])
+        validated_jobs, proposal_rejections = partition_jobs(result.get("jobs", []), official_domain=task["official_domain"], company=task["company_name"])
+        for vj in validated_jobs:
+            ev = vj.evidence
+            stack = vj.source.get("stack")
+            workbook["Validated_Jobs"].append([task["company_name"], ev.title, ev.location, ev.official_url, ev.requisition_id, vj.lane, ", ".join(stack) if isinstance(stack, list) else (stack or ""), ev.experience_text, ev.posted_date, vj.recommendation, vj.verification_status])
         for rej in result.get("rejections", []) or []:
             workbook["Rejected_Jobs"].append([task["company_name"], rej.get("title", ""), rej.get("location", ""), rej.get("url", ""), rej.get("lane", ""), rej.get("reason_code", ""), rej.get("detail", rej.get("reason", ""))])
+        for rej in proposal_rejections:
+            workbook["Rejected_Jobs"].append([task["company_name"], rej.title, rej.location, rej.url, rej.lane, rej.reason_code, rej.detail])
         for foreign in result.get("foreign_leads", []) or []:
             workbook["Foreign_Leads"].append([task["company_name"], foreign.get("title", ""), foreign.get("location", ""), foreign.get("url", ""), foreign.get("reason", "NON_INDIA_LOCATION")])
         states = {}
