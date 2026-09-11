@@ -222,3 +222,49 @@ def test_completion_requires_every_canonical_lane() -> None:
     decision = evaluate_completion(missing_one, CANONICAL_LANES)
     assert decision.action == "FOLLOW_UP_REQUIRED"
     assert f"lane:{CANONICAL_LANES[-1]}" in decision.missing_obligations
+
+
+# --------------------------------------------------------------------------- #
+# Terminality correctness: status() and finalize_run() (§2B)
+# --------------------------------------------------------------------------- #
+def test_status_and_finalize_block_while_running(tmp_path: Path) -> None:
+    store, service = _service(tmp_path)
+    with store:
+        run_id = service.create_run([_company()])
+        task = service.next_tasks(run_id, materialize=True)[0]
+        service.record_attempt(run_id, task["task_id"], "attempt-1", Backend.VSCODE_SUBAGENT)
+        # RUNNING task with an OPEN attempt: not terminal, cannot finish.
+        assert service.status(run_id)["all_tasks_terminal"] is False
+        final = service.finalize_run(run_id)
+        assert final["can_finish"] is False
+        assert final["overall_status"] is None
+        assert final["open_attempts"] == 1
+        assert final["required_actions"]
+
+
+def test_finalize_pass_when_all_complete(tmp_path: Path) -> None:
+    store, service = _service(tmp_path)
+    with store:
+        run_id = service.create_run([_company()])
+        task = service.next_tasks(run_id, materialize=True)[0]
+        attempt = service.record_attempt(run_id, task["task_id"], "attempt-1", Backend.VSCODE_SUBAGENT)
+        service.commit_result_payload(run_id, task["task_id"], attempt.attempt_id, _valid_result(run_id, task["task_id"], attempt.attempt_id))
+        assert service.status(run_id)["all_tasks_terminal"] is True
+        final = service.finalize_run(run_id)
+        assert final["can_finish"] is True
+        assert final["overall_status"] == "PASS"
+
+
+def test_finalize_partial_on_external_access_limited(tmp_path: Path) -> None:
+    store, service = _service(tmp_path)
+    with store:
+        run_id = service.create_run([_company()])
+        task = service.next_tasks(run_id, materialize=True)[0]
+        attempt = service.record_attempt(run_id, task["task_id"], "attempt-1", Backend.VSCODE_SUBAGENT)
+        result = _valid_result(run_id, task["task_id"], attempt.attempt_id)
+        result["external_block_evidence"] = "HTTP 429 sustained across retries"
+        ack = service.commit_result_payload(run_id, task["task_id"], attempt.attempt_id, result)
+        assert ack["completion_action"] == "EXTERNAL_ACCESS_LIMITED"
+        final = service.finalize_run(run_id)
+        assert final["can_finish"] is True
+        assert final["overall_status"] == "PARTIAL"

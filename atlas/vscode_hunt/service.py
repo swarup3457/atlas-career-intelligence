@@ -35,6 +35,12 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# A task in any of these statuses still owes live work and blocks completion.
+IN_FLIGHT_TASK_STATUSES = ("PENDING", "CLAIMED", "RUNNING", "LEASED", "FOLLOW_UP_REQUIRED", "REJECTED_INVALID_RESULT")
+# Terminal states that are acceptable only for a truthful PARTIAL run.
+PARTIAL_TERMINAL_STATUSES = ("NEEDS_REPAIR", "EXTERNAL_ACCESS_LIMITED")
+
+
 class VscodeHuntService:
     def __init__(self, store: StateStore, root: Path):
         self.store = store
@@ -227,15 +233,43 @@ class VscodeHuntService:
         return {"commit_id": commit_id, "result_sha256": result_hash, "task_status": action, "completion_action": action, "missing_obligations": missing, "result_path": str(durable)}
 
     def finalize_run(self, run_id: str) -> dict[str, Any]:
-        tasks = self.conn.execute("SELECT status FROM vscode_hunt_tasks WHERE run_id=?", (run_id,)).fetchall()
-        commits = self.conn.execute("SELECT COUNT(*) AS n FROM vscode_result_commits WHERE run_id=?", (run_id,)).fetchone()["n"]
-        failures = []
-        if any(row["status"] in {"PENDING", "RUNNING", "LEASED", "FOLLOW_UP_REQUIRED", "NEEDS_REPAIR", "REJECTED_INVALID_RESULT"} for row in tasks):
-            failures.append("nonterminal tasks remain")
-        if commits < len(tasks):
-            failures.append("worker invocation/result commit invariant failed")
+        task_rows = self.conn.execute("SELECT task_id,status FROM vscode_hunt_tasks WHERE run_id=?", (run_id,)).fetchall()
+        attempts = self.conn.execute("SELECT attempt_id,status,task_id FROM vscode_hunt_attempts WHERE task_id IN (SELECT task_id FROM vscode_hunt_tasks WHERE run_id=?)", (run_id,)).fetchall()
+        commits = self.conn.execute("SELECT task_id,attempt_id,validation_state FROM vscode_result_commits WHERE run_id=?", (run_id,)).fetchall()
+
+        in_flight = [row["task_id"] for row in task_rows if row["status"] in IN_FLIGHT_TASK_STATUSES]
+        open_attempts = [row["attempt_id"] for row in attempts if row["status"] == "OPEN"]
+        committed_task_ids = {row["task_id"] for row in commits}
+        interrupted_task_ids = {row["task_id"] for row in attempts if row["status"] == "INTERRUPTED_UNCOMMITTED"}
+        undurable = [row["task_id"] for row in task_rows if row["task_id"] not in committed_task_ids and row["task_id"] not in interrupted_task_ids]
+
+        failures: list[str] = []
+        required_actions: list[str] = []
+        if in_flight:
+            failures.append(f"nonterminal tasks remain: {in_flight}")
+            required_actions.append(f"resolve nonterminal tasks: {in_flight}")
+        if open_attempts:
+            failures.append(f"open uncommitted attempts remain: {open_attempts}")
+            required_actions.append("commit or transition every OPEN attempt to an interrupted/error terminal state")
+        if undurable:
+            failures.append(f"tasks without a durable commit or interrupted record: {undurable}")
+            required_actions.append("ensure each task has a durable commit or an interrupted/error record")
+
         can_finish = not failures
-        return {"can_finish": can_finish, "run_id": run_id, "failures": failures, "committed_results": commits, "tasks": len(tasks)}
+        overall_status = None
+        if can_finish:
+            overall_status = "PARTIAL" if any(row["status"] in PARTIAL_TERMINAL_STATUSES for row in task_rows) else "PASS"
+        return {
+            "can_finish": can_finish,
+            "run_id": run_id,
+            "overall_status": overall_status,
+            "failures": failures,
+            "required_actions": required_actions,
+            "tasks": len(task_rows),
+            "attempts": len(attempts),
+            "committed_results": len(commits),
+            "open_attempts": len(open_attempts),
+        }
 
     def ingest(self, run_id: str, task_id: str, attempt_id: str, path: Path) -> dict[str, Any]:
         result_hash = _hash_file(path)
@@ -261,4 +295,4 @@ class VscodeHuntService:
     def status(self, run_id: str) -> dict[str, Any]:
         rows = self.conn.execute("SELECT status,COUNT(*) AS n FROM vscode_hunt_tasks WHERE run_id=? GROUP BY status", (run_id,)).fetchall()
         counts = {row["status"]: row["n"] for row in rows}
-        return {"run_id": run_id, "counts": counts, "all_tasks_terminal": not any(k in counts for k in ("PENDING", "LEASED", "FOLLOW_UP_REQUIRED", "REJECTED_INVALID_RESULT", "NEEDS_REPAIR"))}
+        return {"run_id": run_id, "counts": counts, "all_tasks_terminal": not any(status in counts for status in IN_FLIGHT_TASK_STATUSES)}
