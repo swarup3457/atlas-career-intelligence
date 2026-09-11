@@ -1102,6 +1102,33 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "ALTER TABLE vscode_hunt_attempts ADD COLUMN finished_at TEXT",
         ],
     ),
+    (
+        16,
+        "typed VS Code verification batch tasks and lead items",
+        [
+            "ALTER TABLE vscode_hunt_runs ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE vscode_hunt_tasks ADD COLUMN task_kind TEXT NOT NULL DEFAULT 'COMPANY_SEARCH'",
+            "ALTER TABLE vscode_hunt_tasks ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE vscode_hunt_tasks ADD COLUMN manifest_hash TEXT",
+            "ALTER TABLE vscode_hunt_attempts ADD COLUMN correction_number INTEGER NOT NULL DEFAULT 0",
+            """
+            CREATE TABLE IF NOT EXISTS vscode_verification_items (
+                task_id TEXT NOT NULL REFERENCES vscode_hunt_tasks(task_id),
+                lead_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                classification TEXT,
+                latest_attempt_id TEXT,
+                latest_commit_id TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (task_id, lead_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_vscode_verification_items_task ON vscode_verification_items(task_id, status)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)

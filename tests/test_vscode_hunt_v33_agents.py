@@ -15,6 +15,7 @@ WORKER_AGENTS = [
     "atlas-company-correction-vscode.agent.md",
     "atlas-company-discovery-vscode.agent.md",
     "atlas-company-verification-vscode.agent.md",
+    "atlas-job-lead-verifier-vscode.agent.md",
 ]
 CAMEL_BROWSER = [
     "openBrowserPage", "navigatePage", "readPage", "clickElement", "typeInPage",

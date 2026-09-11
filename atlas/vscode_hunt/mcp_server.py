@@ -26,10 +26,23 @@ def build_runtime_server(service: VscodeHuntService | None = None):
     # ---- Worker operations (narrow, attempt-scoped) --------------------------
     @server.tool()
     def get_task_context(run_id: str, task_id: str, attempt_id: str) -> dict:
-        row = conn.execute("SELECT * FROM vscode_hunt_tasks WHERE run_id=? AND task_id=?", (run_id, task_id)).fetchone()
-        if row is None:
-            raise ValueError("unknown task")
-        return {"run_id": run_id, "task_id": task_id, "attempt_id": attempt_id, "company": row["company_name"], "official_domain": row["official_domain"], "careers_url": row["careers_url"], "lanes": json.loads(row["lanes_json"]), "status": row["status"]}
+        return service.get_task_context(run_id, task_id, attempt_id)
+
+    @server.tool()
+    def create_verification_run(manifest: dict, run_id: str | None = None) -> dict:
+        """Create or verify an idempotent sealed four-batch verification run."""
+        return {"run_id": service.create_verification_run(manifest, run_id)}
+
+    @server.tool()
+    def create_or_start_attempt(run_id: str, task_id: str, worker_invocation_id: str, backend: str = "VSCODE_SUBAGENT", model: str | None = None, correction: bool = False) -> dict:
+        """Create one primary or bounded correction attempt for a verification batch."""
+        attempt = service.create_or_start_attempt(run_id, task_id, worker_invocation_id=worker_invocation_id, backend=Backend(backend), model=model, correction=correction)
+        return {"run_id": run_id, "task_id": task_id, "attempt_id": attempt.attempt_id, "attempt_number": attempt.attempt_number, "status": "OPEN", "worker_invocation_id": worker_invocation_id}
+
+    @server.tool()
+    def record_lead_checkpoint(run_id: str, task_id: str, attempt_id: str, lead_id: str, payload: dict) -> dict:
+        """Record one attempt-scoped verification lead checkpoint."""
+        return service.record_lead_checkpoint(run_id, task_id, attempt_id, lead_id, payload)
 
     @server.tool()
     def heartbeat(run_id: str, task_id: str, attempt_id: str, payload: dict | None = None) -> dict:
@@ -66,6 +79,16 @@ def build_runtime_server(service: VscodeHuntService | None = None):
         if result_path:
             return service.commit_result(run_id, task_id, attempt_id, Path(result_path))
         raise ValueError("commit_result requires either an inline result payload or a result_path")
+
+    @server.tool()
+    def get_ready_tasks(run_id: str, limit: int = 4) -> dict:
+        """Return sealed verification batches ready for host-side dispatch."""
+        return {"run_id": run_id, "tasks": service.get_ready_tasks(run_id, limit)}
+
+    @server.tool()
+    def advance_verification_run(run_id: str) -> dict:
+        """Return the deterministic fan-out handoff; this tool never invokes workers."""
+        return service.advance_verification_run(run_id)
 
     # ---- Root operations (run-scoped) ---------------------------------------
     @server.tool()
