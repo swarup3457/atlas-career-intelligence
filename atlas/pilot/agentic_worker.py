@@ -161,7 +161,7 @@ class AgenticCompanySearchWorker:
         for lane in remaining:
             # re-anchor on the careers entry so a search input is present
             if entry:
-                nav = tb.browser_goto_search(entry) if "?" in entry else tb.browser_start(entry)
+                nav = tb.browser_goto_search(entry) if "?" in entry else tb._guard(tb._ensure_actor().navigate_existing, entry, is_navigation=True)
                 if not nav.get("ok") and tb._browser_access_limited:
                     return
             for q in (self.config.query_for(lane) or ["Java"])[:1]:

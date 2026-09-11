@@ -23,6 +23,7 @@ wall is reported truthfully.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 import time
 from dataclasses import dataclass, field
@@ -329,7 +330,12 @@ class CompanyBrowserActor:
         try:
             return fut.result(timeout=timeout if timeout is not None else self.action_timeout_s)
         except Exception as exc:  # noqa: BLE001
-            fut.cancel()
+            if not fut.done():
+                fut.cancel()
+                try:
+                    fut.result(timeout=1)
+                except (Exception, concurrent.futures.CancelledError):
+                    pass
             name = type(exc).__name__
             self.diagnostics.append(f"{name}: {str(exc)[:160]}")
             raise BrowserActorError(f"{name}: {exc}") from exc
@@ -360,8 +366,20 @@ class CompanyBrowserActor:
             raise BrowserActorError(f"refused non-HTTPS start URL: {url}")
         self._entry_domain = host
         self.action_count += 1
-        obs = self._submit(self._start(url), timeout=max(self.action_timeout_s, self.nav_timeout_ms / 1000 + 10))
+        operation = self._navigate_existing(url) if self._page is not None else self._start(url)
+        obs = self._submit(operation, timeout=max(self.action_timeout_s, self.nav_timeout_ms / 1000 + 10))
         return obs.to_dict()
+
+    def navigate_existing(self, url: str) -> dict:
+        """Navigate the already-open page without creating another Playwright session."""
+        host = _host(url)
+        if not url.lower().startswith("https://") and host not in self.allow_http_hosts:
+            raise BrowserActorError(f"refused non-HTTPS navigation URL: {url}")
+        if self._page is None:
+            return self.start(url)
+        self._entry_domain = host
+        self.action_count += 1
+        return self._submit(self._navigate_existing(url), timeout=max(self.action_timeout_s, self.nav_timeout_ms / 1000 + 10)).to_dict()
 
     async def _start(self, url: str) -> Observation:
         from playwright.async_api import async_playwright
@@ -386,6 +404,12 @@ class CompanyBrowserActor:
         self._page.set_default_timeout(self.nav_timeout_ms)
         self._page.on("response", self._on_response)
         self._page.on("framenavigated", self._on_nav)
+        await self._page.goto(url, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
+        return await self._observe()
+
+    async def _navigate_existing(self, url: str) -> Observation:
+        if not self._trusted(url) and _host(url) not in self.allow_http_hosts:
+            raise BrowserActorError(f"refused untrusted navigation URL: {url}")
         await self._page.goto(url, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
         return await self._observe()
 
@@ -625,10 +649,18 @@ class CompanyBrowserActor:
             if self._context is not None:
                 await self._context.close()
         finally:
-            if self._browser is not None:
-                await self._browser.close()
-            if self._pw is not None:
-                await self._pw.stop()
+            try:
+                if self._browser is not None:
+                    await self._browser.close()
+            finally:
+                if self._pw is not None:
+                    await self._pw.stop()
+        current = asyncio.current_task()
+        pending = [task for task in asyncio.all_tasks() if task is not current and not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     # -- context manager -----------------------------------------------------
     def __enter__(self) -> "CompanyBrowserActor":

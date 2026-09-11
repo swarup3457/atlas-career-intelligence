@@ -132,6 +132,40 @@ def test_state_survives_between_tool_calls(spa_server):
         actor.close()
 
 
+def test_repeated_start_reuses_existing_browser_page(spa_server):
+    actor = _make_actor(spa_server)
+    try:
+        first = actor.start(spa_server)
+        browser, context, page, pw = actor._browser, actor._context, actor._page, actor._pw
+        second = actor.start(spa_server)
+        assert second["url"] == first["url"]
+        assert (actor._browser, actor._context, actor._page, actor._pw) == (browser, context, page, pw)
+    finally:
+        actor.close()
+
+
+def test_existing_page_navigation_preserves_actor_lifecycle(spa_server):
+    actor = _make_actor(spa_server)
+    try:
+        actor.start(spa_server)
+        browser, context, page, pw = actor._browser, actor._context, actor._page, actor._pw
+        result = actor.navigate_existing(spa_server + "?q=Java&loc=India")
+        assert result["url"].endswith("?q=Java&loc=India")
+        assert (actor._browser, actor._context, actor._page, actor._pw) == (browser, context, page, pw)
+    finally:
+        actor.close()
+
+
+def test_close_is_idempotent_and_stops_actor_thread(spa_server):
+    actor = _make_actor(spa_server)
+    actor.start(spa_server)
+    first = actor.close()
+    second = actor.close()
+    assert first["ok"] is True
+    assert second["already_closed"] is True
+    assert not actor._thread.is_alive()
+
+
 def test_two_actors_isolated(spa_server):
     a = _make_actor(spa_server)
     b = _make_actor(spa_server)
