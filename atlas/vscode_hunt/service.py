@@ -4,7 +4,6 @@ import functools
 import hashlib
 import json
 import secrets
-import subprocess
 import uuid
 import datetime
 import shutil
@@ -47,15 +46,29 @@ PARTIAL_TERMINAL_STATUSES = ("NEEDS_REPAIR", "EXTERNAL_ACCESS_LIMITED")
 
 @functools.lru_cache(maxsize=1)
 def _code_version() -> str:
-    """Best-effort Git HEAD of the running code (empty when unavailable)."""
+    """Best-effort Git HEAD of the running code (empty when unavailable).
+
+    Reads the .git refs directly (no subprocess) so it can never block the async
+    MCP server. A git subprocess here hung get_run_status for ~26 min on Windows
+    (blocking subprocess.run inside the event loop), even with a 5s timeout.
+    """
     try:
-        proc = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=str(Path(__file__).resolve().parents[2]),
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+        git_dir = Path(__file__).resolve().parents[2] / ".git"
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref:"):
+            return head  # detached HEAD already holds the commit sha
+        ref = head[4:].strip()
+        ref_path = git_dir / ref
+        if ref_path.exists():
+            return ref_path.read_text(encoding="utf-8").strip()
+        packed = git_dir / "packed-refs"
+        if packed.exists():
+            for line in packed.read_text(encoding="utf-8").splitlines():
+                if line and not line.startswith(("#", "^")) and line.endswith(" " + ref):
+                    return line.split(" ", 1)[0].strip()
         return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+    except (OSError, ValueError):
+        return ""
 
 
 def runtime_handshake_is_current(handshake: dict[str, Any], *, expected_schema_version: int | None = None) -> bool:
