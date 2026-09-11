@@ -22,5 +22,10 @@ ATS URL, full detail text or requirements, exact evidence quotes, title, company
 location, lane, stack, experience, and dates when present. Python independently
 decides acceptance; a worker claim cannot force a workbook row.
 
+Before returning, call the local `atlas-runtime` MCP `commit_result` operation
+with the assigned run/task/attempt identity and result artifact path. Return only
+after receiving `COMMIT_ACK`; a JSON response without commit acknowledgement is
+not a completed task.
+
 Never edit files, use Git or shell, log in, apply, submit forms, bypass access
 controls, or write SQLite/Excel. Do not visit another company's domain.

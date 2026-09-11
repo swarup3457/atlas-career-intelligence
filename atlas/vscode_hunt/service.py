@@ -4,6 +4,8 @@ import hashlib
 import json
 import secrets
 import uuid
+import datetime
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,7 @@ from atlas.persistence.sqlite import StateStore
 
 from .models import Action, Backend, RESULT_SCHEMA_VERSION, TASK_SCHEMA_VERSION, HuntTask, WorkerAttempt
 from .validation import missing_obligations, validate_result
+from .completion_evaluator import evaluate_completion
 
 
 def _hash_file(path: Path) -> str:
@@ -63,9 +66,63 @@ class VscodeHuntService:
         attempt_id = attempt_id or f"attempt-{secrets.token_hex(12)}"
         number = int(row["attempt_number"]) + 1
         with self.conn:
-            self.conn.execute("UPDATE vscode_hunt_tasks SET status='LEASED',attempt_number=? WHERE task_id=?", (number, task_id))
+            self.conn.execute("UPDATE vscode_hunt_tasks SET status='RUNNING',attempt_number=? WHERE task_id=?", (number, task_id))
             self.conn.execute("INSERT INTO vscode_hunt_attempts(attempt_id,task_id,attempt_number,backend,parent_attempt_id,status) VALUES(?,?,?,?,?,?)", (attempt_id, task_id, number, backend.value, parent_attempt_id, "OPEN"))
         return WorkerAttempt(attempt_id, task_id, number, backend, parent_attempt_id)
+
+    def heartbeat(self, run_id: str, task_id: str, attempt_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        attempt = self.conn.execute("SELECT attempt_id FROM vscode_hunt_attempts WHERE attempt_id=? AND task_id=?", (attempt_id, task_id)).fetchone()
+        if attempt is None:
+            raise ValueError("unknown attempt")
+        event_id = f"heartbeat-{uuid.uuid4().hex}"
+        with self.conn:
+            self.conn.execute("INSERT INTO vscode_worker_events(event_id,run_id,task_id,attempt_id,event_type,payload_json) VALUES(?,?,?,?,?,?)", (event_id, run_id, task_id, attempt_id, "HEARTBEAT", json.dumps(payload or {})))
+        return {"event_id": event_id, "attempt_id": attempt_id, "status": "RUNNING"}
+
+    def record_checkpoint(self, run_id: str, task_id: str, attempt_id: str, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        event_id = f"event-{uuid.uuid4().hex}"
+        with self.conn:
+            self.conn.execute("INSERT INTO vscode_worker_events(event_id,run_id,task_id,attempt_id,event_type,payload_json) VALUES(?,?,?,?,?,?)", (event_id, run_id, task_id, attempt_id, event_type, json.dumps(payload)))
+        return {"event_id": event_id, "event_type": event_type}
+
+    def commit_result(self, run_id: str, task_id: str, attempt_id: str, source_path: Path) -> dict[str, Any]:
+        task = self.conn.execute("SELECT * FROM vscode_hunt_tasks WHERE run_id=? AND task_id=?", (run_id, task_id)).fetchone()
+        attempt = self.conn.execute("SELECT * FROM vscode_hunt_attempts WHERE attempt_id=? AND task_id=?", (attempt_id, task_id)).fetchone()
+        if task is None or attempt is None:
+            raise ValueError("unknown task or attempt")
+        result = json.loads(Path(source_path).read_text(encoding="utf-8"))
+        result_hash = _hash_file(source_path)
+        existing = self.conn.execute("SELECT * FROM vscode_result_commits WHERE attempt_id=?", (attempt_id,)).fetchone()
+        if existing:
+            if existing["result_sha256"] != result_hash:
+                raise ValueError("commit conflict: attempt already committed with a different hash")
+            return {"commit_id": existing["commit_id"], "result_sha256": result_hash, "task_status": task["status"], "completion_action": existing["completion_action"], "missing_obligations": json.loads(existing["missing_json"])}
+        errors = validate_result(result, task)
+        decision = evaluate_completion(result, tuple(json.loads(task["lanes_json"]))) if not errors else None
+        action = "REJECTED_INVALID_RESULT" if errors else decision.action
+        missing = errors if errors else list(decision.missing_obligations)
+        commit_id = f"commit-{uuid.uuid4().hex}"
+        durable = Path(self.root) / run_id / "committed" / f"{attempt_id}.json"
+        durable.parent.mkdir(parents=True, exist_ok=True)
+        temp = durable.with_suffix(".tmp")
+        shutil.copyfile(source_path, temp)
+        temp.replace(durable)
+        with self.conn:
+            self.conn.execute("INSERT INTO vscode_result_commits(commit_id,run_id,task_id,attempt_id,worker_invocation_id,result_path,result_sha256,schema_version,validation_state,completion_action,missing_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (commit_id, run_id, task_id, attempt_id, str(result.get("worker_invocation_id", "")), str(durable), result_hash, int(result.get("schema_version", 0)), "VALID" if not errors else "INVALID", action, json.dumps(missing)))
+            self.conn.execute("UPDATE vscode_hunt_attempts SET status=?,result_hash=?,result_path=?,missing_json=? WHERE attempt_id=?", ("RESULT_COMMITTED" if not errors else "INVALID_RESULT", result_hash, str(durable), json.dumps(missing), attempt_id))
+            self.conn.execute("UPDATE vscode_hunt_tasks SET status=? WHERE task_id=?", (action, task_id))
+        return {"commit_id": commit_id, "result_sha256": result_hash, "task_status": action, "completion_action": action, "missing_obligations": missing, "result_path": str(durable)}
+
+    def finalize_run(self, run_id: str) -> dict[str, Any]:
+        tasks = self.conn.execute("SELECT status FROM vscode_hunt_tasks WHERE run_id=?", (run_id,)).fetchall()
+        commits = self.conn.execute("SELECT COUNT(*) AS n FROM vscode_result_commits WHERE run_id=?", (run_id,)).fetchone()["n"]
+        failures = []
+        if any(row["status"] in {"PENDING", "RUNNING", "LEASED", "FOLLOW_UP_REQUIRED", "NEEDS_REPAIR", "REJECTED_INVALID_RESULT"} for row in tasks):
+            failures.append("nonterminal tasks remain")
+        if commits < len(tasks):
+            failures.append("worker invocation/result commit invariant failed")
+        can_finish = not failures
+        return {"can_finish": can_finish, "run_id": run_id, "failures": failures, "committed_results": commits, "tasks": len(tasks)}
 
     def ingest(self, run_id: str, task_id: str, attempt_id: str, path: Path) -> dict[str, Any]:
         result_hash = _hash_file(path)

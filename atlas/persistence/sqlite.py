@@ -1052,6 +1052,41 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_vscode_hunt_tasks_run ON vscode_hunt_tasks(run_id)",
         ],
     ),
+    (
+        14,
+        "durable VS Code worker leases, checkpoints, and result commits",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS vscode_worker_events (
+                event_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS vscode_result_commits (
+                commit_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL UNIQUE,
+                worker_invocation_id TEXT NOT NULL,
+                result_path TEXT NOT NULL,
+                result_sha256 TEXT NOT NULL,
+                schema_version INTEGER NOT NULL,
+                validation_state TEXT NOT NULL,
+                completion_action TEXT NOT NULL,
+                missing_json TEXT NOT NULL DEFAULT '[]',
+                committed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_vscode_events_task ON vscode_worker_events(task_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_vscode_commits_run ON vscode_result_commits(run_id, committed_at)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)
