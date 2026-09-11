@@ -20,6 +20,30 @@ class Action(str, enum.Enum):
     REJECTED_INVALID_RESULT = "REJECTED_INVALID_RESULT"
 
 
+class TaskKind(str, enum.Enum):
+    """PRODUCTION R1 §7 job-lead-first task kinds (supersede universal company lanes)."""
+    DISCOVERY_QUERY_BATCH = "DISCOVERY_QUERY_BATCH"
+    VERIFY_JOB_LEAD_BATCH = "VERIFY_JOB_LEAD_BATCH"
+    EXPAND_VERIFIED_COMPANY = "EXPAND_VERIFIED_COMPANY"
+    REVERIFY_HISTORICAL_JOB = "REVERIFY_HISTORICAL_JOB"
+
+
+class LeadClassification(str, enum.Enum):
+    """The terminal outcome every assigned lead must reach (§7)."""
+    VERIFIED_ACCEPTED = "VERIFIED_ACCEPTED"
+    VERIFIED_STRETCH = "VERIFIED_STRETCH"
+    VERIFIED_REJECTED = "VERIFIED_REJECTED"
+    PORTAL_ONLY_UNVERIFIED = "PORTAL_ONLY_UNVERIFIED"
+    CLOSED = "CLOSED"
+    FOREIGN = "FOREIGN"
+    DUPLICATE = "DUPLICATE"
+    SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+TERMINAL_LEAD_CLASSIFICATIONS = frozenset(item.value for item in LeadClassification)
+
+
 @dataclasses.dataclass(frozen=True)
 class HuntRun:
     run_id: str
@@ -65,6 +89,22 @@ TASK_CONTRACT_VERSION = 3
 # Runtime handshake contract (PRODUCTION R1 §5): bumped when the runtime tool
 # response contract changes, so a session preflight can detect a stale server.
 RUNTIME_CONTRACT_VERSION = 1
+
+# Verification batch sizing (§7): a batch carries at most 6-8 promising leads.
+VERIFICATION_BATCH_MAX_LEADS = 8
+
+# Attempt ceiling (§13): 1 primary + 1 correction + at most 1 infrastructure retry.
+NORMAL_PRIMARY_ATTEMPTS = 1
+NORMAL_CORRECTION_ATTEMPTS = 1
+MAX_INFRASTRUCTURE_RETRIES = 1
+ABSOLUTE_MAX_ATTEMPTS = 3
+
+
+def batch_is_complete(classifications: Any) -> bool:
+    """A VERIFY_JOB_LEAD_BATCH is complete only when every assigned lead has a
+    durable terminal classification (§7)."""
+    items = [str(item) for item in (classifications or [])]
+    return bool(items) and all(item in TERMINAL_LEAD_CLASSIFICATIONS for item in items)
 
 CANONICAL_LANES: tuple[str, ...] = (
     "JAVA_BACKEND",

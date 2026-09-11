@@ -15,6 +15,7 @@ from atlas.persistence.sqlite import StateStore
 
 from .models import (
     Action,
+    ABSOLUTE_MAX_ATTEMPTS,
     Backend,
     CANONICAL_LANES,
     RESULT_SCHEMA_VERSION,
@@ -78,6 +79,15 @@ class VscodeHuntService:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.conn = store._conn  # StateStore is the sole owner of this connection.
+        self._server_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    def _assert_attempt_ceiling(self, number: int) -> None:
+        """Reject creation of a 4th+ attempt for a task (§13 absolute ceiling)."""
+        if number > ABSOLUTE_MAX_ATTEMPTS:
+            raise ValueError(
+                f"attempt ceiling exceeded: absolute max {ABSOLUTE_MAX_ATTEMPTS} attempts per task "
+                f"(rejected attempt {number})"
+            )
         self._server_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def create_run(self, companies: list[dict[str, Any]], run_id: str | None = None) -> str:
@@ -229,6 +239,7 @@ class VscodeHuntService:
         if row["status"] == "COMPLETE": raise ValueError("completed task cannot be rerun")
         attempt_id = attempt_id or f"attempt-{secrets.token_hex(12)}"
         number = int(row["attempt_number"]) + 1
+        self._assert_attempt_ceiling(number)
         with self.conn:
             self.conn.execute("UPDATE vscode_hunt_tasks SET status='RUNNING',attempt_number=? WHERE task_id=?", (number, task_id))
             self.conn.execute(
@@ -288,6 +299,7 @@ class VscodeHuntService:
             raise ValueError("committed attempt is missing")
         new_attempt_id = f"attempt-recovery-{secrets.token_hex(12)}"
         number = int(task["attempt_number"]) + 1
+        self._assert_attempt_ceiling(number)
         with self.conn:
             self.conn.execute("UPDATE vscode_hunt_tasks SET status='PENDING',attempt_number=? WHERE task_id=?", (number, task_id))
             self.conn.execute(
@@ -350,6 +362,7 @@ class VscodeHuntService:
             raise ValueError("task already has an active attempt")
         new_attempt_id = f"attempt-recovery-retry-{secrets.token_hex(12)}"
         number = int(task["attempt_number"]) + 1
+        self._assert_attempt_ceiling(number)
         with self.conn:
             self.conn.execute("UPDATE vscode_hunt_tasks SET status='PENDING',attempt_number=? WHERE task_id=?", (number, task_id))
             self.conn.execute(
@@ -380,6 +393,7 @@ class VscodeHuntService:
             raise ValueError("task already has an active attempt")
         attempt_id = f"attempt-recovery-{secrets.token_hex(12)}"
         number = int(task["attempt_number"]) + 1
+        self._assert_attempt_ceiling(number)
         with self.conn:
             self.conn.execute("UPDATE vscode_hunt_tasks SET status='PENDING',attempt_number=? WHERE task_id=?", (number, task_id))
             self.conn.execute("""INSERT INTO vscode_hunt_attempts(
