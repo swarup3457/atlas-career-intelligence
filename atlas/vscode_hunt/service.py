@@ -300,6 +300,43 @@ class VscodeHuntService:
             self.conn.execute("UPDATE vscode_hunt_tasks SET status='RUNNING' WHERE task_id=?", (task_id,))
         return {"run_id": run_id, "task_id": task_id, "attempt_id": attempt_id, "status": "OPEN", "task_status": "RUNNING"}
 
+    def retry_invalid_recovery(self, run_id: str, task_id: str, *, expected_invalid_commit_id: str, browser_backend: str) -> dict[str, Any]:
+        """Create one replacement recovery attempt after a rejected payload.
+
+        The rejected commit remains immutable and is linked as the immediate parent;
+        this path cannot reopen a successful result or bypass the original recovery.
+        """
+        task = self.conn.execute("SELECT * FROM vscode_hunt_tasks WHERE run_id=? AND task_id=?", (run_id, task_id)).fetchone()
+        invalid = self.conn.execute("SELECT * FROM vscode_result_commits WHERE run_id=? AND task_id=? AND commit_id=?", (run_id, task_id, expected_invalid_commit_id)).fetchone()
+        if task is None or invalid is None or invalid["validation_state"] != "INVALID":
+            raise ValueError("expected invalid recovery commit does not match")
+        previous = self.conn.execute("SELECT attempt_kind,parent_commit_id FROM vscode_hunt_attempts WHERE attempt_id=?", (invalid["attempt_id"],)).fetchone()
+        if previous is None or previous["attempt_kind"] != "BROWSER_BACKEND_RECOVERY":
+            raise ValueError("only invalid browser-recovery attempts may be retried")
+        active = self.conn.execute("SELECT 1 FROM vscode_hunt_attempts WHERE task_id=? AND status IN ('OPEN','PENDING')", (task_id,)).fetchone()
+        if active is not None:
+            raise ValueError("task already has an active attempt")
+        new_attempt_id = f"attempt-recovery-retry-{secrets.token_hex(12)}"
+        number = int(task["attempt_number"]) + 1
+        with self.conn:
+            self.conn.execute("UPDATE vscode_hunt_tasks SET status='PENDING',attempt_number=? WHERE task_id=?", (number, task_id))
+            self.conn.execute(
+                """INSERT INTO vscode_hunt_attempts(
+                    attempt_id,task_id,attempt_number,backend,parent_attempt_id,status,
+                    attempt_kind,parent_commit_id,browser_backend,started_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,NULL)""",
+                (new_attempt_id, task_id, number, Backend.VSCODE_SUBAGENT.value,
+                 invalid["attempt_id"], "PENDING", "BROWSER_BACKEND_RECOVERY",
+                 previous["parent_commit_id"], browser_backend),
+            )
+            self._task_event(run_id, task_id, "TASK_RECOVERY_RETRY_AFTER_INVALID_RESULT", {
+                "invalid_commit_id": expected_invalid_commit_id,
+                "invalid_attempt_id": invalid["attempt_id"],
+                "new_attempt_id": new_attempt_id,
+                "browser_backend": browser_backend,
+            })
+        return {"run_id": run_id, "task_id": task_id, "new_attempt_id": new_attempt_id, "parent_attempt_id": invalid["attempt_id"], "parent_commit_id": previous["parent_commit_id"], "attempt_kind": "BROWSER_BACKEND_RECOVERY", "status": "PENDING"}
+
     def heartbeat(self, run_id: str, task_id: str, attempt_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         attempt = self.conn.execute("SELECT attempt_id FROM vscode_hunt_attempts WHERE attempt_id=? AND task_id=?", (attempt_id, task_id)).fetchone()
         if attempt is None:
