@@ -34,6 +34,9 @@ from .verification_batch import (
     evaluate_verification_batch_completion,
     manifest_hash,
     validate_verification_batch_result,
+    ALLOWED_TERMINAL_CLASSIFICATIONS,
+    normalize_selection_manifest,
+    validate_lead_outcome,
 )
 
 
@@ -126,9 +129,11 @@ class VscodeHuntService:
     def create_verification_run(self, manifest: dict[str, Any], run_id: str | None = None) -> str:
         """Seal an idempotent VERIFY_JOB_LEAD_BATCH run from a manifest."""
         run_id = run_id or f"verification-{uuid.uuid4().hex}"
+        if manifest.get("selected") and not manifest.get("batches"):
+            manifest = normalize_selection_manifest(manifest, parent_run_id=str(manifest.get("run_id") or ""))
         batches = list(manifest.get("batches") or [])
-        if not batches or len(batches) != 4:
-            raise ValueError("verification manifest must contain exactly four batches")
+        if not 1 <= len(batches) <= 4:
+            raise ValueError("verification manifest must contain 1-4 batches")
         all_ids: list[str] = []
         for batch in batches:
             leads = list(batch.get("leads") or [])
@@ -143,6 +148,16 @@ class VscodeHuntService:
         if len(all_ids) != len(set(all_ids)):
             raise ValueError("a lead may be assigned to only one batch")
         fingerprint = manifest_hash(manifest)
+        metadata = {
+            "manifest_hash": fingerprint,
+            "normalized_manifest_hash": str(manifest.get("normalized_manifest_hash") or fingerprint),
+            "parent_run_id": str(manifest.get("parent_run_id") or ""),
+            "source_reference": str(manifest.get("source_reference") or ""),
+            "source_manifest_sha256": str(manifest.get("source_manifest_sha256") or ""),
+            "task_contract_version": TASK_CONTRACT_VERSION,
+            "candidate_policy_version": "REDACTED_POLICY_V1",
+            "schema_version": VERIFICATION_BATCH_SCHEMA_VERSION,
+        }
         existing = self.conn.execute("SELECT status,metadata_json FROM vscode_hunt_runs WHERE run_id=?", (run_id,)).fetchone()
         if existing is not None:
             prior = json.loads(existing["metadata_json"] or "{}")
@@ -151,12 +166,12 @@ class VscodeHuntService:
             return run_id
         with self.conn:
             self.conn.execute("INSERT INTO vscode_hunt_runs(run_id,status,company_count) VALUES(?,?,?)", (run_id, "SEALED", len(batches)))
-            self.conn.execute("UPDATE vscode_hunt_runs SET metadata_json=? WHERE run_id=?", (json.dumps({"manifest_hash": fingerprint, "schema_version": VERIFICATION_BATCH_SCHEMA_VERSION}), run_id))
+            self.conn.execute("UPDATE vscode_hunt_runs SET metadata_json=? WHERE run_id=?", (json.dumps(metadata, sort_keys=True), run_id))
             for index, batch in enumerate(batches, 1):
                 batch_id = str(batch.get("batch_id") or f"batch-{index:02d}")
                 task_id = f"{run_id}::{batch_id}"
                 leads = list(batch["leads"])
-                payload = {"schema_version": VERIFICATION_BATCH_SCHEMA_VERSION, "task_contract_version": TASK_CONTRACT_VERSION, "task_kind": "VERIFY_JOB_LEAD_BATCH", "run_id": run_id, "task_id": task_id, "batch_id": batch_id, "manifest_hash": fingerprint, "assigned_lead_ids": [str(lead["lead_id"]) for lead in leads], "leads": leads, "safety": ["read-only", "no-login", "no-apply", "assigned-domains-only"]}
+                payload = {"schema_version": VERIFICATION_BATCH_SCHEMA_VERSION, "task_contract_version": TASK_CONTRACT_VERSION, "task_kind": "VERIFY_JOB_LEAD_BATCH", "run_id": run_id, "task_id": task_id, "batch_id": batch_id, "manifest_hash": fingerprint, "assigned_lead_ids": [str(lead["lead_id"]) for lead in leads], "leads": leads, "allowed_terminal_classifications": list(ALLOWED_TERMINAL_CLASSIFICATIONS), "result_schema": {"required": ["schema_version", "run_id", "task_id", "attempt_id", "batch_id", "manifest_hash", "assigned_lead_ids", "outcomes", "completion_claim"]}, "evidence_obligations": {"accepted": ["official_url", "title", "location", "detail_text", "evidence_quotes"], "closed": ["closure_evidence"], "foreign": ["foreign_location_evidence"], "source_unavailable": ["attempted_url", "error_details", "source_health"], "duplicate": ["duplicate_of"]}, "candidate_policy": {"version": "REDACTED_POLICY_V1", "profile": "redacted", "content": "No private profile or resume data is provided to workers."}, "safety": ["read-only", "no-login", "no-apply", "assigned-domains-only"]}
                 self.conn.execute("INSERT INTO vscode_hunt_tasks(task_id,run_id,company_id,company_name,official_domain,careers_url,lanes_json,status,attempt_number,task_kind,payload_json,manifest_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (task_id, run_id, batch_id, "VERIFY_JOB_LEAD_BATCH", "", None, "[]", "PENDING", 0, "VERIFY_JOB_LEAD_BATCH", json.dumps(payload, sort_keys=True), fingerprint))
                 for lead in leads:
                     lead_id = str(lead["lead_id"])
@@ -186,10 +201,32 @@ class VscodeHuntService:
         return attempt
 
     def record_lead_checkpoint(self, run_id: str, task_id: str, attempt_id: str, lead_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        item = self.conn.execute("SELECT 1 FROM vscode_verification_items WHERE task_id=? AND lead_id=?", (task_id, lead_id)).fetchone()
-        if item is None:
-            raise ValueError("unknown verification lead")
-        return self.record_checkpoint(run_id, task_id, attempt_id, "LEAD_CHECKPOINT", {"lead_id": lead_id, **payload})
+        row = self.conn.execute(
+            """SELECT t.status AS task_status, t.task_kind, a.status AS attempt_status,
+                      i.status AS item_status
+               FROM vscode_hunt_tasks t
+               JOIN vscode_hunt_attempts a ON a.task_id=t.task_id
+               LEFT JOIN vscode_verification_items i ON i.task_id=t.task_id AND i.lead_id=?
+               WHERE t.run_id=? AND t.task_id=? AND a.attempt_id=?""",
+            (lead_id, run_id, task_id, attempt_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("run, task, attempt, or lead identity mismatch")
+        if row["task_kind"] != "VERIFY_JOB_LEAD_BATCH":
+            raise ValueError("lead checkpoints require a verification batch task")
+        if row["attempt_status"] != "OPEN":
+            raise ValueError("attempt is not active")
+        if row["task_status"] in {"COMPLETE", "EXTERNAL_ACCESS_LIMITED", "NEEDS_REPAIR"}:
+            raise ValueError("task is terminal")
+        if row["item_status"] in {"TERMINAL", "INVALID"}:
+            raise ValueError("lead is already terminal")
+        result = self.record_checkpoint(run_id, task_id, attempt_id, "LEAD_CHECKPOINT", {"lead_id": lead_id, **payload})
+        with self.conn:
+            self.conn.execute(
+                "UPDATE vscode_verification_items SET status='CHECKPOINTED',latest_attempt_id=?,updated_at=CURRENT_TIMESTAMP WHERE task_id=? AND lead_id=?",
+                (attempt_id, task_id, lead_id),
+            )
+        return result
 
     def get_ready_tasks(self, run_id: str, limit: int = 4) -> list[dict[str, Any]]:
         rows = self.conn.execute("SELECT * FROM vscode_hunt_tasks WHERE run_id=? AND task_kind='VERIFY_JOB_LEAD_BATCH' AND status IN ('PENDING','FOLLOW_UP_REQUIRED') ORDER BY task_id LIMIT ?", (run_id, limit)).fetchall()
@@ -205,9 +242,39 @@ class VscodeHuntService:
             return payload
         return {"run_id": run_id, "task_id": task_id, "attempt_id": attempt_id, "company": row["company_name"], "official_domain": row["official_domain"], "careers_url": row["careers_url"], "lanes": json.loads(row["lanes_json"]), "status": row["status"]}
 
-    def advance_verification_run(self, run_id: str) -> dict[str, Any]:
-        """Return durable batch tasks ready for host-side fan-out."""
-        return {"run_id": run_id, "ready_tasks": self.get_ready_tasks(run_id), "dispatch_authority": "VS_CODE_COORDINATOR"}
+    def advance_verification_run(self, run_id: str, *, limit: int = 4) -> dict[str, Any]:
+        """Atomically reserve one dispatch wave for the VS Code coordinator."""
+        if not 1 <= limit <= 4:
+            raise ValueError("dispatch limit must be 1-4")
+        with self.conn:
+            active = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM vscode_hunt_attempts a JOIN vscode_hunt_tasks t ON t.task_id=a.task_id WHERE t.run_id=? AND a.status='OPEN'",
+                (run_id,),
+            ).fetchone()["n"]
+            if active:
+                return {"run_id": run_id, "action": "WAIT_FOR_ACTIVE_WORKERS", "tasks": [], "active_workers": active}
+            rows = self.conn.execute(
+                "SELECT * FROM vscode_hunt_tasks WHERE run_id=? AND task_kind='VERIFY_JOB_LEAD_BATCH' AND status IN ('PENDING','FOLLOW_UP_REQUIRED') ORDER BY task_id LIMIT ?",
+                (run_id, limit),
+            ).fetchall()
+            if not rows:
+                incomplete = self.conn.execute("SELECT COUNT(*) AS n FROM vscode_verification_items WHERE task_id IN (SELECT task_id FROM vscode_hunt_tasks WHERE run_id=?) AND status NOT IN ('TERMINAL')", (run_id,)).fetchone()["n"]
+                return {"run_id": run_id, "action": "STOP_PARTIAL" if incomplete else "FINALIZE", "tasks": [], "active_workers": 0}
+            correction = any(row["status"] == "FOLLOW_UP_REQUIRED" for row in rows)
+            reserved: list[dict[str, Any]] = []
+            for row in rows:
+                if (row["status"] == "FOLLOW_UP_REQUIRED") != correction:
+                    continue
+                attempt = self.create_or_start_attempt(run_id, row["task_id"], worker_invocation_id=f"dispatch-{uuid.uuid4().hex}", correction=correction)
+                context = self.get_task_context(run_id, row["task_id"], attempt.attempt_id)
+                unresolved = self.conn.execute("SELECT lead_id FROM vscode_verification_items WHERE task_id=? AND status NOT IN ('TERMINAL') ORDER BY lead_id", (row["task_id"],)).fetchall()
+                if correction:
+                    context["leads"] = [lead for lead in context.get("leads", []) if str(lead.get("lead_id")) in {item["lead_id"] for item in unresolved}]
+                    context["assigned_lead_ids"] = [item["lead_id"] for item in unresolved]
+                    context["correction_scope"] = [{"lead_id": item["lead_id"], "missing_obligations": json.loads(row["missing_json"] or "[]") if "missing_json" in row.keys() else []} for item in unresolved]
+                reserved.append({"task_id": row["task_id"], "attempt_id": attempt.attempt_id, "context": context})
+            action = "DISPATCH_CORRECTION" if correction else "DISPATCH_PRIMARY"
+            return {"run_id": run_id, "action": action, "tasks": reserved, "active_workers": 0}
 
     def _task_event(self, run_id: str, task_id: str, event_type: str, payload: dict[str, Any]) -> str:
         # vscode_worker_events.attempt_id is NOT NULL; task-level events use "".
@@ -558,15 +625,27 @@ class VscodeHuntService:
                 raise ValueError("commit conflict: attempt already committed with a different hash")
             return {"commit_id": existing["commit_id"], "result_sha256": result_hash, "task_status": task["status"], "completion_action": existing["completion_action"], "missing_obligations": json.loads(existing["missing_json"])}
         if task["task_kind"] == "VERIFY_JOB_LEAD_BATCH":
+            task_leads = {row["lead_id"]: json.loads(row["payload_json"]) for row in self.conn.execute("SELECT lead_id,payload_json FROM vscode_verification_items WHERE task_id=?", (task_id,)).fetchall()}
             task_contract = {
                 "run_id": run_id, "task_id": task_id, "attempt_id": attempt_id,
                 "manifest_hash": task["manifest_hash"],
                 "assigned_lead_ids": [row["lead_id"] for row in self.conn.execute("SELECT lead_id FROM vscode_verification_items WHERE task_id=?", (task_id,)).fetchall()],
+                "leads": list(task_leads.values()),
             }
-            errors = validate_verification_batch_result(result, task_contract)
-            decision = evaluate_verification_batch_completion(result, task_contract)
-            action = "REJECTED_INVALID_RESULT" if errors and decision["action"] == "REJECTED_INVALID_RESULT" else decision["action"]
-            missing = list(dict.fromkeys(errors + [f"lead:{lead_id}" for lead_id in decision["missing_lead_ids"]]))
+            structural = validate_verification_batch_result(result, {**task_contract, "leads": []})
+            structural = [
+                error for error in structural
+                if not error.startswith("lead ") and "missing evidence" not in error
+            ]
+            outcome_errors = {str(outcome.get("lead_id")): validate_lead_outcome(outcome, task_leads[str(outcome.get("lead_id"))]) for outcome in result.get("outcomes", []) if isinstance(outcome, dict) and str(outcome.get("lead_id")) in task_leads}
+            invalid_ids = {lead_id for lead_id, errors_for_lead in outcome_errors.items() if errors_for_lead}
+            observed_ids = {str(outcome.get("lead_id")) for outcome in result.get("outcomes", []) if isinstance(outcome, dict)}
+            missing_ids = set(task_contract["assigned_lead_ids"]) - observed_ids
+            errors = structural
+            for lead_id in sorted(invalid_ids):
+                errors.extend(outcome_errors[lead_id])
+            missing = list(dict.fromkeys(errors + [f"lead:{lead_id}" for lead_id in sorted(invalid_ids | missing_ids)]))
+            action = "REJECTED_INVALID_RESULT" if structural else ("FOLLOW_UP_REQUIRED" if invalid_ids or missing_ids else "COMPLETE")
         else:
             errors = validate_result(result, task)
             decision = evaluate_completion(result, tuple(json.loads(task["lanes_json"]))) if not errors else None
@@ -579,8 +658,9 @@ class VscodeHuntService:
         shutil.copyfile(source_path, temp)
         temp.replace(durable)
         with self.conn:
-            self.conn.execute("INSERT INTO vscode_result_commits(commit_id,run_id,task_id,attempt_id,worker_invocation_id,result_path,result_sha256,schema_version,validation_state,completion_action,missing_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (commit_id, run_id, task_id, attempt_id, str(result.get("worker_invocation_id", "")), str(durable), result_hash, int(result.get("schema_version", 0)), "VALID" if not errors else "INVALID", action, json.dumps(missing)))
-            self.conn.execute("UPDATE vscode_hunt_attempts SET status=?,result_hash=?,result_path=?,missing_json=? WHERE attempt_id=?", ("RESULT_COMMITTED" if not errors else "INVALID_RESULT", result_hash, str(durable), json.dumps(missing), attempt_id))
+            batch_valid = task["task_kind"] == "VERIFY_JOB_LEAD_BATCH" and not structural
+            self.conn.execute("INSERT INTO vscode_result_commits(commit_id,run_id,task_id,attempt_id,worker_invocation_id,result_path,result_sha256,schema_version,validation_state,completion_action,missing_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (commit_id, run_id, task_id, attempt_id, str(result.get("worker_invocation_id", "")), str(durable), result_hash, int(result.get("schema_version", 0)), "VALID" if (batch_valid or not errors) else "INVALID", action, json.dumps(missing)))
+            self.conn.execute("UPDATE vscode_hunt_attempts SET status=?,result_hash=?,result_path=?,missing_json=? WHERE attempt_id=?", ("RESULT_COMMITTED" if batch_valid or not errors else "INVALID_RESULT", result_hash, str(durable), json.dumps(missing), attempt_id))
             self.conn.execute("UPDATE vscode_hunt_tasks SET status=? WHERE task_id=?", (action, task_id))
             if task["task_kind"] == "VERIFY_JOB_LEAD_BATCH":
                 for outcome in result.get("outcomes", []):
@@ -588,7 +668,8 @@ class VscodeHuntService:
                         continue
                     lead_id = str(outcome.get("lead_id", ""))
                     if lead_id in {row["lead_id"] for row in self.conn.execute("SELECT lead_id FROM vscode_verification_items WHERE task_id=?", (task_id,)).fetchall()}:
-                        self.conn.execute("UPDATE vscode_verification_items SET status=?,classification=?,latest_attempt_id=?,latest_commit_id=?,updated_at=CURRENT_TIMESTAMP WHERE task_id=? AND lead_id=?", ("TERMINAL" if not errors else "INVALID", outcome.get("classification"), attempt_id, commit_id, task_id, lead_id))
+                        item_errors = outcome_errors.get(lead_id, [])
+                        self.conn.execute("UPDATE vscode_verification_items SET status=?,classification=?,latest_attempt_id=?,latest_commit_id=?,updated_at=CURRENT_TIMESTAMP WHERE task_id=? AND lead_id=?", ("TERMINAL" if not item_errors else "INVALID", outcome.get("classification"), attempt_id, commit_id, task_id, lead_id))
         return {"commit_id": commit_id, "result_sha256": result_hash, "task_status": action, "completion_action": action, "missing_obligations": missing, "result_path": str(durable)}
 
     def finalize_run(self, run_id: str) -> dict[str, Any]:

@@ -9,12 +9,13 @@ from typing import Any
 from openpyxl import Workbook, load_workbook
 
 from atlas.reporting.trust_boundary import partition_jobs
+from .outcomes import latest_valid_batch_results, outcome_rows
 
 SHEETS = ("Validated_Jobs", "Rejected_Jobs", "Foreign_Leads", "Company_Coverage", "Lane_Coverage", "Evidence_Audit", "Session_Audit", "Run_Summary")
 
 # Full V3.2 audit/checkpoint/final workbook: 16 immutable sheets.
 V32_SHEETS = (
-    "Validated_Jobs", "Rejected_Jobs", "Foreign_Leads", "Raw_Job_Leads",
+    "Validated_Jobs", "Rejected_Jobs", "Manual_Verification", "Closed_Jobs", "Foreign_Leads", "Lead_Batch_Audit", "Lead_Outcome_Audit", "Raw_Job_Leads",
     "Discovery_Providers", "Company_Candidates", "Official_Verification",
     "Selection_Audit", "Company_Coverage", "Lane_Coverage", "Source_Health",
     "Evidence_Audit", "Session_Audit", "Errors", "Discovery_Funnel", "Run_Summary",
@@ -126,7 +127,11 @@ def build_v32_workbook(root: Path, run_id: str, conn: Any, *, kind: str = "Audit
 
     workbook["Validated_Jobs"].append(["company", "title", "location", "official_url", "requisition", "role_lane", "stack", "mandatory_experience", "posted_date", "recommendation", "verification_status"])
     workbook["Rejected_Jobs"].append(["company", "title", "location", "url", "lane", "reason_code", "detail"])
+    workbook["Manual_Verification"].append(["lead_id", "company", "title", "location", "url", "classification", "detail"])
+    workbook["Closed_Jobs"].append(["lead_id", "company", "title", "location", "url", "closure_evidence", "commit_id"])
     workbook["Foreign_Leads"].append(["company", "title", "location", "url", "reason"])
+    workbook["Lead_Batch_Audit"].append(["batch_id", "task_id", "commit_id", "result_sha256", "assigned_leads", "outcomes", "completion_claim"])
+    workbook["Lead_Outcome_Audit"].append(["lead_id", "batch_id", "classification", "company", "title", "location", "official_url", "commit_id", "evidence_quotes", "error_details"])
     workbook["Raw_Job_Leads"].append(["company", "source", "title", "url", "lane_hint", "discovery_reused_from_parent_run"])
     workbook["Discovery_Providers"].append(["provider", "role", "leads_contributed", "status", "discovery_reused_from_parent_run"])
     workbook["Company_Candidates"].append(["company_id", "company_name", "official_domain", "source", "selected", "discovery_reused_from_parent_run"])
@@ -176,6 +181,34 @@ def build_v32_workbook(root: Path, run_id: str, conn: Any, *, kind: str = "Audit
         else:
             workbook["Source_Health"].append([task["company_name"], "", "NOT_OBSERVED", False, "no live search performed yet"])
 
+    batch_outcomes = outcome_rows(conn, run_id)
+    for result in latest_valid_batch_results(conn, run_id):
+        workbook["Lead_Batch_Audit"].append([result.get("batch_id", ""), result.get("task_id", ""), result.get("commit_id", ""), result.get("result_sha256", ""), len(result.get("assigned_lead_ids", [])), len(result.get("outcomes", [])), result.get("completion_claim", False)])
+    for outcome in batch_outcomes:
+        classification = outcome["classification"]
+        workbook["Lead_Outcome_Audit"].append([outcome.get("lead_id", ""), outcome.get("batch_id", ""), classification, outcome.get("company", ""), outcome.get("title", ""), outcome.get("location", ""), outcome.get("official_url", ""), outcome.get("commit_id", ""), json.dumps(outcome.get("evidence_quotes", [])), outcome.get("error_details", "")])
+        if classification == "CLOSED":
+            workbook["Closed_Jobs"].append([outcome.get("lead_id", ""), outcome.get("company", ""), outcome.get("title", ""), outcome.get("location", ""), outcome.get("official_url", ""), outcome.get("closure_evidence", ""), outcome.get("commit_id", "")])
+        elif classification == "FOREIGN":
+            workbook["Foreign_Leads"].append([outcome.get("company", ""), outcome.get("title", ""), outcome.get("location", ""), outcome.get("official_url", ""), outcome.get("foreign_location_evidence", "")])
+        elif classification == "VERIFIED_REJECTED":
+            workbook["Rejected_Jobs"].append([outcome.get("company", ""), outcome.get("title", ""), outcome.get("location", ""), outcome.get("official_url", ""), outcome.get("role_family", ""), outcome.get("reason_code", ""), outcome.get("error_details", "")])
+        elif classification == "PORTAL_ONLY_UNVERIFIED":
+            workbook["Manual_Verification"].append([outcome.get("lead_id", ""), outcome.get("company", ""), outcome.get("title", ""), outcome.get("location", ""), outcome.get("official_url", ""), classification, outcome.get("error_details", "")])
+        elif classification in {"SOURCE_UNAVAILABLE", "INTERNAL_ERROR", "DUPLICATE"}:
+            workbook["Errors"].append(["VERIFICATION", outcome.get("company", ""), classification, outcome.get("error_details", "") or outcome.get("duplicate_of", ""), True])
+        elif classification in {"VERIFIED_ACCEPTED", "VERIFIED_STRETCH"}:
+            proposal = dict(outcome)
+            proposal["proposed_decision"] = "accept"
+            proposal.setdefault("official_url", proposal.get("official_url", ""))
+            proposal.setdefault("description", proposal.get("detail_text", ""))
+            proposal.setdefault("evidence_snippets", proposal.get("evidence_quotes", []))
+            accepted, rejected = partition_jobs([proposal], official_domain=str(outcome.get("official_domain", "")), company=str(outcome.get("company", "")))
+            for vj in accepted:
+                ev = vj.evidence
+                workbook["Validated_Jobs"].append([ev.company, ev.title, ev.location, ev.official_url, ev.requisition_id, vj.lane, ", ".join(vj.source.get("stack", [])) if isinstance(vj.source.get("stack"), list) else vj.source.get("stack", ""), ev.experience_text, ev.posted_date, vj.recommendation, vj.verification_status])
+            for rej in rejected:
+                workbook["Rejected_Jobs"].append([rej.title, rej.title, rej.location, rej.url, rej.lane, rej.reason_code, rej.detail])
     for attempt in attempts:
         path = attempt["result_path"]
         result = json.loads(Path(path).read_text(encoding="utf-8")) if path and Path(path).exists() else {}

@@ -178,7 +178,7 @@ def test_v32_audit_workbook_has_sixteen_sheets_and_is_immutable(tmp_path: Path) 
 
         workbook = load_workbook(first, read_only=True)
         assert workbook.sheetnames == list(V32_SHEETS)
-        assert len(V32_SHEETS) == 16
+        assert len(V32_SHEETS) == 20
         coverage = list(workbook["Company_Coverage"].iter_rows(values_only=True))
         lanes = list(workbook["Lane_Coverage"].iter_rows(values_only=True))
         workbook.close()
