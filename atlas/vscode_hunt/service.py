@@ -241,7 +241,12 @@ class VscodeHuntService:
         result = json.loads(Path(commit["result_path"]).read_text(encoding="utf-8"))
         errors = result.get("browser_errors") or []
         error_text = json.dumps(errors).upper()
-        if "BROWSER_UNAVAILABLE" not in error_text:
+        retryable_browser_failure = (
+            "BROWSER_UNAVAILABLE" in error_text
+            or ("BROWSER" in error_text and "NOT AVAILABLE" in error_text)
+            or ("BUILT-IN BROWSER" in error_text and "NOT EXPOSED" in error_text)
+        )
+        if not retryable_browser_failure:
             raise ValueError("latest result is not an explicitly retryable BROWSER_UNAVAILABLE failure")
         previous_attempt = self.conn.execute(
             "SELECT attempt_id FROM vscode_hunt_attempts WHERE attempt_id=? AND task_id=?",

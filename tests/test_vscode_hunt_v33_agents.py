@@ -134,3 +134,19 @@ def test_browser_recovery_rejects_non_retryable_terminal_result(tmp_path: Path) 
                 run_id, task["task_id"], expected_commit_id=ack["commit_id"],
                 expected_result_sha256=ack["result_sha256"], browser_backend="VSCODE_NATIVE_BROWSER",
             )
+
+
+def test_browser_recovery_accepts_historical_unavailable_error_text(tmp_path: Path) -> None:
+    with StateStore(tmp_path / "state.sqlite") as store:
+        service = VscodeHuntService(store, tmp_path / "out")
+        run_id = service.create_run([{"company_id": "co", "name": "Co", "official_domain": "co.example"}])
+        task = service.next_tasks(run_id, materialize=True)[0]
+        attempt = service.record_attempt(run_id, task["task_id"], "attempt-v32", Backend.VSCODE_SUBAGENT)
+        result = _browser_failure(run_id, task["task_id"], attempt.attempt_id)
+        result["browser_errors"] = ["VS Code built-in Browser tools not available in this session"]
+        ack = service.commit_result_payload(run_id, task["task_id"], attempt.attempt_id, result)
+        reopened = service.reopen_browser_recovery(
+            run_id, task["task_id"], expected_commit_id=ack["commit_id"],
+            expected_result_sha256=ack["result_sha256"], browser_backend="VSCODE_NATIVE_BROWSER",
+        )
+        assert reopened["attempt_kind"] == "BROWSER_BACKEND_RECOVERY"
