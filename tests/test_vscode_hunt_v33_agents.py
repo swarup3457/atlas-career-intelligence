@@ -201,3 +201,21 @@ def test_interrupted_recovery_can_resume_with_linked_attempt(tmp_path: Path) -> 
         )
         assert resumed["parent_attempt_id"] == reopened["new_attempt_id"]
         assert store._conn.execute("SELECT status FROM vscode_hunt_attempts WHERE attempt_id=?", (reopened["new_attempt_id"],)).fetchone()["status"] == "INTERRUPTED_UNCOMMITTED"
+
+
+def test_exhausted_invalid_recovery_terminalizes_needs_repair(tmp_path: Path) -> None:
+    with StateStore(tmp_path / "state.sqlite") as store:
+        service = VscodeHuntService(store, tmp_path / "out")
+        run_id = service.create_run([{"company_id": "co", "name": "Co", "official_domain": "co.example"}])
+        task = service.next_tasks(run_id, materialize=True)[0]
+        attempt = service.record_attempt(run_id, task["task_id"], "attempt-invalid", Backend.VSCODE_SUBAGENT)
+        result = _browser_failure(run_id, task["task_id"], attempt.attempt_id)
+        result["worker_invocation_id"] = "worker-invalid"
+        result["lanes_attempted"] = []
+        result["completion_claim"] = True
+        result["browser_errors"] = ["internal browser failure"]
+        ack = service.commit_result_payload(run_id, task["task_id"], attempt.attempt_id, result)
+        assert ack["task_status"] == "REJECTED_INVALID_RESULT"
+        out = service.terminalize_exhausted_recovery(run_id, task["task_id"], reason="CORRECTION_EXHAUSTED")
+        assert out["status"] == "NEEDS_REPAIR"
+        assert service.status(run_id)["all_tasks_terminal"] is True

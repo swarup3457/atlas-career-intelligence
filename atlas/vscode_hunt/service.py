@@ -361,6 +361,23 @@ class VscodeHuntService:
             })
         return {"run_id": run_id, "task_id": task_id, "new_attempt_id": attempt_id, "parent_attempt_id": parent_attempt_id, "attempt_kind": "BROWSER_BACKEND_RECOVERY", "status": "PENDING"}
 
+    def terminalize_exhausted_recovery(self, run_id: str, task_id: str, *, reason: str) -> dict[str, Any]:
+        """Mark an exhausted invalid-recovery task as truthful NEEDS_REPAIR."""
+        task = self.conn.execute("SELECT status FROM vscode_hunt_tasks WHERE run_id=? AND task_id=?", (run_id, task_id)).fetchone()
+        attempts = self.conn.execute("SELECT status FROM vscode_hunt_attempts WHERE task_id=?", (task_id,)).fetchall()
+        latest = self.conn.execute("""SELECT completion_action,validation_state FROM vscode_result_commits
+            WHERE run_id=? AND task_id=? ORDER BY committed_at DESC LIMIT 1""", (run_id, task_id)).fetchone()
+        if task is None or task["status"] not in {"PENDING", "REJECTED_INVALID_RESULT"}:
+            raise ValueError("only a pending or rejected-invalid task may be terminalized")
+        if any(row["status"] in {"OPEN", "PENDING", "RUNNING"} for row in attempts):
+            raise ValueError("active attempt remains")
+        if latest is None or latest["validation_state"] != "INVALID":
+            raise ValueError("latest result is not an invalid recovery result")
+        with self.conn:
+            self.conn.execute("UPDATE vscode_hunt_tasks SET status='NEEDS_REPAIR' WHERE task_id=?", (task_id,))
+            self._task_event(run_id, task_id, "TASK_TERMINALIZED_NEEDS_REPAIR", {"reason": reason})
+        return {"run_id": run_id, "task_id": task_id, "status": "NEEDS_REPAIR", "reason": reason}
+
     def heartbeat(self, run_id: str, task_id: str, attempt_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         attempt = self.conn.execute("SELECT attempt_id FROM vscode_hunt_attempts WHERE attempt_id=? AND task_id=?", (attempt_id, task_id)).fetchone()
         if attempt is None:
